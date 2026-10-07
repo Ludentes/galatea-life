@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Restores the `galatea` database from a dump made by the backup service.
+#   galatea-restore [--force] <dump>
+# The dump is checked first. It is restored into a side database, and only when
+# that has worked does it replace `galatea`. Every service but Postgres is
+# stopped meanwhile, and started again after. --force restores a dump whose
+# .check file says the check failed; it overrides nothing else.
+set -euo pipefail
+force=0
+if [ "${1:-}" = "--force" ]; then force=1; shift; fi
+[ $# -eq 1 ] || { echo "usage: galatea-restore [--force] <dump>" >&2; exit 2; }
+dump=$(readlink -f "$1")
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+[ -f "$dump" ] || die "no such file: $1"
+
+if [ -f "$dump.check" ] && [ "$(cat "$dump.check")" != ok ] && [ "$force" -eq 0 ]; then
+  die "the check of $(basename "$dump") did not pass (see $dump.check); use --force to restore it anyway"
+fi
+
+docker compose up -d --wait postgres
+tmp=/tmp/galatea-restore.dump
+trap 'docker compose exec -T postgres rm -f "$tmp" >/dev/null 2>&1 || true' EXIT
+docker compose exec -T postgres sh -c "cat >$tmp" <"$dump"
+
+# Before anything is stopped: the file must be an archive, and every schema in
+# it must have a line in `instances`, or its owner won't exist on a new server.
+toc=$(docker compose exec -T postgres pg_restore --list "$tmp") ||
+  die "$(basename "$dump") is not a readable archive; nothing was changed"
+instances=$(resolve "${GALATEA_INSTANCES:-./instances}")
+[ -f "$instances" ] || die "no instances file: $instances"
+missing=""
+for s in $(printf '%s\n' "$toc" | awk '$4 == "SCHEMA" && $6 != "public" { print $6 }' | sort); do
+  instance_names "$instances" | grep -qx "$s" || missing="$missing $s"
+done
+[ -z "$missing" ] ||
+  die "the dump holds schemas with no line in $instances; add these lines, then run again:$missing"
+
+others=$(docker compose config --services | grep -vx -e postgres -e db-init || true)
+if [ -n "$others" ]; then
+  # shellcheck disable=SC2086
+  docker compose stop $others
+fi
+
+# Roles are the server's, not the database's: they must exist before the
+# dump's owners and grants are restored, on a new server too.
+docker compose run --rm db-init
+
+# Into a side database first. The current one is dropped only after this works.
+rc=0
+docker compose exec -T postgres sh -c '
+  export PGPASSWORD="$(cat /run/db-secrets/postgres)"
+  dropdb -U postgres --if-exists galatea_restore &&
+    createdb -U postgres galatea_restore &&
+    pg_restore -U postgres --exit-on-error -d galatea_restore '"$tmp" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  docker compose exec -T postgres sh -c '
+    export PGPASSWORD="$(cat /run/db-secrets/postgres)"
+    dropdb -U postgres --if-exists --force galatea_restore' || true
+  docker compose up -d || true
+  die "the restore of $(basename "$dump") failed; the current database was not changed"
+fi
+
+docker compose exec -T postgres sh -c '
+  export PGPASSWORD="$(cat /run/db-secrets/postgres)"
+  dropdb -U postgres --force galatea &&
+    psql -X -q -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE galatea_restore RENAME TO galatea"'
+
+# The database-level grants, and the schemas of instances added since the dump.
+docker compose run --rm db-init
+docker compose up -d
+echo "galatea-restore: restored $(basename "$dump")"

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/scenario_run.response.json",
+  "type": "object",
+  "required": ["run_id"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "ignored": {}
+  }
+}

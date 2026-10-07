@@ -1,0 +1,85 @@
+{
+  "id": "org.galatea.mpv",
+  "version": "0.1.0",
+  "command": [
+    "node",
+    "server.js"
+  ],
+  "hosts": [],
+  "needsSession": true,
+  "devices": [
+    {
+      "key": "player",
+      "proposedClass": "player",
+      "capabilities": [
+        "media"
+      ],
+      "sensorKeys": [],
+      "selfChanging": [
+        "playing",
+        "volume",
+        "title",
+        "started_at"
+      ],
+      "personal": [],
+      "cadenceMs": 5000,
+      "stateUri": "mpv://player/state",
+      "actions": [
+        {
+          "action": "media.launch",
+          "tool": "launch",
+          "args": {
+            "search": {
+              "title": "any",
+              "kind": [
+                "movie",
+                "episode"
+              ]
+            }
+          },
+          "idempotent": false,
+          "stateless": false,
+          "confirms": true,
+          "requestedTier": "reversible"
+        },
+        {
+          "action": "media.pause",
+          "tool": "pause",
+          "idempotent": true,
+          "stateless": false,
+          "confirms": true,
+          "requestedTier": "reversible"
+        },
+        {
+          "action": "media.resume",
+          "tool": "resume",
+          "idempotent": true,
+          "stateless": false,
+          "confirms": true,
+          "requestedTier": "reversible"
+        },
+        {
+          "action": "media.set_volume",
+          "tool": "set_volume",
+          "args": {
+            "volume": {
+              "min": 0,
+              "max": 100
+            }
+          },
+          "idempotent": true,
+          "stateless": false,
+          "confirms": true,
+          "requestedTier": "reversible"
+        }
+      ]
+    }
+  ],
+  "extensions": [],
+  "toolHashes": {
+    "launch": "e17cce9c148ea6f3d057e5f4affe57442074636b15798120884ada337b6e101e",
+    "pause": "0628f40f54c68c77bb88f966f685a3f6a62b8a7d322826d90f458fc6dfc5393b",
+    "resume": "50b61905f8b61dbf33b5ef9382a0728f827d2ae8f682419de34557f90af379db",
+    "set_volume": "5af265709b53427e6b889bd9c83f839e3d0615b01579db1f6223394f527c54f7"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "standard": "bridge",
+  "claims": ["Serve"],
+  "start": { "command": "node", "args": ["dist/main.js", "--config", "subject/relay.json"], "ready": { "log": "ready" } },
+  "state_dir": false,
+  "mutations": ["relay-up-without-arp", "relay-entry-closed"]
+}

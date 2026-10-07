@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Moves the store to another Postgres major by a dump and a restore.
+#   galatea-db-upgrade <major>
+# The old major's volume is kept. To roll back, set PG_MAJOR back in the
+# settings file and run `docker compose up -d`. That works from 18 on; the 17
+# image kept its data in an anonymous volume, which the rollback won't find.
+set -euo pipefail
+# Dumps hold the home's state: readable by the owner only.
+umask 077
+[ $# -eq 1 ] || { echo "usage: galatea-db-upgrade <major>" >&2; exit 2; }
+new=$1
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+case "$new" in '' | *[!0-9]*) die "not a major version: $new" ;; esac
+# Compose lets the environment override the settings file, so an exported
+# PG_MAJOR would undo the switch below.
+! printenv PG_MAJOR >/dev/null || die "PG_MAJOR is exported; keep it in $env_file only"
+
+old=$(docker compose exec -T postgres sh -c 'echo "$PG_MAJOR"')
+[ "$new" != "$old" ] || die "already on $old"
+
+# Nothing may write while the dump is taken: stop every service but Postgres.
+others=$(docker compose config --services | grep -vx -e postgres -e db-init || true)
+if [ -n "$others" ]; then
+  # shellcheck disable=SC2086
+  docker compose stop $others
+fi
+
+backups=$(resolve "${GALATEA_BACKUPS:-./backups}")
+mkdir -p "$backups"
+dump="$backups/pre-upgrade-$old-to-$new-$(date -u +%Y%m%dT%H%M%SZ).dump"
+
+# The old major's own pg_dump writes the dump.
+docker compose exec -T postgres sh -c \
+  'PGPASSWORD="$(cat /run/db-secrets/postgres)" pg_dump -U postgres -Fc -d galatea' >"$dump.partial"
+mv "$dump.partial" "$dump"
+echo "galatea-db-upgrade: dumped $old to $dump"
+
+# From here the old stack is down and the settings name the new major. If the
+# restore fails, say how to get back.
+trap 'echo "galatea-db-upgrade: failed on $new. The dump is $dump. To go back: set PG_MAJOR=$old in $env_file, then run docker compose up -d" >&2' ERR
+docker compose down
+
+if grep -q '^PG_MAJOR=' "$env_file" 2>/dev/null; then
+  sed -i "s/^PG_MAJOR=.*/PG_MAJOR=$new/" "$env_file"
+else
+  echo "PG_MAJOR=$new" >>"$env_file"
+fi
+
+"$here/bin/galatea-restore" "$dump"
+trap - ERR
+echo "galatea-db-upgrade: now on $new; the $old volume is kept for a rollback"

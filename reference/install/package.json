@@ -1,0 +1,25 @@
+{
+  "name": "@ludentes/galatea-life-install",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ludentes/galatea-life.git",
+    "directory": "reference/install"
+  },
+  "files": [
+    "bin",
+    "broker",
+    "db",
+    "compose.yaml",
+    ".env.example",
+    "instances.example"
+  ],
+  "description": "The installation: one Postgres with its provisioning, backups, restore and upgrades; the broker; the Zigbee bridge's service",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

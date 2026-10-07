@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.voice.json",
+  "title": "A define change's value for kind voice: an endpoint's voice record (steward, Listening; provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["endpoint", "listening", "wake_words", "zone", "output", "follow_up", "heard_by"],
+  "properties": {
+    "endpoint": { "type": "string", "minLength": 1 },
+    "listening": { "$ref": "../common.json#/$defs/listening" },
+    "wake_words": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["word", "model"],
+        "properties": { "word": { "type": "string", "minLength": 1 }, "model": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "zone": { "type": ["string", "null"] },
+    "output": { "enum": ["speech", null] },
+    "follow_up": { "type": "boolean" },
+    "heard_by": { "type": "string", "minLength": 1 },
+    "skill_account": { "type": "string", "minLength": 1 },
+    "skill_surface": { "type": "string", "minLength": 1 }
+  }
+}

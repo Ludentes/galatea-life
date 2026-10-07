@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.person.json",
+  "title": "A define change's value for kind person (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "role"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "role": { "$ref": "../common.json#/$defs/personRole" }
+  }
+}

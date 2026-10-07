@@ -1,0 +1,27 @@
+{
+  "name": "@ludentes/galatea-life-wake-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ludentes/galatea-life.git",
+    "directory": "reference/wake-relay"
+  },
+  "files": [
+    "dist",
+    "deploy",
+    "subject",
+    "subject.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ludentes/galatea-life-schemas": "^0.1.0",
+    "@ludentes/galatea-life-test-clock": "^0.1.0",
+    "mqtt": "5.16.0"
+  }
+}

@@ -1,0 +1,60 @@
+# The Galatea PC bridge's system service (docs/specs/2026-09-27-pc-reference-build-design.md, *Processes*).
+# Installed as /etc/systemd/system/galatea-pc-bridge.service, with the package in
+# /usr/lib/galatea-pc-bridge, its settings in /etc/galatea-pc-bridge/environment (GALATEA_BROKER,
+# GALATEA_ROOT) and the broker credential in /etc/galatea-pc-bridge/credential (root, 0600).
+#
+# It runs as root: it writes into session scopes' cgroup.procs, drops to accounts through setpriv,
+# reads sudo for every account and talks to logind and its helpers on the system bus. What it starts
+# (the helpers, the plugins' servers) inherits its namespaces and seccomp filters, so the sandboxing
+# a unit usually carries is left out where it would reach them: ProtectSystem, ProtectHome and
+# PrivateTmp (a server writes its account's home, and an X11 client needs /tmp/.X11-unix),
+# PrivateDevices and DevicePolicy (a player needs /dev/dri and /dev/snd), ProtectControlGroups (the
+# launcher's move writes /sys/fs/cgroup), NoNewPrivileges (sudo refuses to run under it, and setpriv
+# sets it for each server itself), RestrictNamespaces, SystemCallArchitectures, LockPersonality and
+# RestrictRealtime (a plugin may start a browser's sandbox, a 32-bit program or real-time audio), and
+# MemoryDenyWriteExecute (Node's compiler writes executable memory), and ProtectKernelTunables, which
+# makes /sys read-only, and with it the cgroup move.
+#
+# ProtectKernelModules, ProtectKernelLogs and ProtectClock are kept. Each gives the service a mount
+# namespace its children share. ProtectClock adds its rtc device allow-list only beside another
+# device rule (systemd's unit.c, v255 and v257), so this unit carries none: adding any DeviceAllow=
+# or DevicePolicy= would close the device policy, taking /dev/dri and /dev/snd from every server
+# left in the service's cgroup. In the VM run (plan 4b, *The desktop run*) the service started, its
+# helper was moved into the session's scope and bound, and a server with no session, left in the
+# service's cgroup, opened /dev/dri/renderD128 and /dev/snd/controlC0, with all three together.
+#
+# The bounding set loses only root powers neither the service nor sudo uses (no module is loaded, no
+# kernel log read, the clock is stepped by chronyd or timesyncd, no raw I/O or device node made).
+# Every child runs as an account with no_new_privs, so it could never have gained them anyway.
+
+[Unit]
+Description=Galatea PC bridge
+Wants=network-online.target
+After=network-online.target dbus.service systemd-logind.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/node /usr/lib/galatea-pc-bridge/dist/main.js
+EnvironmentFile=/etc/galatea-pc-bridge/environment
+# /var/lib/galatea-pc-bridge: the plugins (root's, 0755, readable by the accounts that run them) and
+# the state directory the bridge makes root-only under it.
+StateDirectory=galatea-pc-bridge
+StateDirectoryMode=0755
+# A fault is never an exit; an exit is a crash, and the service starts again. Exit 2 is a refusal to
+# start (no machine id, a credential others can read, a state directory that cannot be read), which a
+# restart does not mend.
+Restart=on-failure
+RestartSec=5s
+RestartPreventExitStatus=2
+# SIGTERM to the bridge alone: it stops its plugins' servers and helpers itself, in order, then goes offline.
+KillMode=mixed
+TimeoutStopSec=20s
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+CapabilityBoundingSet=~CAP_SYS_MODULE CAP_SYSLOG CAP_SYS_TIME CAP_SYS_RAWIO CAP_MKNOD
+
+[Install]
+WantedBy=multi-user.target

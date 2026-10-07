@@ -1,0 +1,14 @@
+# The bridge's build context, an allow-list: nothing else in the repository, ignored files
+# included, reaches the image.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!conformance/schemas
+!conformance/clock
+!reference/zigbee-bridge
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+reference/zigbee-bridge/test

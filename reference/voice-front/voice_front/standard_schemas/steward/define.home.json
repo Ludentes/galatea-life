@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.home.json",
+  "title": "A define change's value for kind home: the settings it sets, a null one back to its default (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "timezone": { "type": ["string", "null"], "minLength": 1 },
+    "hold_time_s": { "type": ["integer", "null"], "minimum": 1 },
+    "occupancy_hold_s": { "type": ["integer", "null"], "minimum": 1 },
+    "ask_expiry_s": { "type": ["integer", "null"], "minimum": 1 },
+    "notice_channels": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "other_wake_words": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } },
+    "answer_words": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 } },
+    "audio_retention_s": { "type": ["integer", "null"], "minimum": 0 },
+    "time_source": { "type": ["string", "null"], "pattern": "^[^\\s:]+:\\d+$" }
+  }
+}

@@ -1,0 +1,477 @@
+{
+ "idle": [
+  {
+   "id": 29,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "node.name": "Dummy-Driver",
+     "object.id": 29
+    }
+   }
+  },
+  {
+   "id": 30,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "node.name": "Freewheel-Driver",
+     "object.id": 30
+    }
+   }
+  },
+  {
+   "id": 32,
+   "type": "PipeWire:Interface:Client",
+   "version": 3,
+   "info": {
+    "props": {
+     "object.id": 32
+    }
+   }
+  },
+  {
+   "id": 40,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Video/Source",
+     "node.description": "redacted",
+     "node.name": "v4l2_input.camera-40",
+     "object.id": 40
+    }
+   }
+  },
+  {
+   "id": 41,
+   "type": "PipeWire:Interface:Port",
+   "version": 3,
+   "info": {
+    "props": {
+     "object.id": 41
+    }
+   }
+  },
+  {
+   "id": 46,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Midi/Bridge",
+     "node.name": "Midi-Bridge",
+     "object.id": 46
+    }
+   }
+  },
+  {
+   "id": 52,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Sink",
+     "node.description": "redacted",
+     "node.name": "alsa_output.device-52",
+     "object.id": 52
+    }
+   }
+  },
+  {
+   "id": 53,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Source",
+     "node.description": "redacted",
+     "node.name": "alsa_input.device-53",
+     "object.id": 53
+    }
+   }
+  },
+  {
+   "id": 33,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Source",
+     "node.description": "redacted",
+     "node.name": "alsa_input.device-33",
+     "object.id": 33
+    }
+   }
+  },
+  {
+   "id": 58,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Sink",
+     "node.description": "redacted",
+     "node.name": "alsa_output.device-58",
+     "object.id": 58
+    }
+   }
+  },
+  {
+   "id": 74,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "idle",
+    "error": null,
+    "props": {
+     "application.name": "speech-dispatcher-dummy",
+     "media.class": "Stream/Output/Audio",
+     "node.name": "speech-dispatcher-dummy",
+     "object.id": 74
+    }
+   }
+  }
+ ],
+ "busy": [
+  {
+   "id": 29,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "node.name": "Dummy-Driver",
+     "object.id": 29
+    }
+   }
+  },
+  {
+   "id": 30,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "node.name": "Freewheel-Driver",
+     "object.id": 30
+    }
+   }
+  },
+  {
+   "id": 32,
+   "type": "PipeWire:Interface:Client",
+   "version": 3,
+   "info": {
+    "props": {
+     "object.id": 32
+    }
+   }
+  },
+  {
+   "id": 40,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Video/Source",
+     "node.description": "redacted",
+     "node.name": "v4l2_input.camera-40",
+     "object.id": 40
+    }
+   }
+  },
+  {
+   "id": 41,
+   "type": "PipeWire:Interface:Port",
+   "version": 3,
+   "info": {
+    "props": {
+     "object.id": 41
+    }
+   }
+  },
+  {
+   "id": 46,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Midi/Bridge",
+     "node.name": "Midi-Bridge",
+     "object.id": 46
+    }
+   }
+  },
+  {
+   "id": 52,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Sink",
+     "node.description": "redacted",
+     "node.name": "alsa_output.device-52",
+     "object.id": 52
+    }
+   }
+  },
+  {
+   "id": 53,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Source",
+     "node.description": "redacted",
+     "node.name": "alsa_input.device-53",
+     "object.id": 53
+    }
+   }
+  },
+  {
+   "id": 33,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Source",
+     "node.description": "redacted",
+     "node.name": "alsa_input.device-33",
+     "object.id": 33
+    }
+   }
+  },
+  {
+   "id": 58,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "suspended",
+    "error": null,
+    "props": {
+     "media.class": "Audio/Sink",
+     "node.description": "redacted",
+     "node.name": "alsa_output.device-58",
+     "object.id": 58
+    }
+   }
+  },
+  {
+   "id": 74,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "permissions": [
+    "r",
+    "w",
+    "x",
+    "m"
+   ],
+   "info": {
+    "state": "idle",
+    "error": null,
+    "props": {
+     "application.name": "speech-dispatcher-dummy",
+     "media.class": "Stream/Output/Audio",
+     "node.name": "speech-dispatcher-dummy",
+     "object.id": 74
+    }
+   }
+  },
+  {
+   "id": 900,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "info": {
+    "state": "running",
+    "error": null,
+    "props": {
+     "media.class": "Video/Source",
+     "node.name": "v4l2_input.camera-900",
+     "object.id": 900,
+     "galatea.synthetic": true
+    }
+   }
+  },
+  {
+   "id": 901,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "info": {
+    "state": "running",
+    "error": null,
+    "props": {
+     "media.class": "Stream/Input/Audio",
+     "node.name": "recorder",
+     "application.name": "a recorder",
+     "object.id": 901,
+     "galatea.synthetic": true
+    }
+   }
+  },
+  {
+   "id": 902,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "info": {
+    "state": "running",
+    "error": null,
+    "props": {
+     "media.class": "Stream/Input/Audio",
+     "node.name": "screen-capture",
+     "stream.capture.sink": true,
+     "object.id": 902,
+     "galatea.synthetic": true
+    }
+   }
+  },
+  {
+   "id": 903,
+   "type": "PipeWire:Interface:Node",
+   "version": 3,
+   "info": {
+    "state": "running",
+    "error": null,
+    "props": {
+     "media.class": "Stream/Input/Audio",
+     "node.name": "peak-meter",
+     "stream.monitor": true,
+     "object.id": 903,
+     "galatea.synthetic": true
+    }
+   }
+  }
+ ]
+}

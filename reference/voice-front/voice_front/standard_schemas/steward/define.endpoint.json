@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.endpoint.json",
+  "title": "A define change's value for kind endpoint, its voice record set apart by kind voice (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "type", "room", "person", "served_by"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "type": { "$ref": "../common.json#/$defs/endpointType" },
+    "room": { "type": ["string", "null"] },
+    "person": { "type": ["string", "null"] },
+    "max_role": { "$ref": "../common.json#/$defs/role" },
+    "served_by": { "type": ["string", "null"] },
+    "confirm_on": { "type": "string", "minLength": 1, "description": "same (the default, meaning none) or an endpoint id" }
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.json",
+  "title": "Definitions shared by every Galatea seam; every enum is here",
+  "$defs": {
+    "id": {
+      "description": "An id, as the applier standard's: 1 to 128 characters from [A-Za-z0-9._:/-], case-sensitive (steward, The house model)",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/-]{1,128}$"
+    },
+    "wireTime": {
+      "description": "Bridge binding: RFC 3339 UTC with milliseconds (GA-BRIDGE-3)",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+    },
+    "time": { "description": "MCP seams: RFC 3339 with offset", "type": "string", "format": "date-time" },
+    "uuid": { "type": "string", "format": "uuid" },
+    "bridgeState": { "enum": ["online", "degraded", "offline"] },
+    "transportState": { "enum": ["up", "down", "unknown"] },
+    "protocol": { "enum": ["matter", "zigbee", "zwave", "modbus", "ir", "other"] },
+    "feedback": { "enum": ["closed", "open"] },
+    "classEvidence": { "enum": ["protocol", "model_db", "none"] },
+    "deviceClass": {
+      "enum": ["light", "socket", "ac", "boiler", "floor_heating", "curtain", "gate", "garage_door",
+               "door_lock", "water_valve", "gas_valve", "tv", "speaker", "sensor", "channel",
+               "computer", "player"]
+    },
+    "ackResult": { "enum": ["applied", "sent", "failed", "unsupported"] },
+    "ackReason": {
+      "description": "The named reasons, or another",
+      "anyOf": [{ "enum": ["unreachable", "unknown_device", "invalid_request", "expired", "no_confirmation"] },
+                { "type": "string" }]
+    },
+    "bridgeFaultCode": {
+      "anyOf": [{ "enum": ["pin_mismatch", "crash_loop", "account_deleted", "helper_refused", "overflow"] },
+                { "type": "string" }]
+    },
+    "requestOp": {
+      "enum": ["snapshot", "join", "join_close", "commission", "connect", "remove", "unblock", "install",
+               "uninstall", "activate"]
+    },
+    "replyStatus": { "enum": ["ok", "accepted", "invalid_request", "failed"] },
+    "bridgeEventType": {
+      "enum": ["joined", "interviewed", "left", "window_closed", "commissioned", "commission_failed",
+               "connected", "connect_failed", "blocked_rejoin", "other_admins_changed", "installed",
+               "install_failed", "uninstalled", "occurrence", "undescribed"]
+    },
+    "bridgeLevel": { "enum": ["Serve", "Provision", "Host", "Box", "Find"] },
+    "action": { "type": "string", "pattern": "^([a-z_]+\\.[a-z_]+|[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+\\.[a-z][a-z0-9_]*)$" },
+    "extensionAction": {
+      "description": "An extension action (bridge 0.5, applier 0.14): its dotted capability, then the action (org.example.steam.launch); parsed on the last dot",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+\\.[a-z][a-z0-9_]*$"
+    },
+    "otherAdmins": {
+      "anyOf": [
+        { "type": "array", "items": { "type": "object", "required": ["vendor", "label"],
+          "properties": { "vendor": { "type": "string" }, "label": { "type": "string" } } } },
+        { "const": "unknown" }
+      ]
+    },
+    "harnessStandard": { "enum": ["applier", "steward", "bridge", "brain", "voice"] },
+    "commandResult": { "enum": ["confirmed", "rejected", "none", "sent", "unreachable", "expired", "no_confirmation", "unsupported", "received"] },
+    "admission": {
+      "description": "How a Zigbee device came into the network (bridge, *Provisioning*): an association or a trust-centre rejoin under the well-known key is new; a secured rejoin, or a trust-centre rejoin under the device's own key, is not while the device is in devices",
+      "enum": ["association", "tcRejoinWellKnown", "securedRejoin", "tcRejoinUniqueKey"]
+    },
+    "protocolResult": { "enum": ["confirmed", "transmitted", "refused", "lost", "notSent"] },
+    "liveness": { "enum": ["live", "stale", "dead"] },
+    "verdict": { "enum": ["op", "skip", "refuse"] },
+    "stepReason": {
+      "enum": ["already", "unknown_target", "unsupported_action", "dead", "not_adopted", "invalid_args",
+               "duplicate_route", "safety", "latched", "tier", "toggle_only", "token", "declaration_changed"]
+    },
+    "tier": { "enum": ["reversible", "confirm", "no_voice"] },
+    "via": { "enum": ["voice", "panel", "app", "rule", "schedule"] },
+    "planBasis": { "enum": ["real", "emulated"] },
+    "freshBasis": { "enum": ["declared", "configured", "unknown"] },
+    "load": { "enum": ["heating", "motor", "lighting", "other"] },
+    "capability": {
+      "enum": ["onoff", "level", "color", "climate", "cover", "media", "valve", "lock", "sensor", "notify",
+               "power", "session"]
+    },
+    "outcome": {
+      "enum": ["dispatched", "skipped", "refused", "unreachable", "acked", "delivered", "sent", "unanswered",
+               "failed", "confirmed", "unconfirmed", "unknown"]
+    },
+    "applierEventType": {
+      "enum": ["state", "outcome", "late_ack", "liveness", "rule_fired", "latch", "model", "route_conflict",
+               "provision", "freshness", "transport", "bridge_fault", "other_admins", "occurrence", "undescribed"]
+    },
+    "errorCode": {
+      "enum": ["invalid_request", "not_claimed", "not_permitted", "unknown_plan", "unknown_apply", "plan_expired",
+               "stale_revision", "plan_not_yours", "cursor_expired", "idempotency_conflict", "cycle"]
+    },
+    "applierLevel": {
+      "description": "standard/applier.md, Conformance levels: the levels table names only Act and Safe",
+      "enum": ["Act", "Safe"]
+    },
+    "configChangeOp": { "enum": ["upsert", "delete"] },
+    "stewardVerdict": { "enum": ["op", "skip", "ask", "refuse"] },
+    "stewardOwnReason": {
+      "description": "The steward's reasons beside the applier's (steward, Steps)",
+      "enum": ["conflict", "role", "tier", "leased", "occupied", "occupancy_unknown", "in_use", "in_use_unknown",
+               "confirm_tier", "confirm_define", "not_confirmed"]
+    },
+    "stewardStepReason": {
+      "description": "The applier's reasons except token, and the steward's own",
+      "anyOf": [
+        { "allOf": [{ "$ref": "#/$defs/stepReason" }, { "not": { "const": "token" } }] },
+        { "$ref": "#/$defs/stewardOwnReason" }
+      ]
+    },
+    "stewardErrorCode": { "anyOf": [{ "$ref": "#/$defs/errorCode" }, { "const": "unknown_run" }] },
+    "answer": { "enum": ["yes", "no"] },
+    "runStatus": { "enum": ["running", "ended"] },
+    "runEnd": { "enum": ["done", "timeout", "stopped", "interrupted"] },
+    "listening": { "enum": ["off", "tap", "wake_device", "wake_server"] },
+    "hintBasis": { "enum": ["gate", "person"] },
+    "addressedBy": { "enum": ["wake", "tap", "follow_up", "skill", "typed"] },
+    "playedStatus": { "enum": ["full", "cut", "dropped"] },
+    "role": { "enum": ["owner", "member", "guest", "visitor"] },
+    "personRole": { "enum": ["owner", "member", "guest"] },
+    "endpointType": { "enum": ["voice", "panel", "app"] },
+    "credentialKind": { "enum": ["app", "panel", "brain", "front"] },
+    "principal": {
+      "description": "Who holds a lease (steward, Clients, endpoints and principals): a principal, or safety_rule or load_cap",
+      "anyOf": [
+        { "type": "object", "required": ["endpoint"], "properties": { "person": { "type": "string" }, "endpoint": { "type": "string" } } },
+        { "type": "object", "required": ["rule"], "properties": { "rule": { "type": "string" } } },
+        { "type": "object", "required": ["run"], "properties": { "run": { "type": "string" } } },
+        { "enum": ["external", "safety_rule", "load_cap"] }
+      ]
+    },
+    "utteranceRecord": {
+      "description": "What a spoken yes carries (steward, The confirmation dialogue)",
+      "type": "object",
+      "required": ["utterance_id", "endpoint", "time", "transcript"],
+      "properties": {
+        "utterance_id": { "$ref": "#/$defs/uuid" },
+        "endpoint": { "type": "string" },
+        "time": { "$ref": "#/$defs/time" },
+        "clock_epoch": { "type": "string" },
+        "transcript": { "type": "string" },
+        "addressed_by": { "$ref": "#/$defs/addressedBy" },
+        "speaker_hint": { "type": "string" },
+        "hint_basis": { "$ref": "#/$defs/hintBasis" },
+        "asked_by": {
+          "type": "object",
+          "required": ["say_id", "status"],
+          "properties": {
+            "say_id": { "type": "string" },
+            "status": { "$ref": "#/$defs/playedStatus" },
+            "cut_by": { "type": "string" },
+            "ended_at": { "$ref": "#/$defs/time" },
+            "clock_epoch": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

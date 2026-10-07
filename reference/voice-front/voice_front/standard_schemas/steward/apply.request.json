@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/apply.request.json",
+  "type": "object",
+  "required": ["idempotency_key"],
+  "properties": {
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "plan_id": { "type": "string" },
+    "request": { "$ref": "request.json" }
+  },
+  "oneOf": [{ "required": ["plan_id"] }, { "required": ["request"] }]
+}

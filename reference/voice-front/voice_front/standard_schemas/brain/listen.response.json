@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brain/listen.response.json",
+  "title": "What listen returns: utterances and played reports after the cursor, oldest first",
+  "type": "object",
+  "required": ["utterances", "played", "cursor"],
+  "properties": {
+    "cursor": { "type": "string" },
+    "utterances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["utterance_id", "endpoint", "time", "available_at", "transcript"],
+        "properties": {
+          "utterance_id": { "$ref": "../common.json#/$defs/uuid" },
+          "endpoint": { "type": "string" },
+          "time": { "$ref": "../common.json#/$defs/time" },
+          "clock_epoch": { "type": "string" },
+          "available_at": { "$ref": "../common.json#/$defs/time" },
+          "transcript": { "type": "string" },
+          "speaker_hint": { "type": "string" },
+          "hint_basis": { "$ref": "../common.json#/$defs/hintBasis" },
+          "echo": { "type": "boolean" },
+          "source": { "type": "string" },
+          "addressed_by": { "$ref": "../common.json#/$defs/addressedBy" },
+          "conversation": { "type": "string" },
+          "also_heard_at": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["endpoint", "addressed_by"],
+              "properties": {
+                "endpoint": { "type": "string" },
+                "addressed_by": { "$ref": "../common.json#/$defs/addressedBy" },
+                "speaker_hint": { "type": "string" },
+                "hint_basis": { "$ref": "../common.json#/$defs/hintBasis" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "played": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["say_id", "endpoint", "status"],
+        "properties": {
+          "say_id": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "status": { "$ref": "../common.json#/$defs/playedStatus" },
+          "reason": { "type": "string" },
+          "heard_chars": { "type": "integer", "minimum": 0 },
+          "cut_by": { "type": "string" },
+          "ended_at": { "$ref": "../common.json#/$defs/time" },
+          "clock_epoch": { "type": "string" },
+          "latency_ms": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

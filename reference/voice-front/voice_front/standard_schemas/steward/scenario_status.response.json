@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/scenario_status.response.json",
+  "title": "A scenario run's status; ended(done) is written { status: ended, reason: done }",
+  "type": "object",
+  "required": ["status", "failed_steps", "sent_steps"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "status": { "$ref": "../common.json#/$defs/runStatus" },
+    "reason": { "$ref": "../common.json#/$defs/runEnd" },
+    "failed_steps": {
+      "type": "array",
+      "items": { "type": "object", "required": ["step_id", "outcome", "time"],
+        "properties": { "step_id": { "type": "string" }, "outcome": { "$ref": "../common.json#/$defs/outcome" },
+          "reason": { "type": "string" }, "time": { "$ref": "../common.json#/$defs/time" } } }
+    },
+    "sent_steps": {
+      "type": "array",
+      "items": { "type": "object", "required": ["step_id"], "properties": { "step_id": { "type": "string" } } }
+    }
+  },
+  "if": { "properties": { "status": { "const": "ended" } } },
+  "then": { "required": ["reason"] },
+  "else": { "not": { "required": ["reason"] } }
+}

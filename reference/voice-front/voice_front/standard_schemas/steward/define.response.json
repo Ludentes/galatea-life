@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.response.json",
+  "type": "object",
+  "properties": {
+    "revision": { "type": "integer" },
+    "diff": { "type": "string" },
+    "skipped": { "const": "not_confirmed", "description": "define { plan_id } of a plan whose confirm_define no one answered yes: nothing changed, and the plan is spent (GA-DEF-6; provisional)" }
+  },
+  "anyOf": [
+    { "required": ["revision"] },
+    { "required": ["diff"] },
+    { "$ref": "plan.json" }
+  ]
+}

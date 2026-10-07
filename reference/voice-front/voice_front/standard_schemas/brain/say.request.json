@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brain/say.request.json",
+  "type": "object",
+  "required": ["endpoint", "text"],
+  "properties": {
+    "endpoint": { "type": "string" },
+    "in_reply_to": { "type": "string" },
+    "asks": { "type": "string" },
+    "text": { "type": "string" },
+    "continues": { "type": "string" },
+    "reports": { "type": "array", "items": { "type": "object" } },
+    "cites": { "type": "array", "items": { "type": "integer" } },
+    "invites_reply": { "type": "boolean" },
+    "final": { "type": "boolean" }
+  }
+}

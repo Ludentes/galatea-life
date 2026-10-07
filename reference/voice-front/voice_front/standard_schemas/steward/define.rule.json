@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.rule.json",
+  "title": "A define change's value for kind rule (steward, Rules): replaced whole by an upsert, its exceptions with it (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "actions"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "trigger"
+      ]
+    },
+    {
+      "required": [
+        "conditions"
+      ]
+    }
+  ],
+  "properties": {
+    "id": {
+      "$ref": "../common.json#/$defs/id"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trigger": {
+      "description": "A state change and a liveness or occurrence event are edges; a state held for a duration is level; a time is an edge at a minute; absent for a rule of conditions only",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ],
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/reading"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "held"
+          ],
+          "properties": {
+            "held": {
+              "$ref": "#/$defs/held"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event"
+          ],
+          "properties": {
+            "event": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "type"
+              ],
+              "properties": {
+                "target": {
+                  "$ref": "../common.json#/$defs/id"
+                },
+                "type": {
+                  "enum": [
+                    "liveness",
+                    "occurrence"
+                  ]
+                },
+                "new": {
+                  "$ref": "../common.json#/$defs/liveness"
+                },
+                "key": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "value": {}
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "time"
+          ],
+          "properties": {
+            "time": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "at"
+              ],
+              "properties": {
+                "at": {
+                  "$ref": "#/$defs/clock"
+                },
+                "days": {
+                  "$ref": "#/$defs/days"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/reading"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "between"
+            ],
+            "properties": {
+              "between": {
+                "$ref": "#/$defs/window"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "request.json#/properties/actions/items"
+              }
+            ],
+            "properties": {
+              "respect_occupancy": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "description": "Starts a run of a scenario, which acts as the rule (steward, Scenario runs); the standard names no form for it (provisional)",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scenario"
+            ],
+            "properties": {
+              "scenario": {
+                "$ref": "../common.json#/$defs/id"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "active": {
+      "type": "boolean",
+      "default": true
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "until"
+        ],
+        "properties": {
+          "from": {
+            "$ref": "../common.json#/$defs/time"
+          },
+          "until": {
+            "$ref": "../common.json#/$defs/time"
+          }
+        }
+      },
+      "maxItems": 64,
+      "description": "At most 64: an owner removes ended ones by upserting the rule"
+    }
+  },
+  "$defs": {
+    "reading": {
+      "description": "One device's state key, by the device's id: compared with op and value, or not_in a list of values",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "key"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "../common.json#/$defs/id"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "op": {
+          "$ref": "#/$defs/op"
+        },
+        "value": {},
+        "not_in": {
+          "type": "array",
+          "minItems": 1
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/compared"
+        },
+        {
+          "$ref": "#/$defs/listed"
+        }
+      ]
+    },
+    "held": {
+      "description": "A reading held for for_s seconds while its device is live",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "key",
+        "for_s"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "../common.json#/$defs/id"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "op": {
+          "$ref": "#/$defs/op"
+        },
+        "value": {},
+        "not_in": {
+          "type": "array",
+          "minItems": 1
+        },
+        "for_s": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/compared"
+        },
+        {
+          "$ref": "#/$defs/listed"
+        }
+      ]
+    },
+    "op": {
+      "enum": [
+        "eq",
+        "ne",
+        "gt",
+        "ge",
+        "lt",
+        "le"
+      ]
+    },
+    "compared": {
+      "required": [
+        "op",
+        "value"
+      ],
+      "not": {
+        "required": [
+          "not_in"
+        ]
+      }
+    },
+    "listed": {
+      "required": [
+        "not_in"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "op"
+            ]
+          },
+          {
+            "required": [
+              "value"
+            ]
+          }
+        ]
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "until"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/clock"
+        },
+        "until": {
+          "$ref": "#/$defs/clock"
+        },
+        "days": {
+          "$ref": "#/$defs/days"
+        }
+      }
+    },
+    "clock": {
+      "description": "HH:MM in the home's timezone",
+      "type": "string",
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+    },
+    "days": {
+      "description": "ISO weekday numbers, Monday 1 to Sunday 7",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 7
+      }
+    }
+  }
+}

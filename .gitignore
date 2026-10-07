@@ -1,0 +1,26 @@
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.m4a
+*.tflite
+*.onnx
+voices/
+__pycache__/
+.pytest_cache/
+.env
+.env.local
+
+# Local reference copies from private repositories. Never tracked: the repository goes public.
+imported/
+temp/
+
+node_modules/
+dist/
+*.tsbuildinfo
+spikes/
+
+# The harness's copy of the manifests, made by its build.
+conformance/harness/manifests/
+# A built file the reach tests read as a build's output (conformance/harness/test/collect-reach.test.ts).
+!conformance/harness/test/fixtures/reach-build/dist/

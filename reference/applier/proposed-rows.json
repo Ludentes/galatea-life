@@ -1,0 +1,26 @@
+{
+  "why": "Mutations of restart clauses the standard's Negative subjects does not yet name (applier 0.14). Each is proposed for applier 0.16 in docs/backlog.md; until then the matrix grades it as a row, and subject.json does not list it, so pnpm conformance's negatives are unchanged. When 0.16 names a row, its mutation moves to subject.json and leaves this file. A row naming a clause grades a clause 0.16 proposes and 0.14's text does not hold (the same command, the same id): the harness records it on the id's row and never fails the id for it; the matrix catches the mutation by that clause.",
+  "rows": [
+    {"mutation": "forgets-an-ack-deadline", "breaks": ["GA-PERSIST-1"], "coupled": []},
+    {"mutation": "forgets-a-retired-identifier", "breaks": ["GA-PERSIST-1"], "coupled": []},
+    {"mutation": "forgets-a-used-token", "breaks": ["GA-TOKEN-4"], "coupled": []},
+    {"mutation": "uses-a-token-behind", "breaks": ["GA-TOKEN-4"], "coupled": []},
+    {"mutation": "forgets-an-idempotency-key", "breaks": ["GA-APPLY-4"], "coupled": []},
+    {"mutation": "skips-lost-events", "breaks": ["GA-EVT-4"], "coupled": []},
+    {"mutation": "forgets-a-provision-key", "breaks": ["GA-PROV-3"], "coupled": []},
+    {"mutation": "loses-a-fired-run", "breaks": ["GA-SAFE-3"], "coupled": []},
+    {"mutation": "draws-a-fresh-command-id", "breaks": ["GA-SAFE-3"], "coupled": [], "clause": "same-command-same-id"},
+    {"mutation": "forgets-a-running-rule", "breaks": ["GA-SAFE-12"], "coupled": []},
+    {"mutation": "forgets-what-it-saw", "breaks": ["GA-SAFE-11"], "coupled": []},
+    {"mutation": "forgets-a-latch", "breaks": ["GA-SAFE-7"], "coupled": []},
+    {"mutation": "forgets-a-notice", "breaks": ["GA-SAFE-8"], "coupled": []},
+    {"mutation": "forgets-a-said-stop", "breaks": ["GA-SAFE-10"], "coupled": [], "clause": "said-stop-not-said-again"},
+    {"mutation": "forgets-an-on-time", "breaks": ["GA-LOAD-2"], "coupled": []},
+    {"mutation": "forgets-a-cap", "breaks": ["GA-LOAD-2"], "coupled": []},
+    {"mutation": "forgets-a-watch", "breaks": ["GA-WIT-1"], "coupled": []},
+    {"mutation": "forgets-connections", "breaks": ["GA-DISC-2"], "coupled": []},
+    {"mutation": "ignore-moves-the-revision", "breaks": ["GA-DISC-3"], "coupled": []},
+    {"mutation": "checks-revision-for-ignores", "breaks": ["GA-CFG-2"], "coupled": ["GA-DISC-3"]},
+    {"mutation": "forgets-a-connect", "breaks": ["GA-DISC-4"], "coupled": []}
+  ]
+}

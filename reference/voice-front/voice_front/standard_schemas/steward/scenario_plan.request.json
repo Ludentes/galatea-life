@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/scenario_plan.request.json",
+  "type": "object",
+  "required": ["scenario", "endpoint"],
+  "properties": {
+    "scenario": { "type": "string" },
+    "endpoint": { "type": "string" },
+    "speaker": { "type": "string" }
+  }
+}

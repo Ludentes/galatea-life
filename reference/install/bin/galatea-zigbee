@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# The owner's commands for the Zigbee bridge (plan 4a):
+#   galatea-zigbee form --channel N [--replace-network]   forms the network, once
+#   galatea-zigbee backup                                  keeps the data directory in backups/zigbee/
+# The bridge refuses both while it runs, but sees itself running only in its own network namespace,
+# so through `docker exec` they would always refuse, and from another container they would not see
+# it. So this refuses while the bridge's service runs, then runs the command in a one-off container
+# of the bridge's image, on its data directory, with nothing else started.
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+usage="usage: galatea-zigbee form --channel N [--replace-network] | galatea-zigbee backup"
+[ $# -ge 1 ] || die "$usage"
+command=$1
+shift
+case "$command" in
+  form) ;;
+  backup) [ $# -eq 0 ] || die "$usage" ;;
+  *) die "$usage" ;;
+esac
+
+# `ps` lists the service's running and restarting containers, none when it is stopped.
+if [ -n "$(docker compose ps -q zigbee-bridge 2>/dev/null)" ]; then
+  die "the bridge's service is running: stop it first (docker compose stop zigbee-bridge), then start it again afterwards"
+fi
+
+run=(docker compose run --rm --no-deps -T)
+if [ "$command" = backup ]; then
+  kept=$(resolve "${GALATEA_BACKUPS:-./backups}")/zigbee
+  mkdir -p "$kept"
+  chmod 700 "$kept"
+  name="zigbee-$(date -u +%Y%m%dT%H%M%SZ).json"
+  exec "${run[@]}" -v "$kept:/backups/zigbee" zigbee-bridge node dist/cli.js backup --out "/backups/zigbee/$name"
+fi
+exec "${run[@]}" zigbee-bridge node dist/cli.js form "$@"

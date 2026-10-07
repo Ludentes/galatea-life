@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.request.json",
+  "type": "object",
+  "required": ["endpoint"],
+  "properties": {
+    "endpoint": { "type": "string" },
+    "speaker": { "type": "string" },
+    "plan_id": { "type": "string" },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["op", "kind"],
+        "properties": {
+          "op": { "$ref": "../common.json#/$defs/configChangeOp" },
+          "kind": { "type": "string" },
+          "value": {}
+        }
+      }
+    },
+    "expected_revision": { "type": "integer" },
+    "dry_run": { "type": "boolean" }
+  },
+  "oneOf": [
+    { "required": ["changes", "expected_revision", "dry_run"] },
+    { "required": ["plan_id"] }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.delete.json",
+  "title": "A define delete's value: { id } names the item, { endpoint } a voice record (provisional until the standard names the shape)",
+  "oneOf": [
+    { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string", "minLength": 1 } } },
+    { "type": "object", "additionalProperties": false, "required": ["endpoint"], "properties": { "endpoint": { "type": "string", "minLength": 1 } } }
+  ]
+}

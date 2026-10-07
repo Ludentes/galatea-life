@@ -1,0 +1,8 @@
+# Copy to `instances`. One line for each running build that keeps state.
+# Each gets a role and a schema of this name. The name is the id the build
+# has on the wire: lower case letters, digits and `_`, starting with a letter.
+# A build that can run more than once in a home gets one line per instance.
+applier
+steward
+# voice_kitchen
+# bridge_zigbee

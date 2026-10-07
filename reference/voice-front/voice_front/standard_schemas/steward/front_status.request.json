@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/front_status.request.json",
+  "type": "object",
+  "required": ["models", "clips", "effective", "frames", "skills"],
+  "properties": {
+    "models": {},
+    "clips": {},
+    "effective": {},
+    "frames": {},
+    "skills": {}
+  }
+}

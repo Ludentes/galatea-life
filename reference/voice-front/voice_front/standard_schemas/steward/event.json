@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/event.json",
+  "title": "One event in the steward's events and history",
+  "type": "object",
+  "required": ["seq", "time", "type"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 1 },
+    "time": { "$ref": "../common.json#/$defs/time" },
+    "type": { "type": "string" }
+  }
+}

@@ -1,0 +1,7 @@
+# The installation's own settings and data: passwords, dumps of the home's
+# state, and the list of what runs here. Never committed.
+.env
+instances
+secrets/
+backups/
+zigbee/

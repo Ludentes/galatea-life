@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.group.json",
+  "title": "A define change's value for kind group (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "room", "members", "aggregate"],
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "name": { "type": "string", "minLength": 1 },
+    "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "room": { "oneOf": [{ "$ref": "../common.json#/$defs/id" }, { "type": "null" }] },
+    "members": { "type": "array", "items": { "$ref": "../common.json#/$defs/id" }, "uniqueItems": true },
+    "aggregate": { "enum": ["any", "all"] }
+  }
+}

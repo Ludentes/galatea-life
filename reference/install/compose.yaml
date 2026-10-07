@@ -1,0 +1,131 @@
+# Galatea Home's store and broker: one Postgres, its provisioning and its backups,
+# and the broker the applier and the bridges share.
+# The builds join this file as they gain their stores; each one depends on
+#   db-init: { condition: service_completed_successfully }
+# Settings come from .env beside this file (see .env.example).
+name: galatea
+
+services:
+  postgres:
+    image: postgres:${PG_MAJOR:-18}-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: galatea
+      POSTGRES_PASSWORD_FILE: /run/db-secrets/postgres
+    volumes:
+      # From 18 the image keeps its data under /var/lib/postgresql/<major>/docker
+      - pgdata:/var/lib/postgresql
+      - ${GALATEA_DB_SECRETS:-./secrets/db}:/run/db-secrets:ro
+    # No ports: the builds reach it on the stack's own network.
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "galatea"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  db-init:
+    image: postgres:${PG_MAJOR:-18}-alpine
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["/scripts/db-init.sh"]
+    # The image declares a data volume; a tmpfs stops Docker making one per run.
+    tmpfs: [/var/lib/postgresql]
+    volumes:
+      - ./db:/scripts:ro
+      - ${GALATEA_DB_SECRETS:-./secrets/db}:/run/db-secrets:ro
+      - ${GALATEA_INSTANCES:-./instances}:/config/instances:ro
+
+  backup:
+    image: postgres:${PG_MAJOR:-18}-alpine
+    restart: unless-stopped
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    # PID 1 would ignore SIGTERM, and every stop would end in SIGKILL.
+    init: true
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["/scripts/backup.sh"]
+    command: ["loop"]
+    tmpfs: [/var/lib/postgresql]
+    environment:
+      GALATEA_BACKUP_AT: ${GALATEA_BACKUP_AT:-03:30}
+      GALATEA_BACKUP_KEEP: ${GALATEA_BACKUP_KEEP:-14}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./db:/scripts:ro
+      - ${GALATEA_DB_SECRETS:-./secrets/db}:/run/db-secrets:ro
+      - ${GALATEA_BACKUPS:-./backups}:/backups
+    healthcheck:
+      test: ["CMD", "/scripts/backup.sh", "health"]
+      interval: 5m
+      timeout: 10s
+      start_period: 10m
+
+  broker:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    entrypoint: ["/broker/broker-init.sh"]
+    environment:
+      GALATEA_ROOT: ${GALATEA_ROOT:-galatea}
+    # The hashed passwords and the rules are written here at each start, never to the host.
+    tmpfs: [/mosquitto/run]
+    volumes:
+      - ./broker:/broker:ro
+      - ${GALATEA_BROKER_SECRETS:-./secrets/broker}:/run/broker-secrets:ro
+      - ${GALATEA_INSTANCES:-./instances}:/config/instances:ro
+      - brokerdata:/mosquitto/data
+    # No ports: the builds reach it as broker:1883 on the stack's own network.
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "1883"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  # The reference Zigbee bridge (plan 4a), only under the profile `zigbee`
+  # (COMPOSE_PROFILES=zigbee in .env), and only with `bridge_zigbee` in instances.
+  zigbee-bridge:
+    profiles: [zigbee]
+    image: galatea-zigbee-bridge:local
+    build:
+      context: ../..
+      dockerfile: reference/zigbee-bridge/Dockerfile
+    restart: unless-stopped
+    # The owner's account owns the data directory, which holds the network key.
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    # Docker's SIGTERM reaches the bridge, and its stop has time for the coordinator's backup (up to 30 s).
+    init: true
+    stop_grace_period: 45s
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+      broker: { condition: service_healthy }
+    environment:
+      GALATEA_BROKER: mqtt://bridge_zigbee@broker:1883
+      GALATEA_CREDENTIAL_FILE: /run/broker-secrets/bridge_zigbee
+      GALATEA_DATABASE_URL: postgres://bridge_zigbee@postgres:5432/galatea
+      GALATEA_DATABASE_PASSWORD_FILE: /run/db-secrets/bridge_zigbee
+      GALATEA_ROOT: ${GALATEA_ROOT:-galatea}
+      GALATEA_STATE_DIR: /data
+      GALATEA_ZIGBEE_COORDINATOR: ${GALATEA_ZIGBEE_COORDINATOR:-}
+      GALATEA_ZIGBEE_NO_ACTIONS: ${GALATEA_ZIGBEE_NO_ACTIONS:-0}
+    # Its data directory and its own two passwords, and no other build's. Each must be there:
+    # Docker would make a missing one as a directory owned by root.
+    volumes:
+      - type: bind
+        source: ${GALATEA_ZIGBEE_DATA:-./zigbee}
+        target: /data
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${GALATEA_DB_SECRETS:-./secrets/db}/bridge_zigbee
+        target: /run/db-secrets/bridge_zigbee
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${GALATEA_BROKER_SECRETS:-./secrets/broker}/bridge_zigbee
+        target: /run/broker-secrets/bridge_zigbee
+        read_only: true
+        bind: { create_host_path: false }
+
+volumes:
+  brokerdata:
+  pgdata:
+    name: ${GALATEA_PGDATA_PREFIX:-galatea-pgdata}-${PG_MAJOR:-18}

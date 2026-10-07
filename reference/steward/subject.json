@@ -1,0 +1,19 @@
+{
+  "standard": "steward",
+  "claims": ["Steward"],
+  "start": { "command": "node", "args": ["dist/main.js"], "ready": { "log": "ready on " } },
+  "database": { "migrate": { "command": "node", "args": ["dist/migrate-main.js"] } },
+  "mutations": ["speaks-only-2025", "calls-its-applier-at-2025", "trusts-any-applier", "app-without-person", "serves-the-confirm-on",
+    "trusts-asserted-via", "takes-any-speaker", "unlocks-by-voice", "visitor-acts", "skips-the-ask-event", "selects-internal",
+    "rooms-an-internal-device", "defines-unadopted", "refuses-the-toggle",
+    "takes-any-answer", "reuses-an-utterance", "answers-unasked-steps", "follow-up-yes", "tokens-without-a-yes", "folds-the-toggle-into-the-tier",
+    "outcome-without-a-time", "ignores-leases", "vacant-on-a-slow-sensor", "trusts-the-callers-from", "sends-from-to-an-old-applier",
+    "rules-a-wake-relay", "rule-on-stale-reading", "rule-on-an-assumed-value", "window-on-the-end-day", "not-in-skips-unknown",
+    "fires-on-a-retired-token", "authors-a-toggle", "conditions-fire-once", "fires-in-an-exception",
+    "locks-once-and-gives-up", "retries-hours-later", "leaves-it-unanswered", "retries-a-shutdown", "fails-the-limit-silently", "notices-a-slow-lock",
+    "holds-an-ssh-only-lock", "times-the-lock", "drops-a-held-notice", "re-declares-a-toggle-silently", "notices-a-slow-late-ack",
+    "notices-every-skipped-toggle", "defines-a-toggle-rule-silently", "notices-a-late-launch", "notices-every-lease",
+    "drops-the-starting-endpoint", "branches-on-an-assumed-value", "stales-an-assumed-if", "toggles-on-an-old-yes",
+    "passes-a-skipped-toggle", "schedules-a-toggle-silently", "authors-a-moved-device",
+    "forgets-a-held-notice"]
+}

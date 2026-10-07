@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/error.json",
+  "title": "The body of a request error: a tool result with isError true",
+  "type": "object",
+  "required": ["error", "message"],
+  "properties": {
+    "error": { "$ref": "../common.json#/$defs/stewardErrorCode" },
+    "message": { "type": "string" }
+  }
+}

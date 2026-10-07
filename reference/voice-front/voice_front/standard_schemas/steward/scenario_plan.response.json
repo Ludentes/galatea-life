@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/scenario_plan.response.json",
+  "title": "A scenario's plan: a plan whose request names the scenario, with one step per action step, an action inside an if marked conditional (GA-SCN-6)",
+  "type": "object",
+  "required": ["plan_id", "expires_at", "revision", "endpoint", "request", "steps"],
+  "properties": {
+    "plan_id": { "type": "string" },
+    "expires_at": { "$ref": "../common.json#/$defs/time" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "endpoint": { "type": "string" },
+    "speaker": { "type": "string" },
+    "client": { "type": "string" },
+    "request": { "$ref": "scenario_plan.request.json" },
+    "steps": {
+      "type": "array",
+      "items": {
+        "allOf": [{ "$ref": "plan.json#/$defs/deviceStep" }],
+        "properties": { "conditional": { "const": true, "description": "An action inside an if, planned as if its branch were taken (steward, Scenario runs)" } }
+      }
+    }
+  }
+}

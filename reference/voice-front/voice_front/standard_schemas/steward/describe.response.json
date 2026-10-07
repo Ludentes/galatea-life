@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/describe.response.json",
+  "type": "object",
+  "required": ["steward_id", "standard_version", "revision", "home", "rooms", "targets", "groups", "endpoints",
+               "scenarios", "rules", "schedules", "modes", "applier"],
+  "properties": {
+    "steward_id": { "type": "string" },
+    "standard_version": { "type": "string", "pattern": "^\\d+\\.\\d+$" },
+    "revision": { "type": "integer" },
+    "home": { "type": "object" },
+    "rooms": { "type": "array" },
+    "targets": { "type": "array" },
+    "groups": { "type": "array" },
+    "endpoints": { "type": "array" },
+    "persons": {
+      "description": "Persons by id, name and role only (steward, Operations), and by id only to a front (GA-AUTH-8); not in the Operations table's list, see the reference steward's design, Standards problems found",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "role": { "$ref": "../common.json#/$defs/personRole" } }
+      }
+    },
+    "scenarios": { "type": "array" },
+    "rules": { "type": "array" },
+    "schedules": { "type": "array" },
+    "modes": { "type": "array" },
+    "applier": {
+      "type": "object",
+      "required": ["applier_id", "levels", "ungoverned"],
+      "properties": {
+        "applier_id": { "type": "string" },
+        "levels": { "type": "array", "items": { "type": "string" } },
+        "ungoverned": { "type": "array" }
+      }
+    },
+    "test_run_id": { "type": "string" }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/zone_sources.request.json",
+  "type": "object",
+  "properties": {
+    "cursor": { "type": "string" },
+    "wait_s": { "type": "number", "minimum": 0, "maximum": 30 }
+  }
+}

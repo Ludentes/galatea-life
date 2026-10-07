@@ -1,0 +1,6 @@
+{
+  "standard": "bridge",
+  "claims": ["Serve"],
+  "start": { "command": "node", "args": ["dist/main.js"], "ready": { "log": "ready" } },
+  "state_dir": true
+}

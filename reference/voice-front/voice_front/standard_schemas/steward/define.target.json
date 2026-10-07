@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.target.json",
+  "title": "A define change's value for kind target: the steward's overlay on one of the applier's devices, replaced whole by an upsert (provisional until the standard names the shape; account_persons comes with slice 8)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id"],
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id", "description": "the applier's device id" },
+    "name": { "type": "string", "minLength": 1 },
+    "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "room": { "oneOf": [{ "$ref": "../common.json#/$defs/id" }, { "type": "null" }] }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/speaking.request.json",
+  "type": "object",
+  "required": ["endpoint", "on"],
+  "properties": {
+    "endpoint": { "type": "string" },
+    "on": { "type": "boolean" }
+  }
+}

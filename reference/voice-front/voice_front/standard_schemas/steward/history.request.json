@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/history.request.json",
+  "type": "object",
+  "required": ["from", "to"],
+  "properties": {
+    "targets": { "type": "array", "items": { "type": "string" } },
+    "from": { "$ref": "../common.json#/$defs/time" },
+    "to": { "$ref": "../common.json#/$defs/time" },
+    "endpoint": { "type": "string" },
+    "speaker": { "type": "string" }
+  }
+}

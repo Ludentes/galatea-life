@@ -1,0 +1,26 @@
+{
+ "why": "Mutations whose Negative subjects rows are incomplete: each fails these ids, outside its row, for a real coupling the row does not name. tokens-without-a-yes fails GA-STW-4: a toggle applied inline is refused toggle_only, and with a token on every step above reversible it is sent and runs; the row should name GA-STW-4 beside GA-TIER-2 and GA-APPLY-3 (a standards fix slice 2b proposes). ignores-leases fails GA-STW-4: GA-STW-4's reason order places leased (already before leased, leased before occupancy), which a steward that ignores leases cannot show; the row should name GA-STW-4 beside GA-LEASE-1 to 4 (a standards fix slice 3b proposes). Slice 5: tokens-without-a-yes also fails GA-SCN-3, GA-SCN-7 and GA-SCN-11, a run's unanswered ask being dispatched with a token, so it no longer ends skipped(not_confirmed); refuses-the-toggle fails GA-SCN-3 and GA-SCN-11, a run's toggle step refused rather than asked (and, in a person's run, re-asked); authors-a-toggle fails GA-SCN-11, a rule-started run's toggle step sent with an authored token, so no skipped(toggle_only) is listed. Each row should name these ids (standards fixes slice 5 proposes). Slice 7: ignores-leases also fails GA-STW-7, whose history case reads the lease an outside change took and the rule's step that lease refused; a steward that ignores leases records neither. The row should name GA-STW-7 (a standards fix slice 7 proposes). Slice 11: ignores-leases also fails GA-PERSIST-2, whose restart case reads a member's lease and a run's lease kept and released across the restart; notices-a-late-launch fails GA-PERSIST-2, whose case reads that a late_ack the applier gave while the steward was down lands the held notice of a failed(no_ack), which that mutation keeps. Each row should name GA-PERSIST-2 (standards fixes slice 11 proposes).",
+ "known": {
+  "tokens-without-a-yes": [
+   "GA-SCN-11",
+   "GA-SCN-3",
+   "GA-SCN-7",
+   "GA-STW-4"
+  ],
+  "ignores-leases": [
+   "GA-PERSIST-2",
+   "GA-STW-4",
+   "GA-STW-7"
+  ],
+  "authors-a-toggle": [
+   "GA-SCN-11"
+  ],
+  "refuses-the-toggle": [
+   "GA-SCN-3",
+   "GA-SCN-11"
+  ],
+  "notices-a-late-launch": [
+   "GA-PERSIST-2"
+  ]
+ }
+}

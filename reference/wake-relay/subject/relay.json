@@ -1,0 +1,7 @@
+{
+  "interface": "test0",
+  "entries": [
+    { "id": "desk-pc", "mac": "d4:a6:51:a1:b2:c3" },
+    { "id": "media-pc", "mac": "00-1B-44-11-3A-B7" }
+  ]
+}

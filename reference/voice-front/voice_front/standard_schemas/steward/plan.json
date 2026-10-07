@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/plan.json",
+  "title": "A steward plan",
+  "type": "object",
+  "required": ["plan_id", "expires_at", "revision", "endpoint", "request", "steps"],
+  "properties": {
+    "plan_id": { "type": "string" },
+    "expires_at": { "$ref": "../common.json#/$defs/time" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "endpoint": { "type": "string" },
+    "client": { "type": "string" },
+    "speaker": { "type": "string" },
+    "request": { "anyOf": [{ "$ref": "request.json" }, { "$ref": "#/$defs/defineRequest" }] },
+    "steps": {
+      "type": "array",
+      "items": { "oneOf": [{ "$ref": "#/$defs/deviceStep" }, { "$ref": "#/$defs/defineStep" }] }
+    }
+  },
+  "$defs": {
+    "deviceStep": {
+      "type": "object",
+      "required": ["step_id", "target", "action", "verdict", "tier", "stale", "basis"],
+      "properties": {
+        "step_id": { "type": "string" },
+        "target": { "type": "string" },
+        "action": { "type": "string" },
+        "args": {},
+        "verdict": { "$ref": "../common.json#/$defs/stewardVerdict" },
+        "tier": { "$ref": "../common.json#/$defs/tier" },
+        "reason": { "$ref": "../common.json#/$defs/stewardStepReason" },
+        "holder": { "$ref": "../common.json#/$defs/principal" },
+        "stale": { "type": "boolean" },
+        "basis": { "$ref": "../common.json#/$defs/planBasis" },
+        "from_replaced": { "const": true },
+        "brain_authored": { "const": true, "description": "A step of brain_authored work (GA-DEF-7): above reversible it is refuse(tier), and it is sent with brain: true (provisional: the standard names no field for it)" },
+        "answer": { "$ref": "../common.json#/$defs/answer", "description": "The answer that stands for an asked step, once one was given (steward, The confirmation dialogue): the plan, updated, that answer returns" }
+      }
+    },
+    "defineStep": {
+      "description": "The one step of a define through a brain (GA-DEF-6): ask(confirm_define), carrying the diff the change set would apply, its brain_authored marks in it (provisional: the standard names no field for the diff)",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["step_id", "verdict", "reason", "diff"],
+      "properties": {
+        "step_id": { "type": "string" },
+        "verdict": { "const": "ask" },
+        "reason": { "const": "confirm_define" },
+        "diff": { "type": "string" },
+        "answer": { "$ref": "../common.json#/$defs/answer" }
+      }
+    },
+    "defineRequest": {
+      "description": "A define's plan's request: the change set asked, and the revision it was judged at (steward, define)",
+      "type": "object",
+      "required": ["endpoint", "changes", "expected_revision"],
+      "properties": {
+        "endpoint": { "type": "string" },
+        "speaker": { "type": "string" },
+        "changes": { "$ref": "define.request.json#/properties/changes" },
+        "expected_revision": { "type": "integer" }
+      }
+    }
+  }
+}

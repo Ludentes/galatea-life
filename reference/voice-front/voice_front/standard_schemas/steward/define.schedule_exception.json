@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.schedule_exception.json",
+  "title": "A define change's value for kind schedule_exception (steward, Schedules): one exception of a schedule, an upsert replacing the one on its date, removed by a delete naming it whole (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schedule", "date", "action"],
+  "properties": {
+    "schedule": { "$ref": "../common.json#/$defs/id" },
+    "date": { "$ref": "define.schedule.json#/$defs/date" },
+    "action": { "enum": ["skip", "move"] },
+    "time": { "$ref": "define.rule.json#/$defs/clock" }
+  },
+  "oneOf": [
+    { "properties": { "action": { "const": "skip" } }, "not": { "required": ["time"] } },
+    { "properties": { "action": { "const": "move" } }, "required": ["time"] }
+  ]
+}

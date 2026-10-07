@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/request.json",
+  "title": "A steward request: ids or selectors, never names",
+  "type": "object",
+  "required": ["endpoint", "actions"],
+  "properties": {
+    "endpoint": { "type": "string" },
+    "speaker": { "type": "string" },
+    "respect_occupancy": { "type": "boolean" },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["action", "args"],
+        "properties": {
+          "target": { "type": "string" },
+          "selector": {
+            "type": "object",
+            "minProperties": 1,
+            "properties": {
+              "room": { "type": "string" },
+              "class": { "$ref": "../common.json#/$defs/deviceClass" },
+              "capability": { "type": "string" }
+            }
+          },
+          "action": { "$ref": "../common.json#/$defs/action" },
+          "args": { "type": "object" }
+        },
+        "oneOf": [{ "required": ["target"] }, { "required": ["selector"] }]
+      }
+    }
+  }
+}

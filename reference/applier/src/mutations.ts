@@ -1,0 +1,61 @@
+/** The negative subjects this build implements (applier, *Negative subjects*), one switch each. */
+export const MUTATIONS = [
+  "speaks-only-2025", "session-outlives-revocation",
+  // Slice 2a: the bus.
+  "one-bad-entry-silences", "trusts-a-fast-clock", "rejects-unknown-kind", "ignores-seq-gap", "plans-through-broker-loss",
+  "trusts-retained-online", "fresh-by-arrival", "plans-for-a-faulted-bridge", "live-before-known",
+  // Slice 2b: declarations and notices.
+  "ignores-owner-bound", "keeps-a-tier-below-a-new-load", "kills-a-mute-transmitters-devices", "swallows-device-fault",
+  // Slice 3: adoption.
+  "replaces-without-rules", "merges-a-claimant", "hides-a-second-door", "adopts-a-mute-device-quietly",
+  "upgrades-a-mute-device-quietly",
+  // Slice 4a: plans, the reason order and tokens.
+  "plans-with-side-effect", "applies-without-token", "trusts-any-token", "toggles-to-reach-a-state", "answers-a-toggle-by-rule",
+  "asks-a-closed-loop-toggle", "refuses-a-panel-toggle",
+  // Slice 4b: apply and dispatch.
+  "never-fails-a-silent-ack", "acks-without-state", "reuses-token-after-late-unreachable", "reissues-inside-the-bound",
+  "retains-request", "resends-after-reconnect", "trusts-a-foreign-ack", "sends-from-to-an-old-bridge",
+  "drops-the-ack-detail",
+  // Slice 4c: idempotency keys, late acks, reissue and whole_state.
+  "reissues-on-timeout", "sends-the-old-mode", "keeps-a-failed-mode", "forgets-what-the-frame-said", "assumes-a-failed-write",
+  "forgets-the-unanswered",
+  // Applier 0.14: extensions on any device, occurrences, and declarations that change.
+  "lowers-a-lock-extension", "stores-an-occurrence-as-state", "history-keeps-a-personal-occurrence",
+  "plans-on-a-stale-declaration", "dispatches-a-changed-step",
+  // Slice 6a: safety rules fire and guard.
+  "lets-a-client-undo-safety", "toggles-by-safety-rule", "fires-on-an-assumed-value",
+  // Slice 6b: it holds.
+  "keeps-a-rule-on-a-re-taught-code", "latch-misses-an-extension", "clears-a-latch-on-an-assumed-value",
+  "gives-up-on-dead", "resends-what-may-have-run",
+  "floods-reload-notices", "silent-on-liveness",
+  // Slice 6c: loads, witnesses and computers.
+  "leaves-heat-on", "never-caps-a-silent-heater", "retries-a-pulse-off", "toggles-a-cap-off", "adopts-an-uncappable-socket-quietly",
+  "ignores-the-broker-hosts-admins", "counts-the-applier-hosts-admins", "marks-two-applier-hosts",
+  // Slice 7a: restarts, the gate and dispatch.
+  "forgets-an-ack-deadline", "forgets-a-retired-identifier", "forgets-a-used-token", "uses-a-token-behind",
+  "forgets-an-idempotency-key", "sends-a-bare-setpoint", "skips-lost-events",
+  // Slice 5a: provisioning.
+  "provisions-for-anyone", "provisions-twice", "hides-new-devices",
+  // Slice 5a, proposed for 0.16 (proposed-rows.json): a restart forgets the owner's provisioning keys.
+  "forgets-a-provision-key",
+  // Slice 7b: Safe across a restart.
+  "loses-a-fired-run", "draws-a-fresh-command-id", "forgets-a-running-rule", "forgets-what-it-saw", "forgets-a-latch",
+  "forgets-a-notice", "forgets-a-said-stop",
+  "forgets-an-on-time", "forgets-a-cap", "forgets-a-watch",
+  // Slice 5b: discovery.
+  "trusts-a-dead-finder", "plans-on-a-candidate", "shows-candidates-to-a-client", "hides-the-finders-sources",
+  "lists-a-held-candidate", "forgets-an-ignore", "connects-to-the-wrong-bridge", "event-without-request-id",
+  "never-ends-a-connect", "ignores-the-address",
+  // Slice 5b, proposed for 0.16 (proposed-rows.json): a restart forgets a dead bridge's connections; an
+  // ignore moves the revision; a set of only ignores is checked for its revision; a connect in flight is never ended at a restart.
+  "forgets-connections", "ignore-moves-the-revision", "checks-revision-for-ignores", "forgets-a-connect",
+] as const;
+export type Mutation = (typeof MUTATIONS)[number];
+
+/** `GALATEA_MUTATION`, honoured only under the harness (`GALATEA_TEST_RUN_ID` set). */
+export function mutationFromEnv(env: NodeJS.ProcessEnv): Mutation | undefined {
+  const m = env.GALATEA_MUTATION;
+  if (!env.GALATEA_TEST_RUN_ID || !m) return undefined;
+  if (!(MUTATIONS as readonly string[]).includes(m)) throw new Error(`unknown mutation ${m}`);
+  return m as Mutation;
+}

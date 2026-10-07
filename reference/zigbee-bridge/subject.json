@@ -1,0 +1,21 @@
+{
+  "standard": "bridge",
+  "claims": ["Serve", "Provision"],
+  "start": { "command": "node", "args": ["dist/main.js"], "ready": { "log": "ready" } },
+  "state_dir": true,
+  "database": true,
+  "mutations": ["leaves-retained-state", "reuses-id-on-join", "keeps-a-stale-description", "replays-an-occurrence",
+    "retains-an-occurrence", "publishes-an-undescribed-key", "misnames-an-extension",
+    "restamps-partial-read", "stamps-the-future", "echoes-commanded-state", "restamps-check-in", "skips-seq",
+    "double-acks", "unreachable-late", "unreachable-after-transmit", "runs-expired-commands", "applied-before-confirmation",
+    "one-fault-stops-all", "no-read-back",
+    "online-before-subscribed", "acts-on-retained-request", "ignores-refusals", "exits-on-fault", "reloads-without-graceful",
+    "ignores-snapshot", "forgets-on-restart", "resets-on-connect", "up-without-exchange",
+    "serves-on-mismatch", "inflates-the-bound", "guesses-the-bound", "hides-other-admins", "claims-protocol-class",
+    "hides-native-control", "pin-on-the-wire", "status-without-roster",
+    "window-never-closes", "ignores-near", "forgets-the-blocklist", "provisions-the-wrong-way",
+    "stamps-publication-time", "maps-motion-to-occupancy", "holds-back-silently", "holds-back-the-leak",
+    "holds-back-again-after-restart", "declares-after-the-reading", "publishes-an-unconfirmed-setting",
+    "forgets-a-confirmed-setting", "drops-a-setting-on-a-rejoin", "keeps-a-setting-through-an-interview",
+    "repeats-the-undescribed-event"]
+}

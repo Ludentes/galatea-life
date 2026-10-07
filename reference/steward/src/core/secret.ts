@@ -1,0 +1,16 @@
+import { createHash, timingSafeEqual } from "node:crypto";
+
+/** A credential's secret as the steward keeps it: its SHA-256, hex; the secret itself is never kept. */
+export function digest(secret: string): string {
+  return createHash("sha256").update(secret, "utf8").digest("hex");
+}
+
+/**
+ * Whether two credentials are the same, compared in constant time for their length, so the time a
+ * refusal takes says nothing about how much of a guess was right. A different length is a miss.
+ */
+export function sameSecret(a: string, b: string): boolean {
+  const x = Buffer.from(a, "utf8");
+  const y = Buffer.from(b, "utf8");
+  return x.length === y.length && timingSafeEqual(x, y);
+}

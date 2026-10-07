@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/zone_sources.response.json",
+  "type": "object",
+  "required": ["sources", "cursor"],
+  "properties": {
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "speech", "speaking_for_ms"],
+        "properties": {
+          "target": { "type": "string" },
+          "speech": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+          "speaking_for_ms": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "cursor": { "type": "string" }
+  }
+}

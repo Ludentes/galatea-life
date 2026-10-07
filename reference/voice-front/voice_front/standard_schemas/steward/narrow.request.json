@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/narrow.request.json",
+  "type": "object",
+  "required": ["endpoint"],
+  "properties": {
+    "endpoint": { "type": "string" },
+    "speaker": { "type": "string" },
+    "listening": { "$ref": "../common.json#/$defs/listening" },
+    "follow_up": { "type": "boolean" },
+    "until": { "$ref": "../common.json#/$defs/time" }
+  }
+}

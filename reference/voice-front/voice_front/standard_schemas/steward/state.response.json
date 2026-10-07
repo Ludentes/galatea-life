@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/state.response.json",
+  "allOf": [{ "$ref": "../applier/state.response.json" }],
+  "properties": {
+    "groups": {
+      "description": "Each group's state (GA-GRP-1): on, null when no member has onoff (the reference steward's design, Standards fixes this build shows)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["on"],
+        "properties": { "on": { "type": ["boolean", "null"] } }
+      }
+    },
+    "rooms": {
+      "description": "Each room's occupancy (steward, Occupancy; GA-OCC-1), computed when read (the reference steward's design, Standards fixes this build shows)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["occupancy"],
+        "properties": { "occupancy": { "enum": ["occupied", "vacant", "unknown"] } }
+      }
+    },
+    "leases": {
+      "description": "Each leased device's lease (steward, Leases): its holder, its precedence and when it ends; a device with none is absent (the reference steward's design, Standards fixes this build shows)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["holder", "precedence", "expires"],
+        "properties": {
+          "holder": { "$ref": "../common.json#/$defs/principal" },
+          "precedence": { "enum": ["safety_rule", "person", "scheduled_run", "rule"] },
+          "expires": { "anyOf": [{ "$ref": "../common.json#/$defs/time" }, { "const": "run_end" }] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,38 @@
+[project]
+name = "galatea-voice-front"
+version = "0.0.1"
+description = "Reference voice front for Galatea Home: speech in, utterances out."
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "jsonschema>=4.20",     # the standards' messages, from conformance/schemas/
+    "mcp==2.2.0",           # exact: mcpwire.py leans on its era routing and send_discover; move with care
+    "numpy<2",       # keeps the onnxruntime/numpy ABI combination sherpa-onnx was proven with
+    "psycopg-pool>=3.2",    # the store's connections (storage design, *Inside a build*)
+    "psycopg[binary]>=3.2", # the store: Postgres, schema voice_<id>
+    "rfc3339-validator>=0.1.4",   # without it jsonschema does not check `date-time`
+    "sherpa-onnx==1.13.7",  # exact: bootstrap.sh vendors onnxruntime for this build; move ORT_VER with this pin
+    "websockets>=13",
+    "wyoming>=1.10.2,<2",   # the synthesiser's protocol; 1.10.2 is the first with client timeouts
+]
+
+[project.urls]
+Repository = "https://github.com/Ludentes/galatea-life"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "cryptography>=43",     # throwaway certificates for the TLS tests
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+# wyoming falls back to its own audioop when Python drops it (3.13)
+filterwarnings = ["ignore:'audioop' is deprecated:DeprecationWarning"]
+markers = [
+    "models: needs the fetched models (./fetch-models.sh); skipped without them",
+    "pg: needs a Postgres server (tools/with-postgres.sh); fails without one, never skipped",
+]

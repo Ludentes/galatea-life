@@ -1,0 +1,74 @@
+# The voice front's configuration. Copy to voice-front.toml (git-ignored) and edit.
+# Stage 1 reads only these keys; any other key is refused.
+
+[server]
+host = "127.0.0.1"   # must resolve only to loopback: the link has no TLS or device keys until stage 2
+port = 8765
+
+[models]
+dir = "models"       # relative to this file; ./fetch-models.sh fills it
+
+# Each wake word the front answers to. The first that fires is reported.
+# The phonetic tolerances were measured on one word; for any other they are unmeasured.
+[[wake_words]]
+word = "галатея"
+inflections = ["галатеи", "галатее", "галатею", "галатеей"]
+
+# Stage 2b: the steward, the brains, the store. Each is optional until stage 2d
+# composes them. Credentials live in the files named here, kept out of git.
+# TLS is required unless both ends are on this host's loopback.
+#
+# [steward]
+# url = "https://steward.example:8443/mcp"
+# credential_file = "secrets/front.credential"
+# ca_file = "secrets/home-ca.pem"          # the home's CA; the system's roots if absent
+#
+# [brain_server]
+# host = "0.0.0.0"
+# port = 8766
+# cert_file = "secrets/front.pem"
+# key_file = "secrets/front.key"
+# names = ["front.example"]                # the names brains reach this front by
+#
+# [[brains]]
+# client_id = "brain-local"                # the brain's client id at the steward
+# credential_file = "secrets/brain-local.credential"
+#
+# [store]
+# url = "postgresql://voice_kitchen@postgres:5432/galatea"   # the front's role; its schema has its name
+# password_file = "secrets/db/voice_kitchen"                 # from the installation's secrets
+# audio_dir = "audio"                      # kept clips, as files, on this box (GA-VOICE-15)
+# keep_s = 604800                          # at least 3600
+#
+# [state]
+# dir = "state"                            # the last setting and the clock epoch
+
+# Stage 2c: the synthesiser and the fixed clips, optional until stage 2d composes
+# them. The synthesiser is any Wyoming text-to-speech server. Wyoming has no
+# encryption and no authentication, so it runs on this host. Prefer a unix
+# socket: any local process can take a loopback port the synthesiser is not
+# holding (after a restart, say) and hear every reply, while a socket file is
+# guarded by its permissions. tcp:// takes a loopback address, or localhost.
+#
+# [synthesiser]
+# uri = "unix:///run/wyoming/tts.sock"     # or "tcp://127.0.0.1:10200"
+# voice = "ru_RU-irina-medium"             # the server's name for a voice; its default if absent
+# timeout_s = 10                           # the longest wait for the next part of a piece; at most 30
+#
+# The only words the front says that a brain did not: each is declared to the
+# steward with its text. A 16-bit PCM WAV each; keep them out of git.
+#
+# [[clips]]
+# name = "cannot_answer"                   # required: when the brain is silent
+# path = "clips/cannot_answer.wav"
+# text = "Не могу ответить"
+#
+# [[clips]]
+# name = "earcon"                          # the sound at a wake or a tap: no words
+# path = "clips/earcon.wav"
+# text = ""
+#
+# [[clips]]
+# name = "not_recognised"                  # when speech could not be recognised
+# path = "clips/not_recognised.wav"
+# text = "Не расслышала"

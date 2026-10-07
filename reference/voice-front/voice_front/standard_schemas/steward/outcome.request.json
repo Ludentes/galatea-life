@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/outcome.request.json",
+  "type": "object",
+  "required": ["apply_id"],
+  "properties": {
+    "apply_id": { "type": "string" }
+  }
+}

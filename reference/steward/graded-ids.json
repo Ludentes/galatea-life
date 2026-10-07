@@ -1,0 +1,136 @@
+{
+ "slice": "11, steward 0.9",
+ "ids": [
+  "GA-BIND-2",
+  "GA-SEC-2",
+  "GA-AUTH-4",
+  "GA-HOUSE-1",
+  "GA-DEF-1",
+  "GA-DEF-2",
+  "GA-DEF-3",
+  "GA-DEF-5",
+  "GA-DEF-6",
+  "GA-DEF-7",
+  "GA-DEF-8",
+  "GA-CONF-4",
+  "GA-AUTH-1",
+  "GA-AUTH-2",
+  "GA-TIER-1",
+  "GA-TIER-2",
+  "GA-TIER-3",
+  "GA-PLAN-5",
+  "GA-PLAN-6",
+  "GA-GRP-1",
+  "GA-STW-1",
+  "GA-STW-2",
+  "GA-STW-4",
+  "GA-CONF-5",
+  "GA-DEF-9",
+  "GA-DEF-10",
+  "GA-HARN-2",
+  "GA-CONF-1",
+  "GA-CONF-2",
+  "GA-CONF-3",
+  "GA-CONF-6",
+  "GA-APPLY-3",
+  "GA-STW-3",
+  "GA-STW-5",
+  "GA-STW-6",
+  "GA-STW-9",
+  "GA-STW-10",
+  "GA-STW-12",
+  "GA-STW-8",
+  "GA-LEASE-1",
+  "GA-LEASE-2",
+  "GA-LEASE-3",
+  "GA-OCC-1",
+  "GA-NOTE-1",
+  "GA-NOTE-2",
+  "GA-AUTH-5",
+  "GA-LEASE-4",
+  "GA-LEASE-5",
+  "GA-RULE-1",
+  "GA-RULE-2",
+  "GA-RULE-3",
+  "GA-RULE-4",
+  "GA-RULE-5",
+  "GA-RULE-6",
+  "GA-SCN-4",
+  "GA-RULE-7",
+  "GA-RULE-8",
+  "GA-SCN-1",
+  "GA-SCN-2",
+  "GA-SCN-3",
+  "GA-SCN-5",
+  "GA-SCN-6",
+  "GA-SCN-7",
+  "GA-SCN-8",
+  "GA-SCN-9",
+  "GA-SCN-10",
+  "GA-SCN-11",
+  "GA-DEF-4",
+  "GA-SCHED-1",
+  "GA-SCHED-2",
+  "GA-SCHED-3",
+  "GA-STW-7",
+  "GA-LEASE-6",
+  "GA-PERSIST-2"
+ ],
+ "partial": {
+  "GA-HOUSE-1": [
+   "narrowings (slice 9)"
+  ],
+  "GA-DEF-3": [
+   "the front's define (GA-AUTH-8, slice 9)",
+   "lifts (slice 9)"
+  ],
+  "GA-AUTH-1": [
+   "the front's listen and say (slice 9)"
+  ],
+  "GA-STW-4": [
+   "in_use and in_use_unknown (slice 8)"
+  ],
+  "GA-CONF-2": [
+   "the asked_by clauses (slice 9)"
+  ],
+  "GA-CONF-6": [
+   "the clauses against a voice record, its narrowings and gate models (slice 9)"
+  ],
+  "GA-STW-8": [
+   "a yes to ask(in_use) or ask(in_use_unknown) (slice 8)"
+  ],
+  "GA-LEASE-3": [
+   "a duck (slice 9)"
+  ],
+  "GA-NOTE-1": [
+   "announcing channels (slice 9)"
+  ],
+  "GA-RULE-2": [
+   "an owner fresh_s longer than the declared one: describe gives the effective bound only, so it is not seen (a standards problem; not built)",
+   "a device adopted into a scenario's selector, and a wait's condition on a stale device: built, not graded by the harness"
+  ],
+  "GA-SCN-4": [
+   "in_use and in_use_unknown (slice 8)"
+  ],
+  "GA-AUTH-5": [
+   "a front's duck (slice 9)"
+  ],
+  "GA-RULE-8": [
+   "skipped(in_use) raises none (slice 8)"
+  ],
+  "GA-SCN-1": [
+   "the modes restart, queued and parallel (deferred: not built)"
+  ],
+  "GA-SCN-11": [
+   "in_use and in_use_unknown (slice 8)",
+   "a witnessed step counted by its verdict (the Safe-level work)"
+  ],
+  "GA-STW-7": [
+   "narrowed events in history (slice 9)"
+  ],
+  "GA-PERSIST-2": [
+   "the narrowings and the front's records (slice 9)",
+   "a session's persons (slice 8)"
+  ]
+ }
+}

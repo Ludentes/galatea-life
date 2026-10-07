@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/apply.response.json",
+  "type": "object",
+  "required": ["apply_id", "outcomes"],
+  "properties": {
+    "apply_id": { "type": "string" },
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "allOf": [{ "$ref": "../applier/outcome.json" }, { "required": ["time"] }],
+        "properties": { "from_replaced": { "const": true, "description": "On a notify step applied inline whose caller-set from the steward overwrote (GA-NOTE-2)" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[Unit]
+Description=Galatea wake relay (Wake-on-LAN for configured computers)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=galatea-wake
+Group=galatea-wake
+ExecStart=/usr/bin/node /opt/galatea/galatea-home/reference/wake-relay/dist/main.js --config /etc/galatea/wake-relay.json
+# arping needs raw sockets; the ambient capability passes to it, and nothing else is granted.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK AF_PACKET
+Restart=always
+RestartSec=5
+# SIGTERM runs the graceful stop (GA-BRIDGE-22); give it time to finish in-flight commands.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/define.scenario.json",
+  "title": "A define change's value for kind scenario (steward, Scenarios): replaced whole by an upsert (provisional until the standard names the shape)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "mode", "steps"],
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "name": { "type": "string", "minLength": 1 },
+    "mode": { "description": "Home Assistant's meaning; the steward lists the ones it runs in describe.modes, and define refuses another (GA-SCN-5)",
+      "enum": ["single", "restart", "queued", "parallel"] },
+    "owned": { "description": "Target ids the run leases until it ends (GA-SCN-2); a group's members, leaving out infrastructure ones",
+      "type": "array", "uniqueItems": true, "items": { "$ref": "../common.json#/$defs/id" } },
+    "respect_occupancy": { "type": "boolean", "default": false },
+    "steps": { "$ref": "#/$defs/steps" }
+  },
+  "$defs": {
+    "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+    "step": { "oneOf": [{ "$ref": "#/$defs/action" }, { "$ref": "#/$defs/if" }, { "$ref": "#/$defs/delay" }, { "$ref": "#/$defs/wait" },
+      { "$ref": "#/$defs/run" }] },
+    "action": {
+      "description": "An action on a target id (a device's or a group's) or a selector, as a request's, with an optional respect_occupancy override",
+      "allOf": [{ "$ref": "request.json#/properties/actions/items" }],
+      "properties": { "target": true, "selector": true, "action": true, "args": true, "respect_occupancy": { "type": "boolean" } },
+      "unevaluatedProperties": false
+    },
+    "if": {
+      "description": "Evaluated when reached: exactly one branch runs, none on a target not live or an assumed value without an else (GA-SCN-8)",
+      "type": "object", "additionalProperties": false, "required": ["if", "then"],
+      "properties": { "if": { "$ref": "#/$defs/condition" }, "then": { "$ref": "#/$defs/branch" }, "else": { "$ref": "#/$defs/branch" } }
+    },
+    "branch": {
+      "description": "A branch's steps, each one of steps' items; define checks them so, branch by branch, since this schema does not recurse (its types are generated inline)",
+      "type": "array", "minItems": 1, "items": { "type": "object" }
+    },
+    "condition": {
+      "description": "A target's state key compared with a value (current < 19)",
+      "type": "object", "additionalProperties": false, "required": ["target", "key", "op", "value"],
+      "properties": { "target": { "$ref": "../common.json#/$defs/id" }, "key": { "type": "string", "minLength": 1 },
+        "op": { "enum": ["eq", "ne", "gt", "ge", "lt", "le"] }, "value": {} }
+    },
+    "delay": {
+      "description": "delay(seconds)",
+      "type": "object", "additionalProperties": false, "required": ["delay"],
+      "properties": { "delay": { "type": "number", "exclusiveMinimum": 0 } }
+    },
+    "wait": {
+      "description": "wait(target, key, value, timeout_s, on_timeout), on_timeout stop by default (GA-SCN-10)",
+      "type": "object", "additionalProperties": false, "required": ["wait"],
+      "properties": { "wait": { "type": "object", "additionalProperties": false, "required": ["target", "key", "value", "timeout_s"],
+        "properties": { "target": { "$ref": "../common.json#/$defs/id" }, "key": { "type": "string", "minLength": 1 }, "value": {},
+          "timeout_s": { "type": "number", "exclusiveMinimum": 0 }, "on_timeout": { "enum": ["continue", "stop"], "default": "stop" } } } }
+    },
+    "run": {
+      "description": "run(scenario id): its steps run in this run; run steps never form a cycle (GA-DEF-4)",
+      "type": "object", "additionalProperties": false, "required": ["run"],
+      "properties": { "run": { "$ref": "../common.json#/$defs/id" } }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/scenario_run.request.json",
+  "type": "object",
+  "required": ["plan_id", "idempotency_key"],
+  "properties": {
+    "plan_id": { "type": "string" },
+    "idempotency_key": { "type": "string" }
+  }
+}

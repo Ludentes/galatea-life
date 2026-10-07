@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "brain/hush.request.json",
+  "type": "object",
+  "properties": {
+    "endpoint": { "type": "string" },
+    "say_id": { "type": "string" },
+    "utterance_id": { "type": "string" }
+  },
+  "oneOf": [
+    { "required": ["endpoint"] },
+    { "required": ["say_id"] },
+    { "required": ["utterance_id"] }
+  ]
+}

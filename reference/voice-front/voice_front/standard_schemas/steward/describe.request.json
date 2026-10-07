@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/describe.request.json",
+  "type": "object",
+  "properties": {
+    "since_revision": { "type": "integer" },
+    "wait_s": { "type": "number", "minimum": 0, "maximum": 30 }
+  }
+}

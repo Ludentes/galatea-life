@@ -1,0 +1,35 @@
+{
+  "name": "@ludentes/galatea-life-pc-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ludentes/galatea-life.git",
+    "directory": "reference/pc-bridge"
+  },
+  "files": [
+    "dist",
+    "system",
+    "subject.json"
+  ],
+  "bin": {
+    "galatea-pc-helper": "dist/helper.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ludentes/galatea-life-schemas": "^0.1.0",
+    "@ludentes/galatea-life-test-clock": "^0.1.0",
+    "@modelcontextprotocol/client": "2.1.0",
+    "canonicalize": "5.1.0",
+    "dbus-next": "0.10.2",
+    "mqtt": "5.16.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server": "2.1.0"
+  }
+}

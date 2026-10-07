@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/narrow.response.json",
+  "type": "object",
+  "required": ["narrowing_id", "until"],
+  "properties": {
+    "narrowing_id": { "type": "string" },
+    "until": { "$ref": "../common.json#/$defs/time" }
+  }
+}

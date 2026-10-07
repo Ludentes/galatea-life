@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Fetched by fetch-models.sh: large binaries, not source
+models/
+
+# Vendored by bootstrap.sh: a large binary, not source
+vendor/
+
+# The installation's own configuration: device keys and credentials arrive here in stage 2
+voice-front.toml
+
+# Measured wake-rule cases: data containing real overheard speech.
+# Local only, never committed.
+tests/cases/local/
+
+# Stage 2b: credentials, keys and certificates; kept audio and the state.
+# The store is Postgres; its audio is files, kept only when the owner allows it.
+secrets/
+state/
+audio/
+*.credential
+*.key
+*.pem
+*.pcm
