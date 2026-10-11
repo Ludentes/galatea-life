@@ -54,7 +54,7 @@ describe("configure of a safety rule", () => {
 
   it("refuses a key the device does not report, an event key, an order on a string, an action not offered or declared toggles: true (GA-EVT-8, GA-SAFE-13)", async () => {
     const m = await home();
-    await refused(m.configure([rule({ trigger: { ...LEAK, key: "wet" } })]), /reports no state key wet/);
+    await refused(m.configure([rule({ trigger: { ...LEAK, key: "wet" } })]), /declares no state key wet/);
     await refused(m.configure([rule({ trigger: { device: "hall:button", key: `${V}.press`, op: "eq", value: "single" } })]), /event key/);
     await refused(m.configure([rule({ trigger: { ...LEAK, op: "gt" } })]), /compares a number/);
     await refused(m.configure([rule({ actions: [{ target: "hall:valve", action: "onoff.turn_off" }] })]), /offers no onoff.turn_off/);

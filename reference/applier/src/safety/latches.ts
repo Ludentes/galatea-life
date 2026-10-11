@@ -1,4 +1,5 @@
 import { isExtension } from "../bus/wire.js";
+import { canonical } from "../core/canonical.js";
 import type { Store } from "../core/store.js";
 import { sets, sideEffects } from "../gate/actions.js";
 import type { Mutation } from "../mutations.js";
@@ -117,7 +118,9 @@ export class Latches {
     this.held.delete(l.rule_id);
     const rows: { device: string; keys: Kept[] }[] = [];
     for (const device of l.devices) {
-      const keys = [...this.raised.get(device) ?? [], ...l.keys.filter((k) => k.device === device)];
+      // Each (device, key, value) once: a latch that fires and clears again while no undo runs adds nothing.
+      const keys = [...new Map([...this.raised.get(device) ?? [], ...l.keys.filter((k) => k.device === device)]
+        .map((k) => [canonical([k.device, k.key, k.value]), k])).values()];
       this.raised.set(device, keys);
       rows.push({ device, keys });
     }

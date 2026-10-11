@@ -17,8 +17,8 @@ describe("the command line", () => {
   it("refuses an unknown command and an unknown flag with 2, calling nothing", async () => {
     const a = fakeDeps();
     expect(await run(["frobnicate"], a.deps)).toBe(2);
-    expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--name", "Лампа"], a.deps)).toBe(2);
-    expect(a.err.join("\n")).toMatch(/--name/);
+    expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--label", "Лампа"], a.deps)).toBe(2);
+    expect(a.err.join("\n")).toMatch(/--label/);
     expect(a.applier.calls).toEqual([]);
   });
 

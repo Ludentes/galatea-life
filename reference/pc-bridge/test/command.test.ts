@@ -17,7 +17,9 @@ describe("checkArg", () => {
     expect(checkArg("volume", { min: 0, max: 100 }, "50")).toBe("volume is not a number");
     const search = { title: "any", kind: ["movie", "episode"], year: { min: 1900, optional: true } };
     expect(checkArg("search", search, { title: "Up", kind: "movie" })).toBeNull();
-    expect(checkArg("search", search, { title: "Up" })).toBe("search.kind is missing");
+    // An object argument's fields are supported, not required (applier, *Capabilities and actions*; I5).
+    expect(checkArg("search", search, { title: "Up" })).toBeNull();
+    expect(checkArg("search", search, {})).toBeNull();
     expect(checkArg("search", search, { title: "Up", kind: "movie", path: "/" })).toBe("search has unknown keys: path");
     expect(checkArg("search", search, { title: "Up", kind: "movie", year: 1800 })).toBe("search.year is below 1900");
   });
@@ -36,6 +38,7 @@ describe("toolArguments", () => {
     expect(toolArguments(act({ delay_s: { min: 0, optional: true } }), false, undefined)).toEqual({ ok: true, args: {} });
     const search = act({ search: { title: "any", kind: ["movie", "episode"] } });
     expect(toolArguments(search, true, { title: "Up", kind: "movie" })).toEqual({ ok: true, args: { search: { title: "Up", kind: "movie" } } });
+    expect(toolArguments(search, true, { title: "Up" })).toEqual({ ok: true, args: { search: { title: "Up" } } });
   });
 
   it("takes several arguments as an object of them", () => {

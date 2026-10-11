@@ -2,11 +2,18 @@
 // The applier's migrate-only entry (subject.json's database.migrate): brings the schema named by
 // GALATEA_DATABASE_URL up to date and exits. The harness runs it once per run into a template database
 // that each test's database is cloned from. Like main.ts, it is an entry point: only it reads the
-// environment. It is unrelated to the installation's galatea-db-prepare.
+// environment. It is unrelated to the installation's galatea-db-prepare. The password may come from
+// GALATEA_DATABASE_PASSWORD_FILE, as for main.ts.
 import { connectPg, maskUrls } from "./core/db.js";
 import { migrate } from "./core/migrate.js";
+import { urlFromEnv } from "./entry.js";
 
-const url = process.env.GALATEA_DATABASE_URL;
+const read = urlFromEnv(process.env, "GALATEA_DATABASE_URL", "GALATEA_DATABASE_PASSWORD_FILE");
+if ("refused" in read) {
+  console.error(`refusing to migrate: ${read.refused}`);
+  process.exit(2);
+}
+const url = read.value;
 if (!url) {
   console.error("GALATEA_DATABASE_URL is not set");
   process.exit(2);

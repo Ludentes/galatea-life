@@ -7,13 +7,13 @@ import { sets } from "../gate/actions.js";
 import type { Mutation } from "../mutations.js";
 import { BridgeRules, SKEW_MS, type Outcome } from "../bus/bridge-rules.js";
 import {
-  parseAck, parseDevices, parseDeviceStatus, parseEvent, parseStatus, parseTime,
+  isStr, parseAck, parseDevices, parseDeviceStatus, parseEvent, parseStatus, parseTime, wireConstraint,
   type Ack, type BridgeEvent, type BridgeFault, type ConfirmedBy, type DeviceDoc, type Protocol, type RosterFacts, type TransportFacts,
 } from "../bus/wire.js";
 import type { GateDevice } from "../gate/plan.js";
 import { FRESH_SLACK_S, liveness, type Liveness } from "../state/liveness.js";
 import {
-  DEFAULT_MAX_ON_S, defaultAckWithinS, mayBeIdempotent, standardKeys, statelessOf, union, type Declarations, type Tier,
+  DEFAULT_MAX_ON_S, defaultAckWithinS, mayBeIdempotent, standardKeys, statelessOf, union, type Tier,
 } from "./declarations.js";
 
 export { canonical };
@@ -184,6 +184,12 @@ export interface HomeHooks {
    * Written behind and droppable (the maintainer's ruling K5); never a model change.
    */
   connectionsChanged?(bridge: string, rows: ConnectionRow[]): void;
+  /**
+   * Undescribed names newly announced on a bridge's device (GA-DESC-19), so a restart announces none of
+   * them again (GA-PERSIST-1). The event goes first and the write after it: a crash between the two
+   * announces a name twice, never none.
+   */
+  announced?(bridge: string, bridgeDevice: string, names: string[]): void;
 }
 
 /** What dispatch reads of a device for one of its actions (applier, *Apply and outcomes*). */
@@ -202,6 +208,8 @@ export type DispatchTarget = {
   from: boolean;
   /** A stateful extension action's key and value that confirm it (GA-EVT-3). */
   confirmed_by?: ConfirmedBy;
+  /** The arguments its declaration's `args` name: what an extension action's command carries, one bare (bridge, *Commands*). */
+  declared_args: string[];
 };
 
 /** The applier's id for a bridge's device: `{bridge id}:{bridge device id}`, never the device id alone (lesson 12). */
@@ -250,6 +258,8 @@ export class Home {
   private owner: Owner = { adoptions: new Map(), declarations: new Map() };
   /** Each bridge's connections, by `{kind}\u0000{entity}` (slice 5b): kept across a restart, apart from the model. */
   private readonly conns = new Map<string, Map<string, ConnectionRow>>();
+  /** The undescribed names announced, by bridge and bridge device (GA-DESC-19). */
+  private readonly announcedNames = new Map<string, Set<string>>();
 
   constructor(private readonly now: () => number, private readonly hooks: HomeHooks, private readonly mutation?: Mutation) {}
 
@@ -263,6 +273,49 @@ export class Home {
       this.verdicts.set(d.id, "dead");
     }
     for (const t of transports) this.modelTransports.set(t.id, t);
+  }
+
+  /** The undescribed names the store says were announced, as a start finds them (GA-DESC-19, GA-PERSIST-1). */
+  loadAnnounced(rows: { bridge: string; bridge_device: string; name: string }[]): void {
+    for (const r of rows) this.namesOf(r.bridge, r.bridge_device).add(r.name);
+  }
+
+  private namesOf(bridge: string, bridgeDevice: string): Set<string> {
+    const k = `${bridge}\u0000${bridgeDevice}`;
+    let names = this.announcedNames.get(k);
+    if (!names) this.announcedNames.set(k, names = new Set());
+    return names;
+  }
+
+  /**
+   * Announces each of `names` not announced before on `d` as an `undescribed` event, kept in `events`
+   * only since the device's `undescribed` holds the list (GA-DESC-19): once per name, whether its bridge
+   * said it in an event or the applier first met it in a `devices` document. A folded copy's are no one's.
+   */
+  private announceUndescribed(d: HeldDevice, names: string[]): void {
+    if (d.into !== undefined || this.mutation === "drops-the-undescribed-event") return;
+    const known = this.namesOf(d.bridge, d.bridge_device);
+    const fresh = [...new Set(names)].filter((n) => !known.has(n));
+    if (!fresh.length) return;
+    const said: string[] = [];
+    for (const name of fresh) {
+      if (!this.hook("emit undescribed", () => this.hooks.emit("undescribed", { target: d.id, name }, { eventsOnly: true }))) break;
+      known.add(name);
+      said.push(name);
+    }
+    if (said.length && this.hooks.announced) {
+      const hook = this.hooks.announced;
+      this.hook("announced", () => hook(d.bridge, d.bridge_device, said));
+    }
+  }
+
+  /** A bridge's `undescribed` event (GA-BRIDGE-76): relayed as the applier's own, once per name (GA-DESC-19). */
+  private undescribedEvent(v: BridgeView, b: Record<string, unknown>): void {
+    const device = isStr(b.device) ? b.device : "?";
+    const held = this.heldAt(v, device);
+    if (!held) return this.fault(v, `an undescribed event on ${device}, a device its devices document does not hold`);
+    if (typeof b.name !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(b.name)) return this.fault(v, `an undescribed event on ${device} whose name is not of its form`);
+    this.announceUndescribed(held, [b.name]);
   }
 
   /** The connections the store kept, as a start finds them (slice 5b). */
@@ -583,6 +636,7 @@ export class Home {
   infos(): Map<string, DeviceInfo> {
     return new Map(this.exposed().map((d) => [d.id, {
       capabilities: d.doc.capabilities, sensor_keys: d.doc.sensor_keys, actions: d.doc.actions.map((a) => a.action),
+      ...(d.doc.awaited_keys ? { awaited_keys: d.doc.awaited_keys } : {}),
       ...(d.doc.reach_ms !== undefined ? { reach_s: d.doc.reach_ms / 1000 } : {}),
       personal: d.doc.personal, self_changing: d.doc.self_changing, in_devices: this.inDevices(d),
       stable_identifier: d.doc.stable_identifier, bridge: d.bridge,
@@ -765,6 +819,7 @@ export class Home {
       const o = v.rules.event(e.value);
       // A repeated seq is the same event, said once (GA-BUS-6).
       if (o.take && e.value.type === "occurrence") this.occurrence(v, e.value.body);
+      if (o.take && e.value.type === "undescribed") this.undescribedEvent(v, e.value.body);
       if (o.take && PROVISION_EVENTS.has(e.value.type) && this.hooks.provisioning) {
         const hook = this.hooks.provisioning;
         const ev = e.value;
@@ -907,7 +962,12 @@ export class Home {
       else v.fastCheckIn.delete(e.id);
       v.roster.set(e.id, entry);
     }
-    if (listed) v.rosterListed = new Set(listed);
+    if (listed) {
+      v.rosterListed = new Set(listed);
+      // What the latest roster no longer lists is not held: weeks of churn, or made-up ids, must not grow it.
+      for (const id of [...v.roster.keys()]) if (!v.rosterListed.has(id)) v.roster.delete(id);
+      for (const id of [...v.fastCheckIn]) if (!v.rosterListed.has(id)) v.fastCheckIn.delete(id);
+    }
   }
 
   /**
@@ -953,8 +1013,10 @@ export class Home {
       const into = !held || held.doc.stable_identifier !== doc.stable_identifier ? this.host(v.config.id, id, doc.stable_identifier, shows.get(doc.stable_identifier)! > 1) : held.into;
       const next: HeldDevice = { id, bridge: v.config.id, bridge_device: doc.id, doc, ...(into !== undefined ? { into } : {}) };
       // `plans-on-a-stale-declaration`: a change of declarations alone taken as no model change.
+      // A change of `undescribed` alone moves no revision either (GA-DESC-19).
       const asIs = (x: DeviceDoc) => this.mutation === "plans-on-a-stale-declaration"
-        ? { ...x, other_admins: [], actions: [], capabilities: [], extensions: undefined } : { ...x, other_admins: [] };
+        ? { ...x, other_admins: [], undescribed: undefined, actions: [], capabilities: [], extensions: undefined }
+        : { ...x, other_admins: [], undescribed: undefined };
       (held && canonical(asIs(held.doc)) === canonical(asIs(doc)) ? admins : changed).push(next);
     }
     const missed = changed.filter((d) => !this.devices.has(d.id) && !this.owner.adoptions.has(d.id) && d.into === undefined).map((d) => d.id);
@@ -984,6 +1046,8 @@ export class Home {
     }
     this.settleFolds();
     this.settleConflicts();
+    // A name first met in a devices document is announced too, live or retained (GA-DESC-19).
+    for (const d of [...changed, ...admins]) if (d.doc.undescribed?.length) this.announceUndescribed(this.devices.get(d.id) ?? d, d.doc.undescribed.map((u) => u.name));
     const redeclared = changed.filter((d) => d.into === undefined).map((d) => d.id);
     if (redeclared.length && this.hooks.declared) {
       const hook = this.hooks.declared;
@@ -1178,11 +1242,11 @@ export class Home {
    * copy's is no one's (GA-BUS-11); anything ill formed, or of a key or device not declared, is a fault.
    */
   private occurrence(v: BridgeView, b: Record<string, unknown>): void {
-    const device = typeof b.device === "string" ? b.device : "?";
+    const device = isStr(b.device) ? b.device : "?";
     const held = this.heldAt(v, device);
     if (!held) return this.fault(v, `an occurrence on ${device}, a device its devices document does not hold`);
     if (held.into !== undefined) return;
-    const key = typeof b.key === "string" ? b.key : "?";
+    const key = isStr(b.key) ? b.key : "?";
     const what = `an occurrence of ${key} on ${device}`;
     if (!held.doc.extensions?.some((e) => e.keys.some((k) => k.key === key && k.kind === "event"))) {
       return this.fault(v, `${what}, which it does not declare an event key`);
@@ -1516,12 +1580,18 @@ export class Home {
       ...(own.applier_host ? { applier_host: true } : {}),
       ...(doc.internal ? { internal: true } : {}),
       ...(doc.extensions ? { extensions: doc.extensions } : {}),
+      // As its bridge gives them, absent where it gives none (GA-DESC-19). `hides-awaited-keys` leaves the first out.
+      ...(doc.awaited_keys && this.mutation !== "hides-awaited-keys" ? { awaited_keys: doc.awaited_keys } : {}),
+      ...(doc.settings ? { settings: doc.settings } : {}),
+      ...(doc.undescribed ? { undescribed: doc.undescribed.map((u) => ({ name: u.name, first_seen: new Date(u.first_seen).toISOString() })) } : {}),
       actions: doc.actions.map((a) => ({
         action: a.action,
         ...this.declarationOf(d, a),
         ...(a.toggles ? { toggles: true } : {}), ...(a.whole_state ? { whole_state: true } : {}),
         ack_within_s: ackWithinS(own.ack_within_s?.[a.action], cls ?? doc.proposed_class, a.action, reachS),
         confirms: a.confirms,
+        // In the args table's wire form, as its bridge declared it (ruled 2026-10-06).
+        ...(a.args ? { args: Object.fromEntries(Object.entries(a.args).map(([k, c]) => [k, wireConstraint(c)])) } : {}),
         ...(own.witnesses?.[a.action] ? { witness: own.witnesses[a.action] } : {}),
         ...(a.confirmed_by ? { confirmed_by: a.confirmed_by } : {}),
       })),
@@ -1566,6 +1636,7 @@ export class Home {
       whole_state: a.whole_state,
       ack_within_s: ackWithinS(own?.ack_within_s?.[action], this.owner.adoptions.get(d.id)?.class ?? d.doc.proposed_class, action, reachS),
       from: a.args !== undefined && Object.hasOwn(a.args, "from"),
+      declared_args: Object.keys(a.args ?? {}),
       ...(a.confirmed_by ? { confirmed_by: a.confirmed_by } : {}),
     };
   }

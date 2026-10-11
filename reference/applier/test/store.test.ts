@@ -22,7 +22,7 @@ describe("Store", () => {
       "0003_declarations_notices.sql", "0004_adoption.sql", "0005_routes.sql", "0006_dispatch.sql",
       "0007_idempotency.sql", "0008_late_acks.sql", "0009_assumed.sql", "0010_occurrences.sql",
       "0011_safety.sql", "0012_rule_disabled.sql", "0013_latches.sql", "0014_load_caps.sql", "0015_restarts.sql", "0016_provisioning.sql",
-      "0017_discovery.sql"]);
+      "0017_discovery.sql", "0018_undescribed.sql", "0019_hashed_secrets.sql"]);
     await store.write((tx) => setMeta(tx, "revision", "3"));
     expect(await migrate(db)).toEqual([]);
     expect(await getMeta(store, "revision")).toBe("3");

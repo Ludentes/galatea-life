@@ -171,7 +171,7 @@ export class LoadCaps {
   configured(): void {
     const now = this.observe();
     for (const device of [...this.on.keys()]) if (!this.o.socket(device)) this.reset(device);
-    for (const device of [...this.caps.keys()]) if (this.o.maxOn(device) === undefined) this.stop(device);
+    for (const device of [...this.caps.keys()]) if (this.o.maxOn(device) === undefined) this.endCap(device);
     for (const [device, since] of this.on) {
       const max = this.o.maxOn(device);
       if (max === undefined || max === this.judged.get(device) || this.caps.has(device) || now - since < max * 1000) continue;
@@ -221,7 +221,7 @@ export class LoadCaps {
     for (const device of devices) {
       const cap = this.caps.get(device);
       if (cap?.state !== "done" || cap.stuck === undefined || cap.stuck === this.stuckOn(device)) continue;
-      this.stop(device);
+      this.endCap(device);
       any = true;
     }
     if (any) this.tick();
@@ -380,13 +380,21 @@ export class LoadCaps {
 
   /** A socket's on-time resets: it is off, and its cap, if one was at work, is done. */
   private reset(device: string): void {
-    this.stop(device);
+    this.endCap(device);
     if (!this.on.delete(device)) return;
     void this.o.store.write((tx) => tx.query("DELETE FROM load_on WHERE device = $1", [device]).then(() => undefined));
   }
 
+  /** The applier stops (an embedding host's stop): every cap's timer is cleared; the caps stay as the store keeps them. */
+  stop(): void {
+    for (const cap of this.caps.values()) {
+      if (cap.timer !== undefined) this.o.clock.clear(cap.timer);
+      cap.timer = undefined;
+    }
+  }
+
   /** A cap's work ends: its standing failed notice, still listed until taken, is said again on the next one. */
-  private stop(device: string): void {
+  private endCap(device: string): void {
     const cap = this.caps.get(device);
     if (!cap) return;
     if (cap.timer !== undefined) this.o.clock.clear(cap.timer);
@@ -430,7 +438,7 @@ export class LoadCaps {
     if (cap.timer !== undefined) this.o.clock.clear(cap.timer);
     cap.timer = undefined;
     if (this.o.maxOn(device) === undefined || !this.on.has(device)) {
-      this.stop(device);
+      this.endCap(device);
       return;
     }
     if (this.o.liveness(device) === "dead") return;

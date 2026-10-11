@@ -1,15 +1,13 @@
-import { readFileSync } from "node:fs";
 import { createServer as createHttp, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttps } from "node:https";
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, legacyStatelessFallback, ProtocolError, ProtocolErrorCode, Server } from "@modelcontextprotocol/server";
 import { TOOLS, type Applier } from "../applier.js";
 import { maskUrls, StoreError } from "../core/db.js";
+import { isLoopback } from "../net/loopback.js";
 import { StoreUnavailable } from "../core/errors.js";
 
-export function isLoopback(host: string): boolean {
-  return host === "localhost" || host === "::1" || /^127\./.test(host);
-}
+export { isLoopback };
 
 /** The bearer credential in `Authorization`; the scheme is matched in any case (RFC 9110). */
 export const bearerOf = (req: Request | undefined): string | undefined => {
@@ -55,7 +53,7 @@ function mcpServer(applier: Applier, bearer: string | undefined): Server {
       logFailure(`${req.params.name} failed`, err);
       throw new ProtocolError(ProtocolErrorCode.InternalError, publicMessage(err));
     }
-    const out = result.ok ? result.body : { error: result.error, message: result.message };
+    const out = result.ok ? result.body : { error: result.error, message: result.message, ...(result.data ? { data: result.data } : {}) };
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out, isError: !result.ok };
   });
   return server;
@@ -64,7 +62,8 @@ function mcpServer(applier: Applier, bearer: string | undefined): Server {
 /**
  * The applier's MCP binding over Streamable HTTP at `/mcp`: revision 2026-07-28, and the 2025
  * revisions through the SDK's stateless fallback (GA-BIND-1). Plain HTTP only on loopback; any
- * other address needs a certificate and key (GA-SEC-1).
+ * other address needs a certificate and key (GA-SEC-1), given as PEM contents: the entry point reads
+ * the files.
  */
 export async function serveMcp(applier: Applier, opts: { port: number; host?: string; tls?: { cert: string; key: string } }):
 Promise<{ url: string; close(): Promise<void> }> {
@@ -92,7 +91,7 @@ Promise<{ url: string; close(): Promise<void> }> {
     }
   };
   const http = opts.tls
-    ? createHttps({ cert: readFileSync(opts.tls.cert), key: readFileSync(opts.tls.key) }, listener)
+    ? createHttps({ cert: opts.tls.cert, key: opts.tls.key }, listener)
     : createHttp(listener);
   await new Promise<void>((resolve, reject) => { http.once("error", reject); http.listen(opts.port, host, resolve); });
   const shown = host.includes(":") ? `[${host}]` : host;

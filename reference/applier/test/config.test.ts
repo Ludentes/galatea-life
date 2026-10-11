@@ -6,7 +6,7 @@ describe("config", () => {
   it("saves and loads clients, bridges, adoptions, replaced identifiers and the time source, and saving twice is safe", async () => {
     const s = await memoryStore();
     const c = emptyConfig();
-    c.clients.set("h", { id: "h", credential: "credential-1", kind: "steward", token_key: "k".repeat(16) });
+    c.clients.set("h", { id: "h", credential_sha256: "a".repeat(64), kind: "steward", token_key: "k".repeat(16) });
     c.bridges.set("b", { id: "b", identity: "b" });
     c.adoptions.set("b:lamp", { class: "light" });
     c.previous.set("b:lamp", ["test:old", "test:older"]);
@@ -26,10 +26,10 @@ describe("config", () => {
     const b = emptyConfig();
     b.timeSource = "127.0.0.1:1";
     expect(modelKey(a)).toBe(modelKey(b));
-    a.clients.set("h", { id: "h", credential: "h-credential", kind: "steward" });
-    b.clients.set("h", { id: "h", credential: "rotated-credential", kind: "steward", token_key: "a-new-token-key-0001" });
+    a.clients.set("h", { id: "h", credential_sha256: "a".repeat(64), kind: "steward" });
+    b.clients.set("h", { id: "h", credential_sha256: "b".repeat(64), kind: "steward", token_key: "a-new-token-key-0001" });
     expect(modelKey(a)).toBe(modelKey(b));
-    b.clients.set("h", { id: "h", credential: "rotated-credential", kind: "parent" });
+    b.clients.set("h", { id: "h", credential_sha256: "b".repeat(64), kind: "parent" });
     expect(modelKey(a)).not.toBe(modelKey(b));
     const adopted = emptyConfig();
     adopted.adoptions.set("b:lamp", { class: "light" });

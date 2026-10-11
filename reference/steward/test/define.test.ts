@@ -116,6 +116,40 @@ describe("planDefine", () => {
     refused([up("room", { id: "x", name: "a\u0000b" })], /U\+0000/);
   });
 
+  it("refuses an upsert that creates an item without its kind's created-with fields (GA-DEF-14), each kind's in turn", () => {
+    const LAMP = "sim-bridge:lamp";
+    const cases: [Change, string][] = [
+      [up("room", { id: "attic" }), "name"],
+      [up("person", { id: "liza2", name: "Лиза" }), "role"],
+      [up("endpoint", { id: "attic-panel", name: "Панель", type: "panel", room: "hall", person: null }), "served_by"],
+      [up("voice", { endpoint: "hall-panel", listening: "wake_server", wake_words: [], zone: null, output: "speech", heard_by: "front" }), "follow_up"],
+      [up("credential", { id: "b2", kind: "brain" }), "secret"],
+      [up("group", { id: "g", name: "Г", room: null, members: [LAMP] }), "aggregate"],
+      [up("rule", { id: "r", name: "Р", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }] }), "actions"],
+      [up("scenario", { id: "s", name: "С", steps: [{ target: LAMP, action: "onoff.turn_on", args: {} }] }), "mode"],
+      [up("schedule", { id: "sc", time: "07:00" }), "scenario"],
+    ];
+    for (const [c, field] of cases) refused([c], new RegExp(`created with .*\\b${field}\\b.*\\(GA-DEF-14\\)`));
+  });
+
+  it("refuses a rule created with neither a trigger nor conditions, or with both null (GA-DEF-14)", () => {
+    const actions = [{ target: "sim-bridge:lamp", action: "onoff.turn_off", args: {} }];
+    refused([up("rule", { id: "x", name: "x", actions })], /a trigger or conditions \(GA-DEF-14\)/);
+    refused([up("rule", { id: "x", name: "x", actions, trigger: null, conditions: null })], /a trigger or conditions \(GA-DEF-14\)/);
+  });
+
+  it("refuses an upsert of an existing item that leaves out a created-with field, while an upsert replaces the item whole (ruled)", () => {
+    refused([up("room", { id: "hall" })], /change 1 \(upsert room\): .*name/);
+    refused([up("endpoint", { id: "olga-app", name: "Телефон" })], /change 1 \(upsert endpoint\): .*type/);
+  });
+
+  it("refuses a delete of an item that does not exist, of every kind keyed by id (GA-DEF-14)", () => {
+    for (const kind of ["room", "person", "endpoint", "credential", "target", "group", "rule", "scenario", "schedule"]) {
+      refused([del(kind, { id: "nowhere" })], /no nowhere to delete/);
+    }
+    refused([del("voice", { endpoint: "olga-app" })], /has no voice record/);
+  });
+
   it("deletes a voice record by its endpoint, and an endpoint's upsert keeps its record", () => {
     const kept = planDefine(baseline(), [up("endpoint", { id: "kitchen-voice", name: "Кухня 2", type: "voice", room: "kitchen", person: null,
       served_by: "brain" })], context()).draft;

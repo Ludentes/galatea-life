@@ -4,7 +4,8 @@ export type ErrorCode = "invalid_request" | "not_claimed" | "not_permitted" | "u
 
 /** A request the applier cannot act on at all; the MCP layer turns it into `{ error, message }`. */
 export class RequestError extends Error {
-  constructor(readonly code: ErrorCode, message: string) {
+  /** `data`: the structured details a requirement names (applier, *Errors*; GA-SAFE-14). */
+  constructor(readonly code: ErrorCode, message: string, readonly data?: Record<string, unknown>) {
     super(message);
   }
 }

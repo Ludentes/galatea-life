@@ -22,8 +22,13 @@ export interface Deps {
   secret(name: string): string;
   /** A change set's text: a file, or standard input for `-`. */
   input(path: string): Promise<string>;
-  /** Now, in milliseconds (the reading commands' windows). */
+  /** Now, in milliseconds (the reading commands' windows, `join`'s waits). */
   now(): number;
+  /**
+   * Calls `handler` when the owner interrupts the tool (Ctrl-C, SIGINT) until the returned function is
+   * called; while one is registered, the interrupt does not end the process (`join` closes its window first).
+   */
+  onInterrupt(handler: () => void): () => void;
 }
 
 /** What a command works with: the dependencies, `--json`, and whether anything was done yet. */

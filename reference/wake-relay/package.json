@@ -20,7 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ludentes/galatea-life-schemas": "^0.1.0",
+    "@ludentes/galatea-life-schemas": "^0.1.2",
     "@ludentes/galatea-life-test-clock": "^0.1.0",
     "mqtt": "5.16.0"
   }

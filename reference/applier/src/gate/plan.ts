@@ -77,9 +77,6 @@ const REASONS: { reason: Reason; verdict: "skip" | "refuse"; applies: (j: Judged
     && j.g.mutation !== "applies-without-token" },
 ];
 
-/** The standard's order, for anyone who wants to see it whole. */
-export const REASON_ORDER: Reason[] = REASONS.map((r) => r.reason);
-
 /** A toggle is blind on an open device, whose state is assumed; `asks-a-closed-loop-toggle` takes a closed one so too. */
 function togglesBlind(j: Judged): boolean {
   return j.d!.feedback === "open" || j.g.mutation === "asks-a-closed-loop-toggle";

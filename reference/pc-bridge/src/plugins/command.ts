@@ -36,19 +36,23 @@ export function checkArg(name: string, c: unknown, v: unknown): string | null {
   }
   if (isObject(c)) {
     if (!isObject(v)) return `${name} is not an object`;
-    return fields(name, c, v);
+    // An object argument's fields are supported, not required (applier, *Capabilities and actions*).
+    return fields(name, c, v, false);
   }
   return `${name}'s constraint is not one the bridge knows`;
 }
 
-/** An object's fields against the constraints of each: every required one present, none unknown. */
-function fields(name: string, cs: Record<string, unknown>, v: Record<string, unknown>): string | null {
+/**
+ * An object's fields against the constraints of each, none unknown: the command's several arguments
+ * (`required`), each present unless optional; an object argument's fields, none required.
+ */
+function fields(name: string, cs: Record<string, unknown>, v: Record<string, unknown>, required = true): string | null {
   const unknown = Object.keys(v).filter((k) => !Object.hasOwn(cs, k));
   if (unknown.length) return `${name || "the value"} has unknown keys: ${unknown.join(", ")}`;
   for (const [k, c] of Object.entries(cs)) {
     const where = name ? `${name}.${k}` : k;
     if (!Object.hasOwn(v, k)) {
-      if (!optional(c)) return `${where} is missing`;
+      if (required && !optional(c)) return `${where} is missing`;
       continue;
     }
     const wrong = checkArg(where, c, v[k]);

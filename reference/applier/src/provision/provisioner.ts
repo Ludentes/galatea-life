@@ -1,3 +1,4 @@
+import { hashSecret } from "../core/secret.js";
 import { randomUUID } from "node:crypto";
 import type { Clock } from "@ludentes/galatea-life-test-clock";
 import type { Bridge } from "../config/config.js";
@@ -141,7 +142,8 @@ export class Provisioner {
   async provision(a: Args): Promise<Record<string, unknown>> {
     const { idempotency_key: key, ...rest } = a;
     if (!storable(rest)) throw new RequestError("invalid_request", "provision carries a string the store cannot keep");
-    const body = canonical(rest);
+    // Kept only to compare a repeat of its key with: its SHA-256 does that, and keeps no setup code (the whole-applier review's M6).
+    const body = hashSecret(canonical(rest));
     // `provisions-twice`: the key is not honoured; every repeat is a new request.
     const keyed = typeof key === "string" && this.o.mutation !== "provisions-twice";
     let claim: KeyClaim<string> | undefined;

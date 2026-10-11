@@ -50,6 +50,22 @@ describe("planChanges", () => {
       .toThrow(expect.objectContaining({ code: "invalid_request" }));
   });
 
+  it("refuses a bridge whose MQTT identity another bridge holds, or the applier's own (the review's I2)", () => {
+    const bridge = (id: string, identity: string): Change => ({ op: "upsert", kind: "bridge", value: { id, identity } });
+    const own = { ...ctx, ownIdentity: "galatea-applier" };
+    // Two in one set, or one against a bridge already held: only the first is ever fed, and a delete deafens the other.
+    expect(() => planChanges(emptyConfig(), [bridge("zb-a", "z2m"), bridge("zb-b", "z2m")], own))
+      .toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringContaining("bridge zb-a already holds identity z2m") }));
+    const held = planChanges(emptyConfig(), [bridge("zb-a", "z2m")], own).draft;
+    expect(() => planChanges(held, [bridge("zb-b", "z2m")], own)).toThrow(expect.objectContaining({ code: "invalid_request" }));
+    expect(() => planChanges(emptyConfig(), [bridge("zb", "galatea-applier")], own))
+      .toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringContaining("the applier's own") }));
+    // The same bridge again, a bridge moved to a free identity, and an identity freed in the same set are fine.
+    expect(planChanges(held, [bridge("zb-a", "z2m")], own).diff).toEqual([]);
+    expect(planChanges(held, [bridge("zb-a", "z2m-2"), bridge("zb-b", "z2m")], own).draft.bridges.size).toBe(2);
+    expect(planChanges(held, [{ op: "delete", kind: "bridge", value: { id: "zb-a" } }, bridge("zb-b", "z2m")], own).draft.bridges.size).toBe(1);
+  });
+
   it("refuses a bridge id longer than 32 characters, so every id it prefixes fits 128", () => {
     const bridge = (id: string): Change => ({ op: "upsert", kind: "bridge", value: { id, identity: "hall" } });
     expect(planChanges(emptyConfig(), [bridge("b".repeat(32))], ctx).draft.bridges.size).toBe(1);

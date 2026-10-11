@@ -44,7 +44,7 @@ describe("Applier", () => {
   it("describes an empty model with the run id, and answers unchanged for the current revision", async () => {
     const { a, owner } = await make();
     const d = body(await a.call(owner, "describe", {}));
-    expect(d).toMatchObject({ applier_id: "demo-applier", standard_version: "0.14", levels: ["Act"], revision: 0,
+    expect(d).toMatchObject({ applier_id: "demo-applier", standard_version: "0.15", levels: ["Act"], revision: 0,
       devices: [], clients: [], test_run_id: "run-1" });
     expect(body(await a.call(owner, "describe", { since_revision: 0 }))).toEqual({ revision: 0, unchanged: true });
   });
@@ -587,6 +587,22 @@ describe("Applier", () => {
       expect(a.plans.size).toBe(MAX_PLANS_PER_CLIENT);
     });
 
+    it("drops long-expired plans, and a removed client's, on the prune round, with no client planning (the whole-applier review's M3)", async () => {
+      const { a, h, clock, configure } = await planning();
+      body(await configure([client("k")]));
+      const k = a.caller("k-credential");
+      const old = body(await a.call(h, "plan", { actions: [turnOn] })).plan_id;
+      clock.advance(30_000);
+      const kept = body(await a.call(h, "plan", { actions: [turnOn] })).plan_id;
+      const ks = body(await a.call(k, "plan", { actions: [turnOn] })).plan_id;
+      body(await configure([{ op: "delete", kind: "client", value: { id: "k" } }]));
+      // 120 s on, a prune round: the first plan is past its expiry and held as long again, the second not yet; k is gone.
+      clock.advance(90_000);
+      expect([...a.plans.keys()].sort()).toEqual([kept].sort());
+      expect(a.plans.has(old)).toBe(false);
+      expect(a.plans.has(ks)).toBe(false);
+    });
+
     it("takes an action's statelessness from the capability's column, whatever its bridge says (applier, *Action declarations*)", async () => {
       const { a, owner } = await planning();
       send(a, "devices", { devices: [{ ...doc.devices[0], capabilities: ["cover"], actions: [{ action: "cover.stop", idempotent: true,
@@ -788,6 +804,36 @@ describe("what candidates lists (slice 5b, GA-DISC-1, GA-DISC-2)", () => {
   });
 });
 
+
+describe("undescribed names (applier 0.15, GA-DESC-19, GA-PERSIST-1)", () => {
+  const T = (ms: number) => new Date(ms).toISOString();
+  const send = (a: Applier, path: string, body: unknown, retained = false) => a.home.message("hall", path, Buffer.from(JSON.stringify(body)), retained);
+  const doc = (names: string[]) => ({ devices: [{ id: "radar", stableIdentifier: "test:radar", transport: "radio", capabilities: ["sensor"],
+    sensorKeys: ["occupancy"], actions: [], feedback: "closed", reachMs: 1000, proposedClass: "sensor", classEvidence: "protocol",
+    undescribed: names.map((name) => ({ name, firstSeen: T(0) })) }] });
+  const cursor = async (a: Applier) => body(await a.call(a.caller(OWNER), "events", {})).cursor as string;
+  const announced = async (a: Applier, from: string) => (body(await a.call(a.caller(OWNER), "events", { cursor: from })).events as { type: string; name?: string }[])
+    .filter((e) => e.type === "undescribed").map((e) => e.name);
+
+  it.each([undefined, "forgets-announced-names"] as const)("announces a name once, across a restart too; mutation %s", async (mutation) => {
+    const db = lasting(await memoryDb());
+    const first = await make({ db, mutation });
+    await first.configure([{ op: "upsert", kind: "bridge", value: { id: "hall", identity: "hall" } }]);
+    first.a.listening("hall");
+    const c1 = await cursor(first.a);
+    send(first.a, "devices", doc(["dp108"]), true);
+    expect(await announced(first.a, c1)).toEqual(["dp108"]);
+    await first.store.settled();
+    first.a.stop();
+    await first.store.close();
+    const again = await make({ db, mutation });
+    again.a.listening("hall");
+    const c2 = await cursor(again.a);
+    send(again.a, "devices", doc(["dp108", "dp109"]), true);
+    expect(await announced(again.a, c2)).toEqual(mutation ? ["dp108", "dp109"] : ["dp109"]);
+    again.a.stop();
+  });
+});
 
 describe("ignores (slice 5b, GA-DISC-3, GA-CFG-2)", () => {
   const T = (ms: number) => new Date(ms).toISOString();

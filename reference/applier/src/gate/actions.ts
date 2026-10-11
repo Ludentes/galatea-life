@@ -1,4 +1,4 @@
-import type { ConfirmedBy, Constraint } from "../bus/wire.js";
+import { optionalArg, type ConfirmedBy, type Constraint } from "../bus/wire.js";
 
 /**
  * The standard's actions as data (applier, *Capabilities and actions*, *Action declarations*): each
@@ -57,10 +57,25 @@ function argFault(name: string, spec: Arg, v: unknown): string | undefined {
   }
 }
 
+/**
+ * Whether `v` is `from` plus a whole number of `step`s, within a rounding error's width, as the Zigbee
+ * bridge judges it: a value off the step is refused, never rounded, since the device would take it as
+ * another value and a rounded one would not be the one the step's `confirmed_by` names.
+ */
+function onStep(v: number, from: number, step: number): boolean {
+  const n = (v - from) / step;
+  return Math.abs(n - Math.round(n)) < 1e-9 * Math.max(1, Math.abs(n));
+}
+
 /** Why `v` does not meet a device's constraint `c`, `name` being the argument's path. */
 function constraintFault(name: string, c: Constraint, v: unknown): string | undefined {
-  if (c === "any") return undefined;
-  if ("enum" in c) return c.enum.includes(v as string) ? undefined : `${name} is not one of ${c.enum.join(", ")} on this device`;
+  // No limit is any scalar, as both bridges take it: never null, an object or a list (preflight I3).
+  const scalar = typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v));
+  if (c === "any") return scalar ? undefined : `${name} is not a scalar`;
+  if ("enum" in c) {
+    if (!c.enum.length) return `${name} allows no value on this device`;
+    return c.enum.includes(v as string) ? undefined : `${name} is not one of ${c.enum.join(", ")} on this device`;
+  }
   if ("fields" in c) {
     if (!isObject(v)) return `${name} is not an object`;
     for (const [k, x] of Object.entries(v)) {
@@ -71,9 +86,12 @@ function constraintFault(name: string, c: Constraint, v: unknown): string | unde
     }
     return undefined;
   }
-  if (typeof v !== "number") return `${name} is not a number`;
+  // A range of no bound and no step (`{ optional: true }`) is no limit: any scalar.
+  if (c.min === undefined && c.max === undefined && c.step === undefined) return scalar ? undefined : `${name} is not a scalar`;
+  if (typeof v !== "number" || !Number.isFinite(v)) return `${name} is not a number`;
   if (c.min !== undefined && v < c.min) return `${name} ${v} is below ${c.min}`;
   if (c.max !== undefined && v > c.max) return `${name} ${v} is above ${c.max}`;
+  if (c.step !== undefined && !onStep(v, c.min ?? 0, c.step)) return `${name} ${v} is not ${c.min ?? 0} plus a whole number of steps of ${c.step}`;
   return undefined;
 }
 
@@ -82,8 +100,8 @@ function constraintFault(name: string, c: Constraint, v: unknown): string | unde
  * takes, of its type and range, and no other; then each argument the device's own `constraints`
  * name meets its constraint (applier, *Requests*). An argument they do not name is as the vocabulary
  * gives it; `notify`'s `from` is never refused, since a device that does not list it is sent none
- * (GA-APPLY-14). An action outside the standard's table (an extension) takes any object of
- * arguments, narrowed only by its device's constraints; its manifest's schema is the PC build's.
+ * (GA-APPLY-14). An action outside the standard's table (an extension) takes the arguments its
+ * device's `args` name and no other, each narrowed by its constraint; its manifest's schema is the PC build's.
  */
 /**
  * Whether `arg` is an argument of a standard action that takes a number (`climate.set_setpoint`'s
@@ -97,7 +115,7 @@ export function numberArg(action: string, arg: string): boolean {
 
 export function argsFault(action: string, args: unknown, constraints?: Record<string, Constraint>, confirmedBy?: ConfirmedBy): string | undefined {
   if (!isObject(args)) return "args is not an object";
-  const fault = vocabularyFault(action, args);
+  const fault = vocabularyFault(action, args, constraints);
   if (fault) return fault;
   // The argument a confirmed_by names is what acks the step: without it, or not a scalar, nothing could (GA-EVT-3).
   if (confirmedBy && typeof confirmedBy.value === "object") {
@@ -109,16 +127,28 @@ export function argsFault(action: string, args: unknown, constraints?: Record<st
   if (!constraints) return undefined;
   for (const [name, c] of Object.entries(constraints)) {
     if (action === "notify.notify" && name === "from") continue;
-    if (!Object.hasOwn(args, name) || args[name] === undefined) continue;
+    if (!Object.hasOwn(args, name) || args[name] === undefined) {
+      // An extension action's arguments are its device's to declare: one not `optional` is required,
+      // as its bridge requires it. A standard action's are the vocabulary's.
+      if (!Object.hasOwn(ARGS, action) && !optionalArg(c)) return `${name} is required`;
+      continue;
+    }
     const f = constraintFault(name, c, args[name]);
     if (f) return f;
   }
   return undefined;
 }
 
-function vocabularyFault(action: string, args: Record<string, unknown>): string | undefined {
+function vocabularyFault(action: string, args: Record<string, unknown>, constraints?: Record<string, Constraint>): string | undefined {
   const spec = ARGS[action];
-  if (!spec) return undefined;
+  // An extension action takes the arguments its device's `args` name, and no other: its command
+  // carries them by that count (bridge, *Commands*), and its bridge refuses any other.
+  if (!spec) {
+    for (const name of Object.keys(args)) {
+      if (args[name] !== undefined && !(constraints && Object.hasOwn(constraints, name))) return `${action} takes no argument ${name}`;
+    }
+    return undefined;
+  }
   for (const name of Object.keys(args)) if (!Object.hasOwn(spec, name)) return `${action} takes no argument ${name}`;
   for (const [name, arg] of Object.entries(spec)) {
     if (!Object.hasOwn(args, name) || args[name] === undefined) {
@@ -132,16 +162,17 @@ function vocabularyFault(action: string, args: Record<string, unknown>): string 
 }
 
 /**
- * A command's inner `value` (bridge, *Commands*): the argument itself for a standard action with one
+ * A command's inner `value` (bridge, *Commands*): the argument itself for an action with one
  * (`set_level` carries 40), an object of them for one with several (`notify` carries `{ text,
- * urgency }`), and absent for one with none; an extension action's arguments go as their object.
- * `notify`'s `from` goes only to a device whose `notify` lists it (GA-APPLY-14).
+ * urgency }`), and absent for one with none. A standard action's arguments are the vocabulary's; an
+ * extension action's, the names its device's `args` declare (`declared`), so a button pusher's
+ * `set_mode` with `args: { mode: [...] }` carries `"click"`, never `{ mode: "click" }`. `notify`'s
+ * `from` goes only to a device whose `notify` lists it (GA-APPLY-14).
  */
-export function commandValue(action: string, args: Record<string, unknown>, o: { from: boolean }): unknown {
+export function commandValue(action: string, args: Record<string, unknown>, o: { from: boolean; declared?: readonly string[] }): unknown {
   const given = Object.entries(args).filter(([k, v]) => v !== undefined && !(action === "notify.notify" && k === "from" && !o.from));
   const spec = ARGS[action];
-  if (!spec) return given.length ? Object.fromEntries(given) : undefined;
-  const names = Object.keys(spec);
+  const names = spec ? Object.keys(spec) : [...(o.declared ?? [])];
   if (names.length === 0) return undefined;
   if (names.length === 1) return args[names[0]!];
   return Object.fromEntries(given);

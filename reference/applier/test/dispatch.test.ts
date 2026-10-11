@@ -63,7 +63,8 @@ const ac = { id: "ac", stableIdentifier: "test:ac", transport: "radio", capabili
 const PUSH = "org.galatea.test.pusher";
 const pusher = { id: "pusher", stableIdentifier: "test:pusher", transport: "radio", capabilities: ["onoff"],
   actions: [{ action: "onoff.turn_on", idempotent: true, stateless: false, confirms: true },
-    { action: `${PUSH}.set_mode`, idempotent: true, stateless: false, confirms: false, confirmedBy: { key: `${PUSH}.mode`, value: { arg: "mode" } } }],
+    { action: `${PUSH}.set_mode`, idempotent: true, stateless: false, confirms: false, args: { mode: ["click", "switch"] },
+      confirmedBy: { key: `${PUSH}.mode`, value: { arg: "mode" } } }],
   extensions: [{ capability: PUSH, description: "The pusher's own settings.", actions: [{ action: `${PUSH}.set_mode`, description: "Sets its mode.",
     schema: { type: "object", properties: { mode: { enum: ["click", "switch"] } } } }],
   keys: [{ key: `${PUSH}.mode`, description: "Its mode.", schema: { type: "string" } }] }],
@@ -124,6 +125,20 @@ async function home(opts: { mutation?: Mutation; db?: Awaited<ReturnType<typeof 
 }
 
 describe("apply and dispatch", () => {
+  it("rounds a bound of a fraction of a second up to whole seconds for the Message Expiry, never down (bridge, *Message Expiry*)", async () => {
+    const m = await home();
+    await m.configure([{ op: "upsert", kind: "ack_within_s", value: { device: "hall:lamp", action: "onoff.turn_on", ack_within_s: 12.5 } }]);
+    await m.apply([ask("hall:lamp")]);
+    expect(m.sent).toMatchObject([{ device: "lamp", expiryS: 13, body: { resultWithinMs: 12_500 } }]);
+  });
+
+  it("floors it under floors-message-expiry", async () => {
+    const m = await home({ mutation: "floors-message-expiry" });
+    await m.configure([{ op: "upsert", kind: "ack_within_s", value: { device: "hall:lamp", action: "onoff.turn_on", ack_within_s: 12.5 } }]);
+    await m.apply([ask("hall:lamp")]);
+    expect(m.sent).toMatchObject([{ device: "lamp", expiryS: 12 }]);
+  });
+
   it("publishes a command per op step with its bound as Message Expiry, and acks it only on the report that matches (GA-EVT-3, GA-BUS-5)", async () => {
     const m = await home();
     const r = await m.apply([ask("hall:lamp")]);
@@ -152,11 +167,21 @@ describe("apply and dispatch", () => {
     expect((await m.outcomes(r.apply_id))[0].outcome).toBe("acked");
   });
 
+  it("describes each action's args in the form the bridges declare them (the args table, ruled 2026-10-06)", async () => {
+    const m = await home();
+    const described = body(await m.a.call(m.owner, "describe", {})).devices;
+    const argsOf = (id: string, action: string) => described.find((x: any) => x.id === id).actions.find((a: any) => a.action === action).args;
+    expect(argsOf("hall:pusher", `${PUSH}.set_mode`)).toEqual({ mode: ["click", "switch"] });
+    expect(argsOf("hall:pager", "notify.notify")).toEqual({ text: "any", urgency: ["info", "warning", "critical"], from: "any" });
+    expect(argsOf("hall:lamp", "onoff.turn_on")).toBeUndefined();
+  });
+
   it("acks an extension action only on the report of its confirmed_by key at the value it asks, an argument's included, and skips it already where it holds (GA-EVT-3, GA-PLAN-4)", async () => {
     const m = await home();
     const asked = ask("hall:pusher", `${PUSH}.set_mode`, { mode: "click" });
     const r = await m.apply([{ ...asked, token: m.token(asked) }]);
-    expect(m.sent[0]!.body.value).toEqual({ action: `${PUSH}.set_mode`, value: { mode: "click" } });
+    // Its one argument goes bare, as its bridge takes it (bridge, *Commands*).
+    expect(m.sent[0]!.body.value).toEqual({ action: `${PUSH}.set_mode`, value: "click" });
     m.ack(m.sent[0]!, "sent");
     m.report("pusher", { [`${PUSH}.mode`]: "switch" });
     expect((await m.outcomes(r.apply_id))[0].outcome).toBe("dispatched");

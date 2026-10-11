@@ -1,8 +1,10 @@
 import { createServer, type Server } from "node:net";
+import { createServer as createTlsServer } from "node:tls";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { systemClock } from "@ludentes/galatea-life-test-clock";
 import { backoffMs, Bus, BRIDGE_TOPICS, connectOptions, FINDER_TOPICS, KEEPALIVE_S, pubackOf, subackFault } from "../src/bus/client.js";
+import { privateCa } from "./private-ca.js";
 
 describe("the bus client", () => {
   it("pins its options: the identity as ClientID, a session that expires at once, keepalive ≤ 10 s, no reconnect or queue of its own", () => {
@@ -12,6 +14,11 @@ describe("the bus client", () => {
       properties: { sessionExpiryInterval: 0 },
     });
     expect(KEEPALIVE_S).toBeLessThanOrEqual(10);
+  });
+
+  it("carries the broker's CA, when it is given one, and nothing of it otherwise", () => {
+    expect(connectOptions("applier-1", "pw", "-----BEGIN CERTIFICATE-----")).toMatchObject({ password: "pw", ca: "-----BEGIN CERTIFICATE-----" });
+    expect(connectOptions("applier-1", "pw")).not.toHaveProperty("ca");
   });
 
   it("never subscribes to a filter matching a command or a request (GA-BUS-9)", () => {
@@ -75,6 +82,37 @@ describe("a failed connect", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/135|0x87|[Nn]ot authorized/);
     expect(lines[0]).not.toContain("s3cret-pw");
+  });
+
+  it("validates an mqtts broker against the CA it is given, and refuses the same broker without it (GALATEA_BROKER_CA)", async () => {
+    const pki = privateCa();
+    let handshakes = 0;
+    const tlsServer = createTlsServer({ cert: pki.cert, key: pki.key }, (sock) => {
+      handshakes++;
+      // CONNACK, MQTT 5, refused 0x87: enough to show the connection got through TLS.
+      sock.once("data", () => sock.write(Buffer.from([0x20, 0x03, 0x00, 0x87, 0x00])));
+    });
+    await new Promise<void>((r) => tlsServer.listen(0, "127.0.0.1", r));
+    const port = (tlsServer.address() as AddressInfo).port;
+    try {
+      const untrusting: string[] = [];
+      bus = new Bus(options(`mqtts://127.0.0.1:${port}`, untrusting));
+      await bus.start();
+      await new Promise((r) => setTimeout(r, 200));
+      await bus.close();
+      expect(handshakes).toBe(0);
+      expect(untrusting[0]).toMatch(/connect failed .*(self-signed|unable to verify|issuer)/i);
+      const trusting: string[] = [];
+      bus = new Bus({ ...options(`mqtts://127.0.0.1:${port}`, trusting), ca: pki.ca });
+      await bus.start();
+      await new Promise((r) => setTimeout(r, 200));
+      expect(handshakes).toBe(1);
+      expect(trusting[0]).toMatch(/135|0x87|[Nn]ot authorized/);
+    } finally {
+      await bus?.close();
+      bus = undefined;
+      await new Promise<void>((r) => tlsServer.close(() => r()));
+    }
   });
 
   it("logs a network error once, with no password", async () => {

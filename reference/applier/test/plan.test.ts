@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planSteps, REASON_ORDER, type Gate, type GateDevice, type Requested } from "../src/gate/plan.js";
+import { planSteps, type Gate, type GateDevice, type Requested } from "../src/gate/plan.js";
 import { proofOf } from "../src/gate/token.js";
 import type { Mutation } from "../src/mutations.js";
 
@@ -46,9 +46,22 @@ describe("planSteps", () => {
       verdict: "op", tier: "reversible", stale: true, basis: "real" });
   });
 
-  it("keeps the standard's order of reasons in one list", () => {
-    expect(REASON_ORDER).toEqual(["unknown_target", "unsupported_action", "not_adopted", "invalid_args", "dead",
-      "duplicate_route", "safety", "latched", "tier", "already", "toggle_only", "token"]);
+  it("gives the first reason of the standard's order when a step has several, each next one as the one before is put right", () => {
+    // Every fault at once (true: present): not adopted, dead, on a duplicate route, guarded, latched, no_voice asked by voice, already on, no token.
+    const faults = { adopted: true, dead: true, duplicateRoute: true, guarded: true, latched: true, voice: true, on: true };
+    const step = () => {
+      const d = device({ adopted: !faults.adopted, liveness: faults.dead ? "dead" : "live", duplicateRoute: faults.duplicateRoute,
+        guarded: faults.guarded, latched: () => faults.latched, values: new Map([["on", faults.on]]),
+        actions: new Map([["onoff.turn_on", { tier: faults.voice ? "no_voice" : "confirm", stateless: false, toggles: false }]]) });
+      return why(gate({ "hall:lamp": d }), ask("hall:lamp", "onoff.turn_on", faults.voice ? { via: "voice" } : {}));
+    };
+    const seen: string[] = [step()];
+    for (const k of ["adopted", "dead", "duplicateRoute", "guarded", "latched", "voice", "on"] as const) {
+      faults[k] = false;
+      seen.push(step());
+    }
+    expect(seen).toEqual(["refuse(not_adopted)", "skip(dead)", "refuse(duplicate_route)", "refuse(safety)", "refuse(latched)",
+      "refuse(tier)", "skip(already)", "refuse(token)"]);
   });
 
   it("refuses a latch's undo latched, after safety and before tier, its tier no_voice (GA-SAFE-7)", () => {

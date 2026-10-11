@@ -1,5 +1,5 @@
-import tls from "node:tls";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport, type FetchLike } from "@modelcontextprotocol/client";
+import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from "undici";
 
 type Body = Record<string, any>;
 
@@ -34,37 +34,27 @@ export class ApplierRefused extends Error {
   }
 }
 
-export const isLoopback = (host: string): boolean =>
-  host === "localhost" || host === "[::1]" || host === "::1" || /^127\./.test(host);
+export { checkApplierUrl, isLoopback } from "../net/applier-url.js";
 
 /**
- * The applier's URL as GA-SEC-2 allows it: `https`, its certificate validated against the system's
- * store or the CA the steward was given, or plain `http` only when both ends are on this host's
- * loopback. Anything else is refused before a connection is tried, never retried insecurely.
+ * How one link validates its applier's certificate (GA-SEC-2): against `ca` alone when it is given
+ * (`GALATEA_APPLIER_CA`), else against the system's store; `insecure`, the mutation
+ * `trusts-any-applier`, not at all. The trust is the link's own undici agent, handed to the MCP
+ * transport through its `fetch`: nothing else in the process trusts more than the system's store.
  */
-export function checkApplierUrl(raw: string): URL {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error("GALATEA_APPLIER_URL is not a URL");
-  }
-  if (url.protocol === "https:") return url;
-  if (url.protocol === "http:" && isLoopback(url.hostname)) return url;
-  throw new Error(`refusing to reach the applier at ${url.protocol}//${url.host}: off loopback it must be https (GA-SEC-2)`);
-}
-
-/**
- * `GALATEA_APPLIER_CA`: a CA the applier's certificate may be validated against, beside the
- * system's store (GA-SEC-2). Process-wide: the applier link is the steward's one TLS client.
- */
-export function trustApplierCa(pem: string): void {
-  tls.setDefaultCACertificates([...tls.getCACertificates("default"), pem]);
-}
-
-/** The mutation `trusts-any-applier`: the applier's certificate is not validated at all. */
-export function trustAnyApplier(): void {
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+export function linkFetch(opts: { ca?: string; insecure?: boolean }): { fetch: FetchLike; agent: Agent } {
+  const agent = new Agent({ connect: opts.insecure ? { rejectUnauthorized: false } : opts.ca ? { ca: opts.ca } : {} });
+  const fetch: FetchLike = async (url, init) => {
+    try {
+      return (await undiciFetch(url, { ...(init as UndiciRequestInit), dispatcher: agent })) as unknown as Response;
+    } catch (err) {
+      // undici says only "fetch failed"; the cause (a refused certificate, a refused connection) is what the log needs.
+      const cause = (err as { cause?: { message?: string; code?: string } }).cause;
+      if (err instanceof TypeError && cause) throw new TypeError(`${err.message}: ${cause.code ?? cause.message}`, { cause });
+      throw err;
+    }
+  };
+  return { fetch, agent };
 }
 
 /**
@@ -73,13 +63,21 @@ export function trustAnyApplier(): void {
  * `legacy` speaks only the 2025 handshake (the mutation `calls-its-applier-at-2025`).
  */
 export class McpApplierPort implements ApplierPort {
-  private constructor(private readonly client: Client) {}
+  private constructor(private readonly client: Client, private readonly agent: Agent) {}
 
-  static async connect(url: URL, bearer: string, opts: { legacy?: boolean } = {}): Promise<McpApplierPort> {
+  /** `ca` and `insecure` as `linkFetch` takes them: this session's trust, and no other's. */
+  static async connect(url: URL, bearer: string, opts: { legacy?: boolean; ca?: string; insecure?: boolean } = {}): Promise<McpApplierPort> {
     const client = new Client({ name: "galatea-reference-steward", version: "0.0.0" },
       { versionNegotiation: { mode: opts.legacy ? "legacy" : "auto" } });
-    await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: { Authorization: `Bearer ${bearer}` } } }));
-    return new McpApplierPort(client);
+    const { fetch, agent } = linkFetch(opts);
+    try {
+      await client.connect(new StreamableHTTPClientTransport(url, { fetch, requestInit: { headers: { Authorization: `Bearer ${bearer}` } } }));
+    } catch (err) {
+      await client.close().catch(() => undefined);
+      await agent.destroy().catch(() => undefined);
+      throw err;
+    }
+    return new McpApplierPort(client, agent);
   }
 
   get protocolVersion(): string | undefined {
@@ -124,7 +122,12 @@ export class McpApplierPort implements ApplierPort {
     return { events: Array.isArray(r.events) ? r.events as Body[] : [] };
   }
 
-  close(): Promise<void> {
-    return this.client.close();
+  async close(): Promise<void> {
+    try {
+      await this.client.close();
+    } finally {
+      // Destroyed, not closed: a long-poll still open would hold a close for its whole wait.
+      await this.agent.destroy().catch(() => undefined);
+    }
   }
 }

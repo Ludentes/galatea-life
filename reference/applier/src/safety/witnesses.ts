@@ -13,7 +13,9 @@ export type Expect = "rises" | "falls" | { becomes: string | number | boolean } 
  * A witness (applier, *Safety rules*): the sensor that says whether an action did what it asked, the key
  * of it that it reads (its first sensor key where the owner names none), and how long it may take.
  */
-export type Witness = { sensor: string; key?: string; expect: Expect; within_s: number };
+export type Witness = { sensor: string; key?: string; expect: Expect; within_s: number;
+  /** Why a change of its sensor's declarations disabled it (GA-SAFE-14): it judges nothing until the owner sets it again. */
+  disabled?: string };
 export type Verdict = "confirmed" | "unconfirmed" | "unknown";
 /** A witness's verdict on a step, as `outcome` carries it beside the step's own outcome and its event carries it. */
 export type Witnessed = Witness & { verdict: Verdict };
@@ -116,7 +118,8 @@ export class Witnesses {
         this.forget(k.apply_id, k.step_id);
         continue;
       }
-      this.o.clock.setTimeout(() => {
+      const timer = this.o.clock.setTimeout(() => {
+        this.resumed.delete(timer);
         const witnessed: Witnessed = { ...k.witness, verdict: "unknown" };
         // The verdict, its event and the watch's delete commit as one write set.
         this.o.store.group(() => {
@@ -125,8 +128,20 @@ export class Witnesses {
           this.forget(k.apply_id, k.step_id);
         });
       }, Math.max(0, k.due - this.o.clock.now()));
+      this.resumed.add(timer);
     }
     this.kept = [];
+  }
+
+  /** The timers `resume` set for the watches a restart found, until each fires. */
+  private readonly resumed = new Set<number>();
+
+  /** The applier stops (an embedding host's stop): every watch's timer is cleared, `resume`'s too; the watches stay as the store keeps them. */
+  stop(): void {
+    for (const w of this.watches.values()) this.o.clock.clear(w.timer);
+    this.watches.clear();
+    for (const t of this.resumed) this.o.clock.clear(t);
+    this.resumed.clear();
   }
 
   /** A watch judged: its row goes. */

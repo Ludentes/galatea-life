@@ -172,6 +172,17 @@ describe("the undos raised after latches clear (GA-SAFE-7)", () => {
     expect(l.raises("hall:thermo", "climate.set_setpoint", { celsius: 20 })).toBe(true);
   });
 
+  it("raises each undo key once however often its latch fires and clears while no undo runs (the whole-applier review's M2)", () => {
+    const l = latches({ "hall:leak leak": false });
+    const r = two.get("off")!;
+    for (let i = 0; i < 3; i++) {
+      l.set(r);
+      l.check(two);
+    }
+    const raised = (l as unknown as { raised: Map<string, unknown[]> }).raised;
+    expect(raised.get("hall:thermo")).toEqual([{ device: "hall:thermo", key: "mode", value: "off" }]);
+  });
+
   it("raises an action whose side effect undoes a cleared latch: level.set_level after a turn_off", () => {
     const l = latches({ "hall:leak leak": false });
     const rules = new Map<string, SafetyRule>([["lamp", { id: "lamp", trigger: LEAK, actions: [{ target: "hall:lamp", action: "onoff.turn_off" }], ...cond } as SafetyRule]]);

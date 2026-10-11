@@ -79,12 +79,12 @@ export class LivenessNotices {
         this.graced.delete(device);
         // `silent-on-liveness`: a device still dead after its grace is never noticed.
         if (this.o.mutation === "silent-on-liveness" || this.o.liveness(device) === "live") return;
-        for (const rule of this.rules(device)) this.stop(rule, device, `${device} has not been live for ${GRACE_MS / 1000} s, since its bridge went offline.`);
+        for (const rule of this.rules(device)) this.sayStopped(rule, device, `${device} has not been live for ${GRACE_MS / 1000} s, since its bridge went offline.`);
       }, GRACE_MS));
       return;
     }
     const why = bridge !== undefined ? `; its bridge ${bridge} went offline again within ${LOOP_MS / 60_000} min` : "";
-    for (const rule of rules) this.stop(rule, device, `${device} is ${next}${why}.`);
+    for (const rule of rules) this.sayStopped(rule, device, `${device} is ${next}${why}.`);
   }
 
   /** The stops said before a restart: said once, their return said after it (GA-SAFE-10). */
@@ -107,7 +107,7 @@ export class LivenessNotices {
         if (this.o.mutation === "silent-on-liveness" || this.o.liveness(device) === "live") return;
         for (const rule of this.rules(device)) {
           if (this.stopped.has(key(rule, device))) continue;
-          this.stop(rule, device, `${device} has not been live for ${GRACE_MS / 1000} s, since the applier started.`);
+          this.sayStopped(rule, device, `${device} has not been live for ${GRACE_MS / 1000} s, since the applier started.`);
         }
       }, GRACE_MS));
     }
@@ -140,7 +140,13 @@ export class LivenessNotices {
     for (const k of [...this.says.keys()]) if (!seen.has(k)) this.says.delete(k);
   }
 
-  private stop(rule: string, device: string, text: string): void {
+  /** The applier stops (an embedding host's stop): every grace's timer is cleared. */
+  stop(): void {
+    for (const t of this.graced.values()) this.o.clock.clear(t);
+    this.graced.clear();
+  }
+
+  private sayStopped(rule: string, device: string, text: string): void {
     const k = key(rule, device);
     this.stopped.add(k);
     void this.o.store.write((tx) => tx.query("INSERT INTO safety_said (key) VALUES ($1) ON CONFLICT DO NOTHING", [k]).then(() => undefined));

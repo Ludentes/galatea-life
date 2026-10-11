@@ -1,0 +1,16 @@
+# The applier's build context, an allow-list: nothing else in the repository, ignored files
+# included, reaches the image.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!conformance/schemas
+!conformance/clock
+!reference/applier
+# The development dependencies' manifests alone, so the workspace links them; nothing of them is built or shipped.
+!conformance/*/package.json
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+reference/applier/test

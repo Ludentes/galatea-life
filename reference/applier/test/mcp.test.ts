@@ -1,5 +1,10 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { request } from "node:https";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Applier } from "../src/applier.js";
 import { StoreError } from "../src/core/db.js";
@@ -128,5 +133,29 @@ describe("the MCP binding", () => {
     const applier = new Applier({ store: await Store.open(await memoryDb(), clock, (err) => { throw err; }), clock,
       ownerCredential: OWNER, applierId: "demo" });
     await expect(serveMcp(applier, { port: await freePort(), host: "0.0.0.0" })).rejects.toThrow(/TLS/);
+  });
+
+  it("serves TLS from the PEM contents it is given, reading no file itself", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "applier-tls-"));
+    try {
+      execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", join(dir, "k.pem"),
+        "-out", join(dir, "c.pem"), "-days", "1", "-subj", "/CN=applier-test", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+      const cert = readFileSync(join(dir, "c.pem"), "utf8");
+      const key = readFileSync(join(dir, "k.pem"), "utf8");
+      rmSync(dir, { recursive: true, force: true });
+      const clock = new FakeClock();
+      const applier = new Applier({ store: await Store.open(await memoryDb(), clock, (err) => { throw err; }), clock,
+        ownerCredential: OWNER, applierId: "demo" });
+      const server = await serveMcp(applier, { port: await freePort(), tls: { cert, key } });
+      cleanup.push(() => server.close());
+      expect(server.url).toMatch(/^https:/);
+      const status = (ca?: string) => new Promise<number>((resolve, reject) => {
+        request(new URL("/elsewhere", server.url), { ca }, (res) => { res.resume(); resolve(res.statusCode!); }).on("error", reject).end();
+      });
+      expect(await status(cert)).toBe(404);
+      await expect(status()).rejects.toThrow(/self-signed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -27,6 +27,7 @@ function setup(mutation?: Mutation, standing: string[] = []) {
   const replies: [string, Record<string, unknown>][] = [];
   const provisioning: [string, { type: string; body: Record<string, unknown> }][] = [];
   const connsChanged: [string, { kind: string; entity: string; keys: string[] }[]][] = [];
+  const announced: [string, string, string[]][] = [];
   /** The notices raised, keyed or not, and the keys standing, as `Notices` would hold them. */
   const notices: (NoticeAsk & { key?: string })[] = [];
   const keys = new Set(standing);
@@ -52,6 +53,7 @@ function setup(mutation?: Mutation, standing: string[] = []) {
     reply: (b, body) => { replies.push([b, body]); return String(body.requestId).startsWith("held-"); },
     provisioning: (b, e) => void provisioning.push([b, e]),
     connectionsChanged: (b, rows) => void connsChanged.push([b, rows]),
+    announced: (b, device, names) => void announced.push([b, device, names]),
   }, mutation);
   home.follow(new Map([[B.id, B]]));
   /** The owner's adoptions and declarations, as a committed configure gives them. */
@@ -76,7 +78,7 @@ function setup(mutation?: Mutation, standing: string[] = []) {
   };
   const describe = (id = "hall:lamp") => home.describeDevice(home.devices.get(id)!);
   return { clock, home, events, changed, modelledTransports, snapshots, gone, facts, notices, keys, own, send, status, lamp, faults, heard,
-    describe, replies, provisioning, connsChanged };
+    describe, replies, provisioning, connsChanged, announced };
 }
 
 describe("Home", () => {
@@ -363,6 +365,66 @@ describe("Home", () => {
     actions: [{ action: "cover.close", idempotent: false, stateless: false, confirms: true }], ...extra });
   const remote = [{ vendor: "demo", label: "remote" }];
 
+  it("describes a device's awaited_keys, undescribed and settings as its bridge gives them, absent where it gives none (GA-DESC-19)", () => {
+    const { send, describe } = setup();
+    send("devices", { devices: [entry("lamp", { awaitedKeys: ["power"], settings: ["org.galatea.test.lamp.fade"],
+      undescribed: [{ name: "dp108", firstSeen: wire(0) }] })] });
+    expect(describe()).toMatchObject({ awaited_keys: ["power"], settings: ["org.galatea.test.lamp.fade"],
+      undescribed: [{ name: "dp108", first_seen: wire(0) }] });
+    send("devices", { devices: [entry("lamp")] });
+    for (const k of ["awaited_keys", "settings", "undescribed"]) expect(describe()).not.toHaveProperty(k);
+  });
+
+  it("takes a change of awaited_keys or settings as a model change, and of undescribed alone as none (GA-DESC-19)", () => {
+    const { send, changed, facts } = setup();
+    send("devices", { devices: [entry("lamp")] });
+    send("devices", { devices: [entry("lamp", { awaitedKeys: ["power"] })] });
+    send("devices", { devices: [entry("lamp", { awaitedKeys: ["power"], settings: ["org.galatea.test.lamp.fade"] })] });
+    expect(changed).toHaveLength(3);
+    send("devices", { devices: [entry("lamp", { awaitedKeys: ["power"], settings: ["org.galatea.test.lamp.fade"],
+      undescribed: [{ name: "dp108", firstSeen: wire(0) }] })] });
+    expect(changed).toHaveLength(3);
+    expect(facts).toEqual(["hall:lamp"]);
+  });
+
+  it("relays its bridge's undescribed event as its own, once per name, kept in events only, and announces a name first met in a devices document (GA-DESC-19)", () => {
+    const { send, events, announced } = setup();
+    const undescribed = () => events.filter((e) => e.type === "undescribed").map((e) => ({ ...e.body, eventsOnly: e.eventsOnly }));
+    send("devices", { devices: [entry("lamp", { undescribed: [{ name: "dp108", firstSeen: wire(0) }] })] }, true);
+    expect(undescribed()).toEqual([{ target: "hall:lamp", name: "dp108", eventsOnly: true }]);
+    const event = (seq: number, name: string) => send("event", { seq, instanceId: "11111111-1111-4111-8111-111111111111", type: "undescribed",
+      device: "lamp", name });
+    event(0, "dp108");
+    event(1, "dp109");
+    event(2, "dp109");
+    send("devices", { devices: [entry("lamp", { undescribed: [{ name: "dp108", firstSeen: wire(0) }, { name: "dp109", firstSeen: wire(0) }] })] });
+    expect(undescribed()).toEqual([{ target: "hall:lamp", name: "dp108", eventsOnly: true }, { target: "hall:lamp", name: "dp109", eventsOnly: true }]);
+    expect(announced).toEqual([["hall", "lamp", ["dp108"]], ["hall", "lamp", ["dp109"]]]);
+  });
+
+  it("announces no name again that the store says it announced before a restart (GA-DESC-19, GA-PERSIST-1)", () => {
+    const { home, send, events } = setup();
+    home.loadAnnounced([{ bridge: "hall", bridge_device: "lamp", name: "dp108" }]);
+    send("devices", { devices: [entry("lamp", { undescribed: [{ name: "dp108", firstSeen: wire(0) }, { name: "dp109", firstSeen: wire(0) }] })] }, true);
+    expect(events.filter((e) => e.type === "undescribed").map((e) => e.body.name)).toEqual(["dp109"]);
+  });
+
+  it("takes an undescribed event of a device it does not hold, or of a bad name, as a bridge fault", () => {
+    const { send, faults, events } = setup();
+    send("devices", { devices: [entry("lamp")] });
+    send("event", { seq: 0, instanceId: "11111111-1111-4111-8111-111111111111", type: "undescribed", device: "ghost", name: "dp1" });
+    send("event", { seq: 1, instanceId: "11111111-1111-4111-8111-111111111111", type: "undescribed", device: "lamp", name: "no spaces" });
+    expect(faults()).toEqual(["an undescribed event on ghost, a device its devices document does not hold", "an undescribed event on lamp whose name is not of its form"]);
+    expect(events.filter((e) => e.type === "undescribed")).toEqual([]);
+  });
+
+  it("relays nothing under drops-the-undescribed-event", () => {
+    const { send, events } = setup("drops-the-undescribed-event");
+    send("devices", { devices: [entry("lamp", { undescribed: [{ name: "dp108", firstSeen: wire(0) }] })] });
+    send("event", { seq: 0, instanceId: "11111111-1111-4111-8111-111111111111", type: "undescribed", device: "lamp", name: "dp109" });
+    expect(events.filter((e) => e.type === "undescribed")).toEqual([]);
+  });
+
   it("takes a change of other_admins alone as state: an other_admins event, written behind, no model change (GA-DESC-2)", () => {
     const { send, changed, facts, events } = setup();
     send("devices", { devices: [GATE()] });
@@ -552,6 +614,19 @@ describe("Home", () => {
       if (leave === "roster") send("status", status({}, []));
       expect(lamp().liveness, leave).toBe("dead");
     }
+  });
+
+  it("does not take a status with no reading, a re-interview's, as the device leaving or dead (GA-STATE-2)", () => {
+    const { clock, home, send, lamp, heard, faults, events } = setup();
+    heard();
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true }, true);
+    const before = events.length;
+    clock.advance(1000);
+    send("devices/lamp/status", { deviceId: "lamp", timestamp: wire(clock.now()), available: true }, true);
+    expect(lamp().liveness).toBe("live");
+    expect(home.devices.has("hall:lamp")).toBe(true);
+    expect(faults()).toEqual([]);
+    expect(events.slice(before).filter((e) => e.type === "liveness")).toEqual([]);
   });
 
   it("does not take a roster entry dropped for a bad field as the device leaving (GA-BUS-1)", () => {
@@ -899,6 +974,22 @@ describe("Home", () => {
     expect(lamp().values).toEqual([{ key: "on", value: true, basis_time: good }]);
     expect(lamp().liveness).toBe("stale");
     expect(events.filter((e) => e.type === "state")).toHaveLength(1);
+  });
+});
+
+describe("Home: the roster held (the whole-applier review's M1)", () => {
+  it("holds only the devices the latest roster lists: one gone from it, fast or not, is dropped", () => {
+    const { home, send, status, clock } = setup();
+    send("devices", { devices: [entry("lamp")] }, true);
+    home.listening(B.id);
+    const ahead = wire(clock.now() + 600_000);
+    send("status", status({}, [{ id: "lamp" }, { id: "ghost-1" }, { id: "ghost-2", lastCheckIn: ahead }]));
+    const v = (home as unknown as { bridges: Map<string, { roster: Map<string, unknown>; fastCheckIn: Set<string> }> }).bridges.get(B.id)!;
+    expect([...v.roster.keys()].sort()).toEqual(["ghost-1", "ghost-2", "lamp"]);
+    expect([...v.fastCheckIn]).toEqual(["ghost-2"]);
+    send("status", status({}, [{ id: "lamp" }]));
+    expect([...v.roster.keys()]).toEqual(["lamp"]);
+    expect([...v.fastCheckIn]).toEqual([]);
   });
 });
 

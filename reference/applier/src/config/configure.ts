@@ -1,3 +1,4 @@
+import { hashSecret, sameSecret } from "../core/secret.js";
 import { validate } from "@ludentes/galatea-life-schemas";
 import { RequestError } from "../core/errors.js";
 import { isExtension, type ConfirmedBy, type Constraint } from "../bus/wire.js";
@@ -44,6 +45,8 @@ export type DeviceInfo = {
   proposed_class?: string | null;
   /** Its bridge's proposal that it carries the broker (GA-BRIDGE-65). */
   proposed_infrastructure?: true;
+  /** The keys its bridge awaits, promised and not yet reported (GA-DESC-19): named in a refusal's `data` (GA-SAFE-14). */
+  awaited_keys?: string[];
 };
 /**
  * `devices`: the devices the model holds now, which an adoption and a declaration must name. `levels`:
@@ -52,6 +55,8 @@ export type DeviceInfo = {
  * TCP to a host off loopback, so `box: true` is refused.
  */
 type Ctx = { levels: Level[]; underHarness: boolean; ownerCredential: string; devices?: ReadonlyMap<string, DeviceInfo>;
+  /** The applier's own MQTT identity: no bridge may hold it. */
+  ownIdentity?: string;
   mutation?: Mutation; ungoverned?: boolean; plainOffLoopback?: boolean;
   /** The safety rules whose latch is held: what `clear_latch` may name (GA-SAFE-7). */
   latches?: ReadonlySet<string>;
@@ -438,20 +443,22 @@ const KINDS: Record<string, Kind> = {
       draft.clients.delete(id);
       return `- client ${id}`;
     }
-    const c = checked<Client>("applier/configure.client.json", change.value);
-    const next: Client = { id: c.id, credential: c.credential, kind: c.kind, ...(c.token_key ? { token_key: c.token_key } : {}) };
-    if (c.credential === ctx.ownerCredential) bad("a client may not hold the owner's credential");
+    const c = checked<Omit<Client, "credential_sha256"> & { credential: string }>("applier/configure.client.json", change.value);
+    // Only its SHA-256 is held (the whole-applier review's M6).
+    const hash = hashSecret(c.credential);
+    const next: Client = { id: c.id, credential_sha256: hash, kind: c.kind, ...(c.token_key ? { token_key: c.token_key } : {}) };
+    if (sameSecret(c.credential, ctx.ownerCredential)) bad("a client may not hold the owner's credential");
     // Two secrets, so a leaked bearer does not also mint a person's yes (the design's token_key).
     if (c.token_key !== undefined && c.token_key === c.credential) bad("a client's token key may not be its credential");
     for (const other of draft.clients.values()) {
-      if (other.id !== c.id && other.credential === c.credential) bad(`client ${other.id} already holds that credential`);
+      if (other.id !== c.id && sameSecret(other.credential_sha256, hash)) bad(`client ${other.id} already holds that credential`);
     }
     const held = draft.clients.get(c.id);
     draft.clients.set(c.id, next);
     if (held && JSON.stringify(held) === JSON.stringify(next)) return undefined;
     return `${held ? "~" : "+"} client ${c.id} (${c.kind})`;
   },
-  bridge(draft, change) {
+  bridge(draft, change, ctx) {
     if (change.op === "delete") {
       const id = idOf(change.value);
       if (!draft.bridges.has(id)) bad(`no bridge ${id}`);
@@ -459,6 +466,12 @@ const KINDS: Record<string, Kind> = {
       return `- bridge ${id}`;
     }
     const b = checked<Bridge>("applier/configure.bridge.json", change.value);
+    // One identity, one bridge: messages are routed by identity, so a second bridge on it would never be
+    // fed, and deleting either would unsubscribe the topics the other hears.
+    if (ctx.ownIdentity !== undefined && b.identity === ctx.ownIdentity) bad(`identity ${b.identity} is the applier's own`);
+    for (const other of draft.bridges.values()) {
+      if (other.id !== b.id && other.identity === b.identity) bad(`bridge ${other.id} already holds identity ${b.identity}`);
+    }
     const held = draft.bridges.get(b.id);
     draft.bridges.set(b.id, { id: b.id, identity: b.identity });
     if (held && held.identity === b.identity) return undefined;
@@ -560,7 +573,8 @@ const KINDS: Record<string, Kind> = {
    * `witness` (applier, *Safety rules*, GA-WIT-1): the sensor that says whether a device's action did
    * what it asked, its expectation and its `within_s`, on an action the device offers, over a device
    * the model holds that reports a sensor key, read on the key it names, one of the sensor's, or else
-   * on its first; `toward` names an argument of
+   * on its first, which is kept as its key from then on, so a restart cannot lose what it read (the
+   * whole-applier review's M8); `toward` names an argument of
    * the action that takes a number. Safe, so `not_claimed` below it (GA-LVL-1). Its delete names the
    * device and the action.
    */
@@ -576,13 +590,25 @@ const KINDS: Record<string, Kind> = {
     }
     const v = checked<Witness & { device: string; action: string }>("applier/configure.witness.json", change.value);
     offered(device(ctx, v.device), v.device, v.action);
-    const keys = device(ctx, v.sensor).sensor_keys;
-    if (!keys.length) bad(`${v.sensor} reports no sensor key a witness could read`);
-    if (v.key !== undefined && !keys.includes(v.key)) bad(`${v.sensor} reports no sensor key ${v.key} for a witness to read`);
+    const sensor = device(ctx, v.sensor);
+    const keys = sensor.sensor_keys;
+    if (v.key !== undefined && !keys.includes(v.key)) {
+      // A key it declares, but not among its sensor keys (a lamp's `on`): no GA-SAFE-14 refusal, which is for an undeclared key.
+      if (stateKeys(sensor).includes(v.key)) bad(`${v.sensor}'s ${v.key} is not among its sensor keys, which a witness reads`);
+      // GA-SAFE-14: named, with whether its bridge awaits it.
+      const awaited = sensor.awaited_keys?.includes(v.key) ?? false;
+      throw new RequestError("invalid_request", `${v.sensor} declares no sensor key ${v.key} for a witness to read`
+        + `${awaited ? ", which its bridge awaits: it has not reported it yet" : ""}`, { key: v.key, device: v.sensor, awaited });
+    }
+    if (!keys.length) {
+      const awaited = sensor.awaited_keys ?? [];
+      bad(`${v.sensor} declares no sensor key a witness could read${awaited.length
+        ? `; its bridge awaits ${awaited.join(", ")}, not reported yet: name one as the witness's key once it is` : ""}`);
+    }
     if (typeof v.expect === "object" && "toward" in v.expect && !numberArg(v.action, v.expect.toward.arg)) {
       bad(`${v.action} takes no number ${v.expect.toward.arg} for a witness to move towards`);
     }
-    const next: Witness = { sensor: v.sensor, ...(v.key !== undefined ? { key: v.key } : {}), expect: v.expect, within_s: v.within_s };
+    const next: Witness = { sensor: v.sensor, key: v.key ?? keys[0]!, expect: v.expect, within_s: v.within_s };
     const d = declared(draft, v.device);
     if (canonical(d.witnesses?.[v.action]) === canonical(next)) return undefined;
     (d.witnesses ??= {})[v.action] = next;
@@ -801,15 +827,30 @@ function consistent(draft: Config, mutation?: Mutation): void {
  * its adoption is judged apart. `configure` refuses a rule with such a fault, and a change of the
  * declarations that gives one disables it (GA-SAFE-13). `toggles` is `toggles-by-safety-rule`'s switch.
  */
-export function declarationFault(r: SafetyRule, devices: ReadonlyMap<string, DeviceInfo>, o: { toggles?: boolean } = {}): string | undefined {
+/**
+ * The first key a rule or its latch reads that its device does not declare, with whether its bridge
+ * awaits it (GA-SAFE-14), as a refusal's `data` gives them; an event key is GA-EVT-8's, not this.
+ */
+export function undeclaredRead(r: SafetyRule, devices: ReadonlyMap<string, DeviceInfo>): { key: string; device: string; awaited: boolean } | undefined {
+  for (const t of reads(r)) {
+    const info = devices.get(t.device);
+    if (!info || info.extension_keys?.event.includes(t.key)) continue;
+    if (!stateKeys(info).includes(t.key)) return { key: t.key, device: t.device, awaited: info.awaited_keys?.includes(t.key) ?? false };
+  }
+  return undefined;
+}
+
+/** The state keys a device declares: its capabilities', its sensor keys and its extensions' `state` keys. */
+const stateKeys = (info: DeviceInfo): string[] => [...reported(info.capabilities, info.actions, info.sensor_keys), ...info.extension_keys?.state ?? []];
+
+export function declarationFault(r: SafetyRule, devices: ReadonlyMap<string, DeviceInfo>, o: { toggles?: boolean; keys?: boolean } = {}): string | undefined {
   for (const t of reads(r)) {
     const info = devices.get(t.device);
     if (!info) continue;
     if (info.extension_keys?.event.includes(t.key)) {
       return `${t.device}'s ${t.key} is an event key, an occurrence and never a value a rule can read (GA-EVT-8)`;
     }
-    const keys = [...reported(info.capabilities, info.actions, info.sensor_keys), ...info.extension_keys?.state ?? []];
-    if (!keys.includes(t.key)) return `${t.device} reports no state key ${t.key}`;
+    if (o.keys !== false && !stateKeys(info).includes(t.key)) return `${t.device} reports no state key ${t.key}`;
   }
   for (const a of r.actions) {
     const info = devices.get(a.target);
@@ -844,7 +885,15 @@ function checkRule(draft: Config, r: SafetyRule, ctx: Work): void {
     if (t.op !== "eq" && t.op !== "ne" && typeof t.value !== "number") bad(`safety rule ${r.id}: ${t.op} compares a number, not ${JSON.stringify(t.value)}`);
   }
   for (const a of r.actions) named(a.target);
-  const fault = declarationFault(r, ctx.devices, { toggles: ctx.mutation === "toggles-by-safety-rule" });
+  // A key its device does not declare: a rule on a reading that never comes never fires (GA-SAFE-14).
+  // `accepts-a-safety-rule-on-an-undeclared-key` takes it.
+  const lax = ctx.mutation === "accepts-a-safety-rule-on-an-undeclared-key";
+  const missing = lax ? undefined : undeclaredRead(r, ctx.devices);
+  if (missing) {
+    throw new RequestError("invalid_request", `safety rule ${r.id}: ${missing.device} declares no state key ${missing.key}`
+      + `${missing.awaited ? ", which its bridge awaits: it has not reported it yet" : ""}`, missing);
+  }
+  const fault = declarationFault(r, ctx.devices, { toggles: ctx.mutation === "toggles-by-safety-rule", keys: !lax });
   if (fault) bad(`safety rule ${r.id}: ${fault}`);
   // The broker's host's administrators reach every device a rule actuates (GA-SAFE-6). `ignores-the-broker-hosts-admins` leaves them out.
   const broker = ctx.mutation === "ignores-the-broker-hosts-admins" ? [] : brokerAdmins(draft, ctx.devices, ctx.mutation);
@@ -898,7 +947,7 @@ export function planChanges(current: Config, changes: Change[], ctx: Ctx): { dra
       const line = kind!(draft, change, work);
       if (line) diff.push(line);
     } catch (err) {
-      if (err instanceof RequestError) throw new RequestError(err.code, `changes[${i}]: ${err.message}`);
+      if (err instanceof RequestError) throw new RequestError(err.code, `changes[${i}]: ${err.message}`, err.data);
       throw err;
     }
   });

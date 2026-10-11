@@ -1,17 +1,13 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer as createHttp, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttps } from "node:https";
-import { tmpdir } from "node:os";
-import * as nodeTls from "node:tls";
-import { join } from "node:path";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, legacyStatelessFallback, Server } from "@modelcontextprotocol/server";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApplierRefused, checkApplierUrl, McpApplierPort, trustApplierCa } from "../src/link/port.js";
+import { ApplierRefused, checkApplierUrl, McpApplierPort } from "../src/link/port.js";
+import { privateCa } from "./private-ca.js";
 
 /** An applier's MCP binding in miniature: `describe` answers, `state` refuses; it records each call's revision. */
-async function serve(o: { legacyOnly?: boolean; tls?: { key: Buffer; cert: Buffer } } = {}) {
+async function serve(o: { legacyOnly?: boolean; tls?: { key: string; cert: string } } = {}) {
   const seen: (string | null)[] = [];
   const factory = (ctx: { requestInfo?: Request }) => {
     const s = new Server({ name: "fake-applier", version: "0" }, { capabilities: { tools: {} } });
@@ -27,11 +23,13 @@ async function serve(o: { legacyOnly?: boolean; tls?: { key: Buffer; cert: Buffe
   const handle = toNodeHandler(mcp);
   const listener = (q: IncomingMessage, r: ServerResponse) => void handle(q, r);
   const http = o.tls ? createHttps(o.tls, listener) : createHttp(listener);
+  let handshakes = 0;
+  http.on("secureConnection", () => handshakes++);
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
   const port = (http.address() as { port: number }).port;
   const close = async () => { await mcp.close(); await new Promise<void>((r) => { http.closeAllConnections(); http.close(() => r()); }); };
   closers.push(close);
-  return { url: new URL(`${o.tls ? "https" : "http"}://127.0.0.1:${port}/mcp`), seen };
+  return { url: new URL(`${o.tls ? "https" : "http"}://127.0.0.1:${port}/mcp`), seen, handshakes: () => handshakes };
 }
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const c of closers.splice(0)) await c(); });
@@ -75,33 +73,41 @@ describe("McpApplierPort", () => {
     expect(() => checkApplierUrl("nonsense")).toThrow(/not a URL/);
   });
 
-  it.skipIf(!hasOpenssl())("refuses a certificate it cannot validate, and takes one signed by the CA it is given (GA-SEC-2)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "steward-tls-"));
-    // The trust store is the process's: put it back, so no later test trusts this CA.
-    const defaults = nodeTls.getCACertificates("default");
-    try {
-      execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", join(dir, "k.pem"),
-        "-out", join(dir, "c.pem"), "-days", "1", "-subj", "/CN=steward-test", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
-      const tls = { key: readFileSync(join(dir, "k.pem")), cert: readFileSync(join(dir, "c.pem")) };
-      const { url, seen } = await serve({ tls });
-      await expect(McpApplierPort.connect(url, "b")).rejects.toThrow();
-      expect(seen).toEqual([]);
-      trustApplierCa(tls.cert.toString("utf8"));
-      const port = await McpApplierPort.connect(url, "b");
-      expect((await port.describe()).applier_id).toBe("fake");
-      await port.close();
-    } finally {
-      nodeTls.setDefaultCACertificates(defaults);
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it("trusts the CA one link is given, and only that link: another without it refuses the same applier (GA-SEC-2)", async () => {
+    const pki = privateCa();
+    const { url, seen, handshakes } = await serve({ tls: { cert: pki.cert, key: pki.key } });
+    const trusting = await McpApplierPort.connect(url, "b", { ca: pki.ca });
+    expect((await trusting.describe()).applier_id).toBe("fake");
+    const before = handshakes();
+    // A second link in the same process, made while the first is open and after it closed: no CA, no session.
+    await expect(McpApplierPort.connect(url, "b")).rejects.toThrow();
+    await trusting.close();
+    await expect(McpApplierPort.connect(url, "b")).rejects.toThrow();
+    expect(handshakes()).toBe(before);
+    expect(seen).toHaveLength(1);
+    // Nor does anything else in the process trust it: Node's own fetch refuses the certificate.
+    await expect(fetch(url, { method: "POST", body: "{}" })).rejects.toThrow();
+  });
+
+  it("validates against the given CA alone, refusing a certificate another CA signed", async () => {
+    const pki = privateCa();
+    const other = privateCa();
+    const { url, seen } = await serve({ tls: { cert: pki.cert, key: pki.key } });
+    // The refusal names its cause, for the steward's log: a certificate no CA it trusts signed.
+    await expect(McpApplierPort.connect(url, "b", { ca: other.ca })).rejects.toThrow(/fetch failed: [A-Z_]*(CERT|SIGNATURE|ISSUER)/);
+    expect(seen).toEqual([]);
+  });
+
+  it("under the mutation trusts-any-applier, that link alone takes any certificate (GA-SEC-2's negative subject)", async () => {
+    const pki = privateCa();
+    const { url, handshakes } = await serve({ tls: { cert: pki.cert, key: pki.key } });
+    const insecure = await McpApplierPort.connect(url, "b", { insecure: true });
+    expect((await insecure.describe()).applier_id).toBe("fake");
+    expect(handshakes()).toBeGreaterThan(0);
+    const after = handshakes();
+    await expect(McpApplierPort.connect(url, "b")).rejects.toThrow();
+    expect(handshakes()).toBe(after);
+    expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined();
+    await insecure.close();
   });
 });
-
-function hasOpenssl(): boolean {
-  try {
-    execFileSync("openssl", ["version"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}

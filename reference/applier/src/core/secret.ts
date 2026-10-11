@@ -1,4 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
+
+/**
+ * The shortest owner's configuration credential the applier starts with: 16 characters, twice the
+ * client credential's schema minimum, since the owner's reaches everything (the whole-applier review's M7).
+ */
+export const OWNER_CREDENTIAL_MIN_LENGTH = 16;
+
+/** A secret as the store keeps it: the lowercase hex of its SHA-256 (the whole-applier review's M6). */
+export function hashSecret(secret: string): string {
+  return createHash("sha256").update(secret, "utf8").digest("hex");
+}
 
 /**
  * Whether two credentials are the same, compared in constant time for their length, so the time a

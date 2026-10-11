@@ -120,7 +120,7 @@ describe("a witness's verdict (GA-WIT-1)", () => {
     expect((await verdicts(m, c)).map((e: any) => [e.outcome, e.witness.key])).toEqual([["confirmed", "temperature"]]);
     const refused = await m.configure([{ op: "upsert", kind: "witness", value: { device: "hall:heater", action: "onoff.turn_on", sensor: "hall:climate",
       key: "pressure", expect: "rises", within_s: 60 } }]);
-    expect(refused.ok ? "accepted" : refused.message).toMatch(/hall:climate reports no sensor key pressure/);
+    expect(refused.ok ? "accepted" : refused.message).toMatch(/hall:climate declares no sensor key pressure/);
   });
 
   it("says unconfirmed when the sensor did not move as expected, and unknown when it was not live throughout", async () => {
@@ -174,12 +174,13 @@ describe("a witness's configuration (GA-WIT-1, GA-CFG-3)", () => {
     };
     expect(await refused(witness("hall:heater", "level.set_level", "rises"))).toMatch(/level.set_level/);
     expect(await refused({ op: "upsert", kind: "witness", value: { device: "hall:heater", action: "onoff.turn_on", sensor: "hall:valve", expect: "rises", within_s: 60 } }))
-      .toMatch(/hall:valve reports no sensor key/);
+      .toMatch(/hall:valve declares no sensor key/);
     expect(await refused(witness("hall:thermo", "climate.set_mode", { toward: { arg: "mode", by: 1 } }))).toMatch(/takes no number mode/);
     expect(await refused({ ...witness("hall:heater", "onoff.turn_on", "cools") })).not.toBe("accepted");
     body(await m.configure([witness("hall:heater", "onoff.turn_on", "rises")]));
     const d = body(await m.a.call(m.owner, "describe", {})).devices.find((x: any) => x.id === "hall:heater");
-    expect(d.actions.find((a: any) => a.action === "onoff.turn_on").witness).toEqual({ sensor: "hall:temp", expect: "rises", within_s: 60 });
+    // A witness given no key keeps its sensor's first, the one it reads, as its key (the whole-applier review's M8).
+    expect(d.actions.find((a: any) => a.action === "onoff.turn_on").witness).toEqual({ sensor: "hall:temp", key: "temperature", expect: "rises", within_s: 60 });
     body(await m.configure([{ op: "delete", kind: "witness", value: { device: "hall:heater", action: "onoff.turn_on" } }]));
     const e = body(await m.a.call(m.owner, "describe", {})).devices.find((x: any) => x.id === "hall:heater");
     expect(e.actions.find((a: any) => a.action === "onoff.turn_on")).not.toHaveProperty("witness");

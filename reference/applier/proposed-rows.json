@@ -21,6 +21,9 @@
     {"mutation": "forgets-connections", "breaks": ["GA-DISC-2"], "coupled": []},
     {"mutation": "ignore-moves-the-revision", "breaks": ["GA-DISC-3"], "coupled": []},
     {"mutation": "checks-revision-for-ignores", "breaks": ["GA-CFG-2"], "coupled": ["GA-DISC-3"]},
-    {"mutation": "forgets-a-connect", "breaks": ["GA-DISC-4"], "coupled": []}
+    {"mutation": "forgets-a-connect", "breaks": ["GA-DISC-4"], "coupled": []},
+    {"mutation": "wraps-a-lone-argument", "breaks": ["GA-EVT-3"], "coupled": []},
+    {"mutation": "forgets-announced-names", "breaks": ["GA-DESC-19"], "coupled": []},
+    {"mutation": "floors-message-expiry", "breaks": ["GA-BUS-5"], "coupled": []}
   ]
 }

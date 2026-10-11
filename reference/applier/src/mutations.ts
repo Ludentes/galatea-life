@@ -49,13 +49,29 @@ export const MUTATIONS = [
   // Slice 5b, proposed for 0.16 (proposed-rows.json): a restart forgets a dead bridge's connections; an
   // ignore moves the revision; a set of only ignores is checked for its revision; a connect in flight is never ended at a restart.
   "forgets-connections", "ignore-moves-the-revision", "checks-revision-for-ignores", "forgets-a-connect",
+  // The Zigbee-fidelity slice, proposed for 0.16 (proposed-rows.json): a one-argument extension action's value wrapped.
+  "wraps-a-lone-argument",
+  // Applier 0.15 (the fidelity slice): describe's bridge lists, the undescribed relay, keys a rule reads.
+  "hides-awaited-keys", "drops-the-undescribed-event", "accepts-a-safety-rule-on-an-undeclared-key", "floors-message-expiry",
+  // Proposed for 0.16 (proposed-rows.json): a restart forgets the undescribed names it announced.
+  "forgets-announced-names",
 ] as const;
 export type Mutation = (typeof MUTATIONS)[number];
 
-/** `GALATEA_MUTATION`, honoured only under the harness (`GALATEA_TEST_RUN_ID` set). */
+/**
+ * `GALATEA_MUTATION`, honoured only under the harness (`GALATEA_TEST_RUN_ID` set). A mutation that
+ * defeats a safety floor (a token, a safety rule's guard) is taken only with the harness's clock
+ * (`GALATEA_TIME_SOURCE`) as well, so a production image never runs one because a single variable was
+ * set. Throws for a mutation this build does not have, or one it will not take here. (Its list lives in
+ * here, where the reach lint reads no mutation site.)
+ */
 export function mutationFromEnv(env: NodeJS.ProcessEnv): Mutation | undefined {
   const m = env.GALATEA_MUTATION;
   if (!env.GALATEA_TEST_RUN_ID || !m) return undefined;
-  if (!(MUTATIONS as readonly string[]).includes(m)) throw new Error(`unknown mutation ${m}`);
+  if (!(MUTATIONS as readonly string[]).includes(m)) throw new Error("GALATEA_MUTATION names no mutation this build has");
+  const defeatsSafety = ["trusts-any-token", "applies-without-token", "lets-a-client-undo-safety"];
+  if (defeatsSafety.includes(m) && !env.GALATEA_TIME_SOURCE) {
+    throw new Error(`GALATEA_MUTATION ${m} defeats a safety floor, and is taken only with the harness's clock (GALATEA_TIME_SOURCE)`);
+  }
   return m as Mutation;
 }

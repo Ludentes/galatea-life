@@ -23,5 +23,6 @@
     "provisions-for-anyone", "provisions-twice", "hides-new-devices",
     "trusts-a-dead-finder", "plans-on-a-candidate", "shows-candidates-to-a-client", "hides-the-finders-sources",
     "lists-a-held-candidate", "forgets-an-ignore",
-    "connects-to-the-wrong-bridge", "event-without-request-id", "never-ends-a-connect", "ignores-the-address"]
+    "connects-to-the-wrong-bridge", "event-without-request-id", "never-ends-a-connect", "ignores-the-address",
+    "hides-awaited-keys", "drops-the-undescribed-event", "accepts-a-safety-rule-on-an-undeclared-key"]
 }

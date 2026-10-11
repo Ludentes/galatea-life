@@ -74,6 +74,31 @@ describe("parseDevices: extensions on any device (bridge, *Extension names*)", (
     ]);
   });
 
+  it("takes a key whose schema is an enum of scalars without a type as a scalar's, and keeps its set_ action (the Zigbee bridge's enums)", () => {
+    const keys = [
+      { key: `${PUSH}.mode`, description: "The mode.", schema: { enum: ["click", "switch"] } },
+      { key: `${PUSH}.reverse`, schema: { enum: [true, false] } },
+      { key: `${PUSH}.speed`, schema: { enum: [1, 2, 3] } },
+      { key: `${PUSH}.mixed`, schema: { enum: ["off", 1, true] } },
+      { key: `${PUSH}.whole`, schema: { type: "integer", minimum: 0, multipleOf: 5 } },
+      { key: `${PUSH}.pressed`, kind: "event", schema: { enum: ["single"] } },
+      // Not a scalar's: an enum holding an object or null, an empty one, a schema saying nothing, an object's or a list of types.
+      { key: `${PUSH}.shape`, schema: { enum: [{ a: 1 }] } },
+      { key: `${PUSH}.nothing`, schema: { enum: [null] } },
+      { key: `${PUSH}.empty`, schema: { enum: [] } },
+      { key: `${PUSH}.open`, schema: {} },
+      { key: `${PUSH}.either`, schema: { type: ["string", "null"] } },
+      { key: `${PUSH}.listed`, schema: { type: "array" } },
+    ];
+    const r = parseDevices({ devices: [entry("pusher", { actions: [...entry("pusher").actions, { ...setMode, args: { mode: ["click", "switch"] } }],
+      extensions: [ext({ keys })] })] });
+    const d = r.value.devices[0]!;
+    expect(d.extensions![0]!.keys.map((k) => k.key)).toEqual(["mode", "reverse", "speed", "mixed", "whole", "pressed"].map((k) => `${PUSH}.${k}`));
+    expect(d.actions.map((a) => a.action)).toEqual(["onoff.turn_on", `${PUSH}.set_mode`]);
+    expect(r.faults).toEqual(["shape", "nothing", "empty", "open", "either", "listed"].map((k) =>
+      `devices[0] (pusher) extensions[0] key ${PUSH}.${k} has a schema that is not a scalar's`));
+  });
+
   it("says what it leaves out past MAX_EXTENSION_ITEMS capabilities, actions or keys, with a fault for each list cut", () => {
     const many = (n: number, f: (i: number) => unknown) => Array.from({ length: n }, (_, i) => f(i));
     const caps = many(MAX_EXTENSION_ITEMS + 1, (i) => ({ capability: `org.galatea.c${i}`, actions: [], keys: [] }));
@@ -123,6 +148,54 @@ describe("parseDevices", () => {
     expect(r.faults).toEqual(["devices[0] (lamp) actions[1] is malformed"]);
   });
 
+  it("reads the args table as ruled (2026-10-06): a list, a range with step, \"any\" or {} for no limit, an object's fields, optional", () => {
+    const action = { action: "org.galatea.zigbee.ts0601.set_sensitivity", idempotent: true, stateless: true, confirms: true,
+      args: { stepped: { min: 0, max: 200, step: 1 }, half: { step: 0.5 }, open: {}, loose: "any", maybe: { optional: true },
+        maybeRange: { min: 1, optional: true }, mode: ["click", "switch"],
+        search: { series: "any", season: { min: 1, max: 99 }, optional: true },
+        zero: { step: 0 }, negative: { step: -1 }, mixed: { min: 1, series: "any" }, odd: { optional: "yes" }, nobody: [] } };
+    const r = parseDevices({ devices: [entry("ac", { capabilities: [], actions: [action],
+      extensions: [{ capability: "org.galatea.zigbee.ts0601", actions: [{ action: action.action, schema: {} }], keys: [] }] })] });
+    expect(r.value.devices[0]!.actions[0]!.args).toEqual({
+      stepped: { min: 0, max: 200, step: 1 }, half: { step: 0.5 }, open: "any", loose: "any", maybe: { optional: true },
+      maybeRange: { min: 1, optional: true }, mode: { enum: ["click", "switch"] },
+      search: { fields: { series: "any", season: { min: 1, max: 99 } }, optional: true },
+      // An empty list allows no value: a computer with no interactive account names none (the PC bridge's).
+      nobody: { enum: [] } });
+    expect(r.faults).toEqual(["zero", "negative", "mixed", "odd"].map((k) => `devices[0] (ac) actions[0] args ${k} is malformed`));
+  });
+
+  it("takes an extension action's arguments from its schema's properties where it gives no args (I4, the maintainer's ruling)", () => {
+    const X = "org.galatea.test.brew";
+    const actions = [
+      { action: `${X}.make`, idempotent: false, stateless: true, confirms: true },
+      { action: `${X}.press`, idempotent: false, stateless: true, confirms: true },
+      { action: `${X}.set_mode`, idempotent: false, stateless: true, confirms: true, args: { mode: ["a", "b"] } },
+    ];
+    const extensions = [{ capability: X, keys: [], actions: [
+      { action: `${X}.make`, schema: { type: "object", required: ["cups"], properties: {
+        cups: { type: "integer", minimum: 1, maximum: 4 }, strength: { enum: ["mild", "strong"] }, note: { type: "string" } } } },
+      { action: `${X}.press`, schema: { type: "object", properties: {} } },
+      // Its args win over its schema.
+      { action: `${X}.set_mode`, schema: { type: "object", properties: { other: { type: "string" } } } }] }];
+    const r = parseDevices({ devices: [entry("pot", { capabilities: [], actions, extensions })] });
+    const [make, press, mode] = r.value.devices[0]!.actions;
+    // The table has no optional list: an optional enum is taken as an optional scalar, its bridge checking the rest.
+    expect(make!.args).toEqual({ cups: { min: 1, max: 4 }, strength: { optional: true }, note: { optional: true } });
+    expect(press!.args).toBeUndefined();
+    expect(mode!.args).toEqual({ mode: { enum: ["a", "b"] } });
+    expect(r.faults).toEqual([]);
+  });
+
+  it("takes optional on a field as malformed: a field is supported, never required (I5, the maintainer's ruling)", () => {
+    const action = { action: "org.galatea.test.tv.find", idempotent: true, stateless: true, confirms: true,
+      args: { search: { title: "any", kind: { optional: true } }, near: { at: { min: 1, optional: true } }, fine: { title: "any", kind: ["a", "b"] } } };
+    const r = parseDevices({ devices: [entry("tv", { capabilities: [], actions: [action],
+      extensions: [{ capability: "org.galatea.test.tv", actions: [{ action: action.action, schema: {} }], keys: [] }] })] });
+    expect(r.value.devices[0]!.actions[0]!.args).toEqual({ fine: { fields: { title: "any", kind: { enum: ["a", "b"] } } } });
+    expect(r.faults).toEqual(["search", "near"].map((k) => `devices[0] (tv) actions[0] args ${k} is malformed`));
+  });
+
   it("parses an action's args constraints, dropping only a constraint it cannot read, with a fault", () => {
     const action = { action: "climate.set_mode", idempotent: true, stateless: false, confirms: true,
       args: { mode: ["off", "cool"], celsius: { min: 16, max: 30 }, text: "any", search: { series: "any", season: { min: 1, max: 99 } },
@@ -142,6 +215,34 @@ describe("parseDevices", () => {
     const d = parseDevices({ devices: [entry("lamp", { selfChanging: ["mode"], personal: ["app"], otherAdmins: "unknown" })] }).value.devices[0]!;
     expect(d).toMatchObject({ stable_identifier: "test:lamp", reach_ms: 1000, proposed_class: "light", self_changing: ["mode"],
       personal: ["app"], other_admins: "unknown" });
+  });
+});
+
+describe("parseDevices: awaitedKeys, settings and undescribed (bridge 0.6, GA-DESC-19)", () => {
+  const at = "2026-10-06T10:00:00.000Z";
+  it("takes them in the applier's snake_case, and leaves each out where its bridge did", () => {
+    const d = parseDevices({ devices: [entry("radar", { awaitedKeys: ["illuminance"], settings: ["org.galatea.test.radar.sensitivity"],
+      undescribed: [{ name: "dp108", firstSeen: at }] })] }).value.devices[0]!;
+    expect(d).toMatchObject({ awaited_keys: ["illuminance"], settings: ["org.galatea.test.radar.sensitivity"],
+      undescribed: [{ name: "dp108", first_seen: Date.parse(at) }] });
+    const bare = parseDevices({ devices: [entry("lamp")] }).value.devices[0]!;
+    for (const k of ["awaited_keys", "settings", "undescribed"]) expect(bare).not.toHaveProperty(k);
+  });
+  it("drops what it cannot read, alone, with a fault: a list that is not one of strings, an undescribed entry of a bad name or time", () => {
+    const r = parseDevices({ devices: [entry("radar", { awaitedKeys: "illuminance", settings: [3],
+      undescribed: [{ name: "dp108", firstSeen: at }, { name: "no spaces", firstSeen: at }, { name: "dp109", firstSeen: "yesterday" }, "dp110"] })] });
+    const d = r.value.devices[0]!;
+    expect(d).not.toHaveProperty("awaited_keys");
+    expect(d).not.toHaveProperty("settings");
+    expect(d.undescribed).toEqual([{ name: "dp108", first_seen: Date.parse(at) }]);
+    expect(r.faults).toEqual(["devices[0] (radar) awaitedKeys is malformed", "devices[0] (radar) settings is malformed",
+      "devices[0] (radar) undescribed[1] is malformed", "devices[0] (radar) undescribed[2] is malformed", "devices[0] (radar) undescribed[3] is malformed"]);
+  });
+  it("keeps the first 32 undescribed names, with a fault for the rest", () => {
+    const many = Array.from({ length: 34 }, (_, i) => ({ name: `dp${i}`, firstSeen: at }));
+    const r = parseDevices({ devices: [entry("radar", { undescribed: many })] });
+    expect(r.value.devices[0]!.undescribed).toHaveLength(32);
+    expect(r.faults).toEqual(["devices[0] (radar) undescribed has 34 names; the first 32 are kept"]);
   });
 });
 

@@ -399,8 +399,7 @@ export class Dispatcher {
       outcomes: actions.map((x, i) => ({ step_id: `s${i + 1}`, target: x.target, outcome: "dispatched" })) };
     this.applies.set(a.apply_id, a);
     this.save(a);
-    const requested: Requested[] = actions.map((x) => ({ target: x.target, action: x.action, args: x.args ?? {}, via: "app", brain: false,
-      for: { safety_rule: ruleId } } as unknown as Requested));
+    const requested = actions.map((x) => ownRequest(x.target, x.action, x.args, { safety_rule: ruleId }));
     void (async () => {
       for (let i = 0; i < requested.length; i++) await this.dispatch(a, i, requested[i]!, undefined, true);
       this.save(a);
@@ -424,7 +423,7 @@ export class Dispatcher {
       outcomes: [{ step_id: "s1", target: device, outcome: "dispatched" }] };
     this.applies.set(a.apply_id, a);
     this.save(a);
-    const r = { target: device, action: "onoff.turn_off", args: {}, via: "app", brain: false, for: { load_cap: device } } as unknown as Requested;
+    const r = ownRequest(device, "onoff.turn_off", {}, { load_cap: device });
     void this.dispatch(a, 0, r, undefined, true).then(() => this.save(a))
       .catch((err: unknown) => console.error(`applier bug: the heating cap's turn-off of ${device} threw: ${String(err)}`));
     return a;
@@ -441,8 +440,7 @@ export class Dispatcher {
     if (!a || a.rule_id === undefined || i >= a.outcomes.length) return;
     a.outcomes[i] = { step_id: `s${i + 1}.${attempt}`, target: action.target, outcome: "dispatched" };
     this.save(a);
-    const r = { target: action.target, action: action.action, args: action.args ?? {}, via: "app", brain: false,
-      for: { safety_rule: a.rule_id } } as unknown as Requested;
+    const r = ownRequest(action.target, action.action, action.args, { safety_rule: a.rule_id });
     void this.dispatch(a, i, r, undefined, true).then(() => this.save(a))
       .catch((err: unknown) => console.error(`applier bug: safety rule ${a.rule_id}'s re-send threw: ${String(err)}`));
   }
@@ -591,16 +589,22 @@ export class Dispatcher {
 
   /**
    * A command's body (bridge, *Commands*), with a whole-state action's `state` (GA-APPLY-16), and its
-   * Message Expiry: never past its result_within_s (GA-BUS-5), and at least the 1 s MQTT can say.
+   * Message Expiry: its result_within_s rounded up to whole seconds (GA-BUS-5; bridge, *Message
+   * Expiry*), so a bound with a fraction is never cut short, and at least the 1 s MQTT can say.
    */
   private command(commandId: string, now: number, device: string, action: string, args: Record<string, unknown>, target: DispatchTarget):
     { body: Record<string, unknown>; expiryS: number; state?: Record<string, unknown> } {
     const resultWithinMs = Math.round(target.ack_within_s * 1000);
-    const value = commandValue(action, args, { from: target.from || this.o.mutation === "sends-from-to-an-old-bridge" });
+    const from = target.from || this.o.mutation === "sends-from-to-an-old-bridge";
+    // `wraps-a-lone-argument`: an extension action's one argument goes as an object, which its bridge refuses.
+    const value = this.o.mutation === "wraps-a-lone-argument" ? commandValue(action, args, { from, declared: [...target.declared_args, ""] })
+      : commandValue(action, args, { from, declared: target.declared_args });
     const state = target.whole_state ? this.frame(device, action, args, target.confirmed_by) : undefined;
     const body = { commandId, issuedAt: iso(now), resultWithinMs,
       value: { action, ...(value !== undefined ? { value } : {}), ...(state ? { state } : {}) } };
-    return { body, expiryS: Math.max(1, Math.floor(resultWithinMs / 1000)), ...(state ? { state } : {}) };
+    // `floors-message-expiry` cuts a bound with a fraction short.
+    const whole = this.o.mutation === "floors-message-expiry" ? Math.floor(resultWithinMs / 1000) : Math.ceil(resultWithinMs / 1000);
+    return { body, expiryS: Math.max(1, whole), ...(state ? { state } : {}) };
   }
 
   /**
@@ -1059,3 +1063,11 @@ export class Dispatcher {
 const iso = (ms: number) => new Date(Math.floor(ms)).toISOString();
 /** A held run's action slot, by apply id and index (`Dispatcher.published`). */
 const slotOf = (applyId: string, i: number) => `${applyId}\u0000${i}`;
+
+/**
+ * The applier's own step (a safety rule's, a heating cap's) in a request's shape: `for` names its
+ * cause, `{ safety_rule }` or `{ load_cap }`, which no client's `for` may, hence the one cast.
+ */
+function ownRequest(target: string, action: string, args: Record<string, unknown> | undefined, cause: Record<string, string>): Requested {
+  return { target, action, args: args ?? {}, via: "app", brain: false, for: cause } as unknown as Requested;
+}

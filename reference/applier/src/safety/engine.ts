@@ -263,7 +263,7 @@ export class SafetyRules {
       this.triggered.delete(id);
       const r = this.running.get(id);
       if (r) {
-        this.stop(r);
+        this.endRun(r);
         const run = r.apply_id !== undefined ? this.o.run(r.apply_id) : undefined;
         this.o.notice({ cause: "safety_rule", rule_id: id, devices: [...r.devices], outcomes: run?.outcomes ?? [],
           text: `Safety rule ${id} was ${now ? "changed" : "deleted"} while it ran; its actions so far: ${describeOutcomes(run?.outcomes ?? [])}.` });
@@ -325,8 +325,22 @@ export class SafetyRules {
     });
   }
 
+  /**
+   * The applier stops (an embedding host's stop): every run's timer and the liveness notices' graces
+   * are cleared, so nothing fires into a closed store. The runs stay as the store keeps them.
+   */
+  stop(): void {
+    for (const r of this.running.values()) {
+      for (const a of r.acts) {
+        if (a.timer !== undefined) this.o.clock.clear(a.timer);
+        a.timer = undefined;
+      }
+    }
+    this.watch.stop();
+  }
+
   /** Stops a run: its timers cleared, its waiting notice withdrawn, and its devices no longer guarded. */
-  private stop(r: Running): void {
+  private endRun(r: Running): void {
     for (const a of r.acts) if (a.timer !== undefined) this.o.clock.clear(a.timer);
     this.o.withdraw(waitKey(r.rule_id));
     this.running.delete(r.rule_id);

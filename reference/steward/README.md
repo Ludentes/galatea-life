@@ -227,14 +227,40 @@ does not catch a break in the chain it walks (the token key, the relay).
 | Variable | Meaning |
 |---|---|
 | `GALATEA_DATABASE_URL` | The steward's Postgres, as its own role, whose schema bears its name (required); never printed |
+| `GALATEA_DATABASE_PASSWORD_FILE` | A file holding the role's password, put into `GALATEA_DATABASE_URL`, which then carries none. `migrate-main.js` reads it too |
 | `GALATEA_MCP_PORT` | The port of `/mcp` (required) |
 | `GALATEA_OWNER_CREDENTIAL` | Makes the first owner on a store with no person; ignored once one exists, and refused (logged, never printed) when shorter than 16 characters |
 | `GALATEA_STEWARD_ID` | Its `steward_id` in `describe`; default `steward` |
 | `GALATEA_STEWARD_HOST` | The address to listen on; default `127.0.0.1` |
-| `GALATEA_STEWARD_TLS_CERT`, `GALATEA_STEWARD_TLS_KEY` | Paths to a certificate and key; required off loopback, where the steward refuses to start without them |
+| `GALATEA_STEWARD_TLS_CERT`, `GALATEA_STEWARD_TLS_KEY` | Paths to a certificate and key, PEM; required off loopback, where the steward refuses to start without them. The entry point reads them |
 | `GALATEA_APPLIER_URL` | Its applier's `/mcp` (required): `https://`, or `http://` on loopback only |
 | `GALATEA_APPLIER_CLIENT` | Its client id at the applier (required) |
 | `GALATEA_APPLIER_CREDENTIAL` | Its credential at the applier, a bearer token (required); never printed |
 | `GALATEA_APPLIER_TOKEN_KEY` | The key its applier holds for it, which signs confirmation tokens (from slice 2b); refused when shorter than 16 characters; never printed |
-| `GALATEA_APPLIER_CA` | A path to a CA certificate to trust for the applier, beside the system's |
+| `GALATEA_APPLIER_CA` | A path to the CA certificate the applier's is validated against, instead of the system's store. Only the applier link trusts it, through its own agent; nothing else in the process does |
+| `GALATEA_OWNER_CREDENTIAL_FILE`, `GALATEA_APPLIER_CREDENTIAL_FILE`, `GALATEA_APPLIER_TOKEN_KEY_FILE` | Each secret above given as a file instead: the account's own, mode 0600, its last line end dropped. The token key's 16-character floor applies to a file's text too |
 | `GALATEA_TEST_RUN_ID`, `GALATEA_TIME_SOURCE`, `GALATEA_MUTATION` | The harness's subject contract ([`conformance/README.md`](https://github.com/Ludentes/galatea-life-standard/blob/main/conformance/README.md)) |
+
+Every setting is read and checked before anything is opened, and a setting it cannot use stops the
+steward with exit code 2 and one line naming the settings, never a secret:
+
+- An empty value counts as unset.
+- A value and its `_FILE` twin both set, or a `GALATEA_DATABASE_URL` that carries a password beside
+  `GALATEA_DATABASE_PASSWORD_FILE`, is refused. With no file set, the values and full URLs work as
+  the harness passes them.
+- Every path setting must be absolute; one that is not is refused without being repeated, since a
+  secret put there by mistake would be.
+- `GALATEA_APPLIER_CA` needs an `https://` `GALATEA_APPLIER_URL` and must hold a PEM certificate;
+  `GALATEA_STEWARD_TLS_CERT` and `_KEY` are set together, and must serve TLS together.
+- `GALATEA_MCP_PORT` is a port from 1 to 65535; a `GALATEA_MUTATION` this build does not have is
+  refused (under a run only).
+
+An applier URL that GA-SEC-2 does not allow (`http://` off loopback) is not a refusal: the steward
+serves, logs it once, and never tries the applier.
+
+## The image
+
+`docker build -f reference/steward/Dockerfile -t galatea-steward:local .`, from the repository's
+root, builds the image that serves both entries: `node dist/main.js` (its default) and
+`node dist/migrate-main.js`. It needs BuildKit (Docker's default builder since 23.0), which reads the
+allow-list beside the Dockerfile (`Dockerfile.dockerignore`); the base image is pinned by digest.

@@ -45,3 +45,17 @@ export function deviceDetail(d: Body): string[] {
   for (const a of d.actions ?? []) lines.push(`    ${a.action}  ${a.tier}`);
   return lines;
 }
+
+/** A word as a shell takes it back: bare when it is plain, else in single quotes (a printed line to run again). */
+export function shellQuote(word: string): string {
+  return /^[A-Za-z0-9._:/=@+,-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Third-party text (a bridge's or plugin's `detail`, a reason, an id, an event's field) as a plain
+ * line shows it: a newline as `\\n`, every other C0 or C1 control character and DEL as `\\xNN`, so
+ * nothing a device or plugin says can drive the owner's terminal (review M6). `--json` escapes them already.
+ */
+export function clean(text: string): string {
+  return text.replace(/\n/g, "\\n").replace(/[\u0000-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}

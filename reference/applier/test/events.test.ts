@@ -183,6 +183,28 @@ describe("EventLog", () => {
     expect(await log.history(t0, clock.now())).toEqual([]);
   });
 
+  it("filters history's kinds and targets in the store, then refuses a range holding more than the limit (the whole-applier review's M4)", async () => {
+    const { clock, log } = await setup();
+    const t0 = clock.now();
+    // Rows the filters leave out count for nothing toward the limit: they are never read.
+    for (let i = 0; i < 5; i++) log.append("state", { target: "b:tv", key: "on", value: i % 2 === 0, cause: "external" });
+    log.append("notice", { target: "b:lamp", text: "not a history kind" });
+    log.append("state", { target: "b:lamp", key: "speech", value: "hello", cause: "device" });
+    log.append("transport", { transport: "b:lamp", up: true, state: "up" });
+    const lamp = log.append("state", { target: "b:lamp", key: "on", value: true, cause: "external" });
+    const fired = log.append("rule_fired", { rule_id: "r", devices: ["b:leak", "b:lamp"] });
+    const model = log.append("model", { revision: 2, device: "b:lamp" });
+    const radio = log.append("provision", { transport: "b:lamp", devices: [], cause: { bridge: "b" } });
+    expect((await log.history(t0, t0 + 1, ["b:lamp"], undefined, 4)).map((e) => e.seq)).toEqual([lamp.seq, fired.seq, model.seq, radio.seq]);
+    await expect(log.history(t0, t0 + 1, ["b:lamp"], undefined, 3))
+      .rejects.toMatchObject({ code: "invalid_request", message: expect.stringMatching(/more than 3 events/) });
+    // In order, oldest first, across every target when none is named.
+    const all = (await log.history(t0, t0 + 1)).map((e) => e.seq);
+    expect(all).toEqual([...all].sort((x, y) => x - y));
+    // The five on the tv, the transport event, and the four on the lamp; not the notice, not the speech.
+    expect(all).toHaveLength(10);
+  });
+
   it("floors a fractional clock reading before it reaches the store's bigint time_ms", async () => {
     class Fractional extends FakeClock { now(): number { return super.now() + 0.4375; } }
     const clock = new Fractional();

@@ -4,7 +4,7 @@ import type { Clock } from "@ludentes/galatea-life-test-clock";
 import { copyConfig, emptyConfig, loadConfig, modelKey, saveConfig, type Bridge, type Config, type Level } from "./config/config.js";
 import { brokerAdmins, claimsOf, declarationFault, dropTiers, fallenTiers, IGNORE_KINDS, loadIn, planChanges, type Change } from "./config/configure.js";
 import { RequestError, StoreUnavailable } from "./core/errors.js";
-import { sameSecret } from "./core/secret.js";
+import { hashSecret, OWNER_CREDENTIAL_MIN_LENGTH, sameSecret } from "./core/secret.js";
 import { canonical, storable } from "./core/canonical.js";
 import { EventLog, SEQ_LIFE_GAP } from "./core/events.js";
 import { Notices } from "./core/notices.js";
@@ -29,10 +29,10 @@ import { Finder } from "./provision/finder.js";
 import { Discovery, type Listed } from "./provision/discovery.js";
 import type { GateDevice } from "./gate/plan.js";
 
-export const STANDARD_VERSION = "0.14";
+export const STANDARD_VERSION = "0.15";
 
 export type Caller = { kind: "owner" } | { kind: "client"; id: string } | { kind: "anonymous" };
-export type ToolResult = { ok: true; body: Record<string, unknown> } | { ok: false; error: string; message: string };
+export type ToolResult = { ok: true; body: Record<string, unknown> } | { ok: false; error: string; message: string; data?: Record<string, unknown> };
 
 export const TOOLS: { name: string; readOnly: boolean }[] = [
   { name: "describe", readOnly: true }, { name: "state", readOnly: true }, { name: "plan", readOnly: true },
@@ -137,6 +137,9 @@ export class Applier {
   private commandNamespace?: string;
 
   constructor(private readonly o: ApplierOptions) {
+    if (o.ownerCredential.length < OWNER_CREDENTIAL_MIN_LENGTH) {
+      throw new Error(`the owner's credential is shorter than ${OWNER_CREDENTIAL_MIN_LENGTH} characters`);
+    }
     this.mutation = o.mutation;
     this.levels = o.levels ?? ["Act"];
     this.config.safe = this.levels.includes("Safe");
@@ -174,6 +177,7 @@ export class Applier {
       },
       declared: (ids) => {
         this.disableRules(ids);
+        this.disableWitnesses(ids);
         // A heating load whose turn-off is now a toggle: its cap cannot act (GA-SAFE-13).
         this.caps.judge(ids);
         // A cap stopped by a turn-off now discrete again, or a device back in the model, is armed again (GA-LOAD-2).
@@ -190,6 +194,13 @@ export class Applier {
       held: () => this.brokerCheck(),
       reply: (bridge, body) => this.provisioner.reply(bridge, body),
       provisioning: (bridge, e) => this.provisioner.event(bridge, e),
+      // Never dropped: the bridge does not say a name again, so a lost row would be a name announced twice (GA-DESC-19).
+      announced: (bridge, device, names) => void this.o.store.write(async (tx) => {
+        for (const name of names) {
+          await tx.query("INSERT INTO undescribed_announced (bridge, bridge_device, name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            [bridge, device, name]);
+        }
+      }).catch((err: unknown) => console.error(`applier: an announced undescribed name is not written yet: ${String(err)}`)),
       // Facts, written behind and droppable (the maintainer's ruling K5): the bridge's retained documents give them again.
       connectionsChanged: (bridge, rows) => void this.o.store.write(async (tx) => {
         await tx.query("DELETE FROM connections WHERE bridge = $1", [bridge]);
@@ -291,9 +302,13 @@ export class Applier {
       clock: o.clock,
       store: o.store,
       mutation: o.mutation,
-      witness: (device, action) => this.config.declarations.get(device)?.witnesses?.[action],
+      // A witness a declaration change disabled judges nothing (GA-SAFE-14).
+      witness: (device, action) => {
+        const w = this.config.declarations.get(device)?.witnesses?.[action];
+        return w?.disabled === undefined ? w : undefined;
+      },
       all: () => [...this.config.declarations].flatMap(([device, d]) => Object.entries(d.witnesses ?? {})
-        .map(([action, witness]) => ({ device, action, witness }))),
+        .filter(([, witness]) => witness.disabled === undefined).map(([action, witness]) => ({ device, action, witness }))),
       key: (w) => w.key ?? this.home.devices.get(w.sensor)?.doc.sensor_keys[0],
       reported: (device, key) => this.home.reportedValue(device, key),
       liveness: (device) => this.home.gateDevice(device)?.liveness,
@@ -319,6 +334,10 @@ export class Applier {
     }
     this.commandNamespace = ns;
     this.config = { ...await loadConfig(this.o.store, { forgetsIgnores: this.mutation === "forgets-an-ignore" }), safe: this.levels.includes("Safe") };
+    // The owner's credential rotated to one a stored client holds: that client would be taken for the owner.
+    const owner = hashSecret(this.o.ownerCredential);
+    const holder = [...this.config.clients.values()].find((c) => sameSecret(c.credential_sha256, owner));
+    if (holder) throw new Error(`the owner's credential is the one client ${holder.id} holds: set another, or remove the client first`);
     // `forgets-a-retired-identifier`: the identifiers a replacement retired are not read back.
     if (this.mutation === "forgets-a-retired-identifier") this.config.previous = new Map();
     const devices = await this.o.store.query<{ id: string; bridge: string; bridge_device: string; doc: HeldDevice["doc"];
@@ -331,6 +350,12 @@ export class Applier {
       const conns = await this.o.store.query<{ bridge: string; kind: string; entity: string; keys: string[] }>(
         "SELECT bridge, kind, entity, keys FROM connections ORDER BY bridge, kind, entity");
       this.home.loadConnections(conns.rows);
+    }
+    // `forgets-announced-names`: the undescribed names announced before the restart are not read back.
+    if (this.mutation !== "forgets-announced-names") {
+      const names = await this.o.store.query<{ bridge: string; bridge_device: string; name: string }>(
+        "SELECT bridge, bridge_device, name FROM undescribed_announced ORDER BY bridge, bridge_device, name");
+      this.home.loadAnnounced(names.rows);
     }
     this.home.setOwner(this.config);
     await this.notices.load();
@@ -369,6 +394,7 @@ export class Applier {
     // A disable written behind a declaration change may be lost to a crash, the devices written and the rule not;
     // the retained document then equals the stored one, so every rule is checked once here (GA-SAFE-13).
     this.disableRules([...new Set([...this.config.rules.values()].flatMap((r) => devicesOf(r)))]);
+    this.disableWitnesses(this.witnessSensors());
     // GA-ADOPT-3's once: this build started saying a second door in slice 3; the devices adopted before
     // are told of when a start first finds the flag unset.
     if (!this.otherAdminsSaid) {
@@ -389,11 +415,16 @@ export class Applier {
     this.scheduleTick();
   }
 
+  /** Clears every timer the applier and its modules own, so an embedding host can stop it and then close its store. */
   stop(): void {
     if (this.pruneTimer !== undefined) this.o.clock.clear(this.pruneTimer);
     if (this.tickTimer !== undefined) this.o.clock.clear(this.tickTimer);
     this.dispatcher.stop();
     this.provisioner.stop();
+    this.safety.stop();
+    this.caps.stop();
+    this.witnesses.stop();
+    this.log.stop();
   }
 
   /** The broker is up, and every subscription of `bridge` was granted (the bus's word). */
@@ -413,9 +444,14 @@ export class Applier {
   /** Resolved on every request, from the configuration as it is now (GA-AUTH-3). */
   caller(bearer: string | undefined): Caller {
     if (!bearer) return { kind: "anonymous" };
-    if (sameSecret(bearer, this.o.ownerCredential)) return { kind: "owner" };
+    // A client's credential is held only as its SHA-256: the bearer's is compared, in constant time.
+    const hash = hashSecret(bearer);
+    if (sameSecret(bearer, this.o.ownerCredential)) {
+      // No client is ever taken for the owner: a bearer both hold is no one's (`load` and `configure` refuse it).
+      return [...this.config.clients.values()].some((c) => sameSecret(c.credential_sha256, hash)) ? { kind: "anonymous" } : { kind: "owner" };
+    }
     for (const c of this.config.clients.values()) {
-      if (sameSecret(c.credential, bearer)) {
+      if (sameSecret(c.credential_sha256, hash)) {
         if (this.mutation === "session-outlives-revocation") this.remembered.set(bearer, c.id);
         return { kind: "client", id: c.id };
       }
@@ -440,7 +476,7 @@ export class Applier {
       if (errors.length) throw new RequestError("invalid_request", errors.join("; "));
       return { ok: true, body: await this.operation(tool, args as Args, caller) };
     } catch (err) {
-      if (err instanceof RequestError) return { ok: false, error: err.code, message: err.message };
+      if (err instanceof RequestError) return { ok: false, error: err.code, message: err.message, ...(err.data ? { data: err.data } : {}) };
       throw err;
     }
   }
@@ -539,7 +575,7 @@ export class Applier {
     // Only a client may plan (the owner makes no plan: `OWNER_TOOLS`).
     const client = (caller as { id: string }).id;
     const now = this.o.clock.now();
-    for (const [id, p] of this.plans) if (p.expiresMs + PLAN_EXPIRY_MS <= now) this.plans.delete(id);
+    this.prunePlans();
     // A map keeps insertion order: the client's first plan held is its oldest.
     const held = [...this.plans].filter(([, p]) => p.plan.client === client);
     for (const [id] of held.slice(0, Math.max(0, held.length - MAX_PLANS_PER_CLIENT + 1))) this.plans.delete(id);
@@ -646,10 +682,19 @@ export class Applier {
     if (!fallen.length) return;
     const draft = copyConfig(this.config);
     for (const x of fallen) dropTiers(draft, x.id, x.actions);
-    this.config = draft;
+    this.commitDerived(draft, "a fallen-back tier's drop");
     this.home.setOwner(draft);
+  }
+
+  /**
+   * A configuration the applier derived itself (a tier fallen back, a rule or a witness disabled): in
+   * memory at once, then written in the owners' line, as the configuration stands when the write runs,
+   * so an owner's change committed in between keeps it, and the write is safe to run twice.
+   */
+  private commitDerived(draft: Config, what: string): void {
+    this.config = draft;
     void this.owners.run(() => this.o.store.write((tx) => saveConfig(tx, this.config)))
-      .catch((err: unknown) => console.error(`applier: a fallen-back tier's drop is not written yet: ${String(err)}`));
+      .catch((err: unknown) => console.error(`applier: ${what} is not written yet: ${String(err)}`));
   }
 
   /**
@@ -699,14 +744,16 @@ export class Applier {
    * configuration written in the owners' line, as `dropFallenTiers` writes it.
    */
   private disableRules(ids: string[]): void {
-    if (this.mutation === "keeps-a-rule-on-a-re-taught-code") return;
     const infos = this.home.infos();
+    // `keeps-a-rule-on-a-re-taught-code` keeps a rule whose action is now a toggle, and only that: a key
+    // taken away still disables it (GA-SAFE-14), so the mutation breaks its own row alone.
+    const toggles = this.mutation === "toggles-by-safety-rule" || this.mutation === "keeps-a-rule-on-a-re-taught-code";
     const hit = [...this.config.rules.values()].filter((r) => !this.config.disabled.has(r.id) && devicesOf(r).some((d) => ids.includes(d)))
-      .map((r) => ({ r, fault: declarationFault(r, infos, { toggles: this.mutation === "toggles-by-safety-rule" }) })).filter((x): x is { r: typeof x.r; fault: string } => x.fault !== undefined);
+      .map((r) => ({ r, fault: declarationFault(r, infos, { toggles }) })).filter((x): x is { r: typeof x.r; fault: string } => x.fault !== undefined);
     if (!hit.length) return;
     const draft = copyConfig(this.config);
     for (const x of hit) draft.disabled.set(x.r.id, x.fault);
-    this.config = draft;
+    this.commitDerived(draft, "a disabled safety rule");
     this.safety.setRules(draft.rules, draft.disabled);
     for (const x of hit) {
       this.notices.raise({ cause: "rule_disabled", rule_id: x.r.id, devices: devicesOf(x.r).filter((d) => ids.includes(d)),
@@ -714,8 +761,46 @@ export class Applier {
       disabledKey(x.r.id));
     }
     this.bumpRevision(hit.map((x) => ({ safety_rule: x.r.id, disabled: true })));
-    void this.owners.run(() => this.o.store.write((tx) => saveConfig(tx, this.config)))
-      .catch((err: unknown) => console.error(`applier: a disabled safety rule is not written yet: ${String(err)}`));
+  }
+
+  /** The sensors every witness reads. */
+  private witnessSensors(): string[] {
+    return [...new Set([...this.config.declarations.values()].flatMap((d) => Object.values(d.witnesses ?? {}).map((w) => w.sensor)))];
+  }
+
+  /**
+   * Sensors whose declarations changed (GA-SAFE-14): each witness reading a key its sensor no longer
+   * declares is disabled, with a `rule_disabled` notice naming the key, and judges nothing until the
+   * owner sets it again, which checks it as new. A witness keeps the key it reads from its configure on
+   * (the sensor's first, where the owner named none), so a restart judges it against the same key. A
+   * model change, written in the owners' line, as `disableRules` writes a rule's.
+   */
+  private disableWitnesses(ids: string[]): void {
+    const hit: { device: string; action: string; sensor: string; why: string }[] = [];
+    for (const [device, d] of this.config.declarations) {
+      for (const [action, w] of Object.entries(d.witnesses ?? {})) {
+        if (w.disabled !== undefined || !ids.includes(w.sensor)) continue;
+        const keys = this.home.devices.get(w.sensor)?.doc.sensor_keys;
+        if (!keys) continue;
+        if (w.key === undefined) {
+          if (keys[0] === undefined) hit.push({ device, action, sensor: w.sensor, why: `${w.sensor} declares no sensor key now` });
+          continue;
+        }
+        if (keys.includes(w.key)) continue;
+        hit.push({ device, action, sensor: w.sensor, why: `${w.sensor} declares no sensor key ${w.key} now` });
+      }
+    }
+    if (!hit.length) return;
+    const draft = copyConfig(this.config);
+    for (const x of hit) draft.declarations.get(x.device)!.witnesses![x.action]!.disabled = x.why;
+    this.commitDerived(draft, "a disabled witness");
+    this.home.setOwner(draft);
+    for (const x of hit) {
+      this.notices.raise({ cause: "rule_disabled", witness: { device: x.device, action: x.action }, devices: [x.sensor, x.device],
+        text: `The witness on ${x.device}'s ${x.action} is disabled: its sensor's declarations changed, and ${x.why}. `
+          + "It judges nothing until you set it again." }, `rule_disabled:witness:${x.device}:${x.action}`);
+    }
+    this.bumpRevision(hit.map((x) => ({ device: x.device, witness: x.action, disabled: true })));
   }
 
   /** Transports left the model: a model change, written behind, and derived again after a restart if its write is dropped. */
@@ -731,6 +816,8 @@ export class Applier {
    * returns. A change that waited out its 10 s in line, behind another, is never applied.
    */
   private configure(a: Args): Promise<Record<string, unknown>> {
+    // Its values are kept in the store: a string Postgres cannot keep would stop the writer, as for `apply`.
+    if (!storable(a)) return Promise.reject(new RequestError("invalid_request", "the change holds a string with U+0000 or a lone surrogate"));
     const arrived = this.o.clock.now();
     const change = this.owners.run(async () => {
       if (this.o.clock.now() - arrived >= GATE_MS) throw new StoreUnavailable("an earlier owner change is still waiting for the store");
@@ -744,7 +831,7 @@ export class Applier {
       }
       const planned = this.home.infos();
       const { draft, diff, forgotten, replaced, routed, unrouted, cleared } = planChanges(this.config, a.changes as Change[],
-        { levels: this.levels, underHarness: !!this.o.runId, ownerCredential: this.o.ownerCredential,
+        { levels: this.levels, underHarness: !!this.o.runId, ownerCredential: this.o.ownerCredential, ownIdentity: this.o.applierId,
           devices: planned, mutation: this.mutation, ungoverned: this.home.ungoverned().length > 0,
           plainOffLoopback: this.o.plainOffLoopback, latches: new Set(this.safety.latches.list().map((l) => l.rule_id)),
           listed: () => this.listed() });
@@ -809,6 +896,16 @@ export class Applier {
         if (!r || (!draft.disabled.has(id) && declarationFault(r, infos) === undefined)) this.notices.clear(disabledKey(id));
       }
       this.disableRules([...new Set([...draft.rules.values()].flatMap((r) => devicesOf(r)))]);
+      // A witness the owner set again, or deleted, no longer stands disabled: its notice goes (GA-SAFE-14).
+      for (const [device, d] of before.declarations) {
+        for (const [action, w] of Object.entries(d.witnesses ?? {})) {
+          if (w.disabled !== undefined && draft.declarations.get(device)?.witnesses?.[action]?.disabled === undefined) {
+            this.notices.clear(`rule_disabled:witness:${device}:${action}`);
+          }
+        }
+      }
+      // A witness this change waited on may have lost its sensor's key meanwhile (GA-SAFE-14).
+      this.disableWitnesses(this.witnessSensors());
       // A safety rule actuating a device on a transport that can answer nothing: an open_loop notice naming it (GA-ADOPT-6).
       for (const [id, r] of draft.rules) {
         if (JSON.stringify(before.rules.get(id)) === JSON.stringify(r)) continue;
@@ -870,8 +967,17 @@ export class Applier {
     }, TICK_MS);
   }
 
+  /** Drops each plan long expired (held as long again, for `plan_expired`), and each plan of a client no longer configured. */
+  private prunePlans(): void {
+    const now = this.o.clock.now();
+    for (const [id, p] of this.plans) {
+      if (p.expiresMs + PLAN_EXPIRY_MS <= now || !this.config.clients.has(p.plan.client)) this.plans.delete(id);
+    }
+  }
+
   private schedulePrune(): void {
     this.pruneTimer = this.o.clock.setTimeout(() => {
+      this.prunePlans();
       this.log.prune();
       this.dispatcher.prune();
       this.provisioner.prune();

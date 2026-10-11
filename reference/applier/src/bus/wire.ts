@@ -69,7 +69,7 @@ export const capabilityOf = (action: string): string => extensionParts(action)?.
  * surrogate; either, in a retained message, would stop the applier at every start. A string that
  * holds one is a malformed field.
  */
-const isStr = (x: unknown): x is string => typeof x === "string" && !x.includes("\u0000") && x.isWellFormed();
+export const isStr = (x: unknown): x is string => typeof x === "string" && !x.includes("\u0000") && x.isWellFormed();
 const strings = (x: unknown): string[] | undefined =>
   Array.isArray(x) && x.every(isStr) ? (x as string[]) : undefined;
 const count = (x: unknown): number | undefined => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : undefined);
@@ -185,12 +185,35 @@ export function parseStatus(body: Record<string, unknown>): Parsed<Status> {
 }
 
 /**
- * A device's constraint on one argument (applier, *Capability and action vocabulary*, `args`): any
- * value, one of a list, a numeric range, or, for an object argument, the fields it supports, each
- * with its own. On the wire, `"any"`, an array, `{ min?, max?, optional? }`, or an object of fields
- * (the form the PC bridge publishes; the standard writes them `any`, `[off, cool]`, `16–30`).
+ * A device's constraint on one argument (applier, *Capability and action vocabulary*, `args`), read
+ * from the table the maintainer ruled on 2026-10-06, which is the bridges' wire form:
+ *
+ * | On the wire | Held as | Means |
+ * |---|---|---|
+ * | `["off", "cool"]` | `{ enum }` | one of these values |
+ * | `{ min?, max?, step? }`, one at least | the range | a number within it, `min` (else 0) plus whole steps |
+ * | `"any"` or `{}` | `"any"` | no limit |
+ * | an object of named fields | `{ fields }` | an object argument, each field with its own constraint |
+ * | `optional: true` beside a range's or fields' keys | `optional: true` | the argument may be left out |
+ *
+ * `{ optional: true }` alone is an optional argument of no limit. Not JSON Schema.
  */
-export type Constraint = "any" | { enum: (string | number | boolean)[] } | { min?: number; max?: number } | { fields: Record<string, Constraint> };
+export type Constraint = "any" | { enum: (string | number | boolean)[] }
+  | { min?: number; max?: number; step?: number; optional?: true }
+  | { fields: Record<string, Constraint>; optional?: true };
+
+/** Whether a constraint marks its argument optional (`optional: true`). */
+export const optionalArg = (c: Constraint): boolean => typeof c === "object" && "optional" in c && c.optional === true;
+
+/** A constraint in the ruled table's wire form, as `describe` gives it (the form its bridge declared it in, `{}` as `"any"`). */
+export function wireConstraint(c: Constraint): unknown {
+  if (c === "any") return "any";
+  if ("enum" in c) return [...c.enum];
+  if ("fields" in c) {
+    return { ...Object.fromEntries(Object.entries(c.fields).map(([k, f]) => [k, wireConstraint(f)])), ...(c.optional ? { optional: true } : {}) };
+  }
+  return { ...c };
+}
 /**
  * The state key and value that confirm a stateful extension action (applier, *Action declarations*):
  * `value` is a scalar, or `{ arg }`, the value of that argument of the step.
@@ -224,33 +247,77 @@ export type DeviceDoc = {
   internal: boolean;
   /** Absent where its bridge declares none, so a document without them compares as it did before 0.14. */
   extensions?: Extension[];
+  /** The numeric keys its model promises and it has not yet reported (bridge, *Keys a device has not yet sent*); absent where its bridge gives none. */
+  awaited_keys?: string[];
+  /** Its keys that are settings (bridge, *Declarations and settings*); absent where its bridge gives none. */
+  settings?: string[];
+  /** What it sends that no key describes, each name with when its bridge first saw it (GA-BRIDGE-76); absent where its bridge gives none. */
+  undescribed?: { name: string; first_seen: number }[];
 };
 
-const RANGE_KEYS = new Set(["min", "max", "optional"]);
+/** An undescribed name's form (bridge, GA-BRIDGE-76). */
+const UNDESCRIBED_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+/** At most this many undescribed names per device (bridge, GA-BRIDGE-76). */
+export const MAX_UNDESCRIBED = 32;
+
+/**
+ * A device's `undescribed` (GA-BRIDGE-76): each `{ name, firstSeen }` of a name of its form and a
+ * time; what breaks drops alone, with a fault, and past MAX_UNDESCRIBED the rest with one.
+ */
+function parseUndescribed(x: unknown, where: string, faults: string[]): { name: string; first_seen: number }[] | undefined {
+  if (x === undefined) return undefined;
+  if (!Array.isArray(x)) {
+    faults.push(`${where} undescribed is malformed`);
+    return undefined;
+  }
+  const out: { name: string; first_seen: number }[] = [];
+  for (const [i, u] of x.entries()) {
+    const at = isObject(u) ? parseTime(u.firstSeen) : undefined;
+    if (!isObject(u) || typeof u.name !== "string" || !UNDESCRIBED_NAME.test(u.name) || at === undefined) {
+      faults.push(`${where} undescribed[${i}] is malformed`);
+      continue;
+    }
+    if (out.length < MAX_UNDESCRIBED) out.push({ name: u.name, first_seen: at });
+  }
+  if (x.length > MAX_UNDESCRIBED) faults.push(`${where} undescribed has ${x.length} names; the first ${MAX_UNDESCRIBED} are kept`);
+  return out;
+}
+
+/** The keys a range holds; any other key of an object is a field of an object argument. */
+const RANGE_KEYS = new Set(["min", "max", "step"]);
 const MAX_CONSTRAINT_DEPTH = 3;
 
-/** One argument's constraint, or undefined when it cannot be read. */
+/** One argument's constraint, or undefined when it cannot be read (the table at `Constraint`). */
 function parseConstraint(c: unknown, depth: number): Constraint | undefined {
   if (c === "any") return "any";
   if (Array.isArray(c)) {
     const scalar = (x: unknown) => isStr(x) || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x));
-    return c.length && c.every(scalar) ? { enum: c as (string | number | boolean)[] } : undefined;
+    // An empty list allows no value (a computer with no interactive account names none).
+    return c.every(scalar) ? { enum: c as (string | number | boolean)[] } : undefined;
   }
   if (!isObject(c)) return undefined;
-  const keys = Object.keys(c);
-  if (keys.length && keys.every((k) => RANGE_KEYS.has(k))) {
+  if (c.optional !== undefined && typeof c.optional !== "boolean") return undefined;
+  // A field is supported, never required: `optional` on one says nothing true, and is malformed (I5, the maintainer's ruling).
+  if (depth > 1 && c.optional !== undefined) return undefined;
+  const optional = c.optional === true ? { optional: true as const } : {};
+  const keys = Object.keys(c).filter((k) => k !== "optional");
+  if (keys.every((k) => RANGE_KEYS.has(k))) {
     const bound = (x: unknown) => x === undefined || (typeof x === "number" && Number.isFinite(x));
-    if (!bound(c.min) || !bound(c.max) || (c.optional !== undefined && typeof c.optional !== "boolean")) return undefined;
-    return { ...(c.min !== undefined ? { min: c.min as number } : {}), ...(c.max !== undefined ? { max: c.max as number } : {}) };
+    if (!bound(c.min) || !bound(c.max) || !bound(c.step) || (c.step !== undefined && (c.step as number) <= 0)) return undefined;
+    // `{}` (or only `optional`) is no limit.
+    if (!keys.length) return c.optional === true ? { optional: true } : "any";
+    return { ...(c.min !== undefined ? { min: c.min as number } : {}), ...(c.max !== undefined ? { max: c.max as number } : {}),
+      ...(c.step !== undefined ? { step: c.step as number } : {}), ...optional };
   }
-  if (depth >= MAX_CONSTRAINT_DEPTH || !keys.every(isStr)) return undefined;
+  // A range's key beside a field's would leave the argument's kind in doubt.
+  if (keys.some((k) => RANGE_KEYS.has(k)) || depth >= MAX_CONSTRAINT_DEPTH || !keys.every(isStr)) return undefined;
   const fields: Record<string, Constraint> = {};
   for (const k of keys) {
     const f = parseConstraint(c[k], depth + 1);
     if (!f) return undefined;
     fields[k] = f;
   }
-  return { fields };
+  return { fields, ...optional };
 }
 
 /**
@@ -280,6 +347,14 @@ function parseArgs(x: unknown, where: string, faults: string[]): Record<string, 
 const SCALAR_TYPES = new Set(["string", "number", "integer", "boolean"]);
 const scalar = (x: unknown): x is string | number | boolean =>
   isStr(x) || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x));
+/**
+ * Whether a key's JSON Schema is a scalar's (bridge, *Devices*, `extensions`): its `type` a string, a
+ * number, an integer or a boolean, or, with no `type`, an `enum` of scalars (the form the Zigbee
+ * bridge gives an enum or a binary expose, `{ enum: ["click", "switch"] }`). A schema that says
+ * nothing (`{}`) admits an object, so it is not one.
+ */
+const scalarSchema = (s: Record<string, unknown>): boolean =>
+  s.type === undefined ? Array.isArray(s.enum) && s.enum.length > 0 && s.enum.every(scalar) : SCALAR_TYPES.has(s.type as string);
 
 /**
  * A device's `extensions` (bridge, *Devices*, *Extension names*), entry by entry: each a capability
@@ -334,7 +409,7 @@ function parseExtensions(x: unknown, where: string, faults: string[]): Extension
         faults.push(`${at} key ${isObject(k) && isStr(k.key) ? k.key : "?"} ${named}`);
         continue;
       }
-      if (!isObject(k.schema) || !SCALAR_TYPES.has(k.schema.type as string)) {
+      if (!isObject(k.schema) || !scalarSchema(k.schema)) {
         faults.push(`${at} key ${k.key} has a schema that is not a scalar's`);
         continue;
       }
@@ -383,11 +458,39 @@ function parseAction(a: unknown, where: string, faults: string[], extensions: Ex
       }
     }
   }
-  const args = parseArgs(a.args, where, faults);
+  // An extension action's arguments are its `args`; where it gives none, its schema's `properties` (I4, the maintainer's ruling).
+  const args = parseArgs(a.args, where, faults) ?? (extension && a.args === undefined ? fromSchema(extensions, a.action) : undefined);
   // Least it can mean: an action whose confirmation is not stated cannot confirm.
   return { action: a.action, idempotent: a.idempotent, stateless: a.stateless, toggles: a.toggles === true,
     whole_state: a.wholeState === true, confirms: a.confirms === true, ...(args ? { args } : {}),
     ...(confirmedBy ? { confirmed_by: confirmedBy } : {}) };
+}
+
+/**
+ * The `args` an extension action's schema gives (I4: where its entry gives no `args`): each of its
+ * `properties` an argument, optional unless `required` names it; a required one a range from its
+ * `minimum` and `maximum`, or a list from its `enum` of scalars; otherwise any scalar. Undefined when it
+ * names none.
+ */
+function fromSchema(extensions: Extension[], action: string): Record<string, Constraint> | undefined {
+  const schema = extensions.flatMap((e) => e.actions).find((x) => x.action === action)?.schema;
+  const props = schema && isObject(schema.properties) ? schema.properties : undefined;
+  if (!props || !Object.keys(props).length) return undefined;
+  const required = Array.isArray(schema!.required) ? schema!.required.filter(isStr) : [];
+  const scalar = (x: unknown) => isStr(x) || typeof x === "boolean" || (typeof x === "number" && Number.isFinite(x));
+  const out: Record<string, Constraint> = {};
+  for (const [name, p] of Object.entries(props)) {
+    if (!required.includes(name)) {
+      out[name] = { optional: true };
+      continue;
+    }
+    const s = isObject(p) ? p : {};
+    if (Array.isArray(s.enum) && s.enum.length && s.enum.every(scalar)) out[name] = { enum: s.enum as (string | number | boolean)[] };
+    else if (typeof s.minimum === "number" || typeof s.maximum === "number") {
+      out[name] = { ...(typeof s.minimum === "number" ? { min: s.minimum } : {}), ...(typeof s.maximum === "number" ? { max: s.maximum } : {}) };
+    } else out[name] = "any";
+  }
+  return out;
 }
 
 /** One entry of the `devices` document; undefined, with the reason, when it cannot stand. */
@@ -420,6 +523,16 @@ function parseDeviceDoc(e: unknown, i: number, faults: string[]): DeviceDoc | un
   if (Array.isArray(e.otherAdmins) && e.otherAdmins.every(wellFormed)) otherAdmins = e.otherAdmins;
   else if (e.otherAdmins !== undefined && e.otherAdmins !== "unknown") faults.push(`${name} otherAdmins is malformed`);
   if (e.proposedInfrastructure !== undefined && e.proposedInfrastructure !== true) faults.push(`${name} proposedInfrastructure is malformed`);
+  /** A list of strings its bridge may leave out: kept as given, or dropped with a fault (GA-BUS-1). */
+  const listed = (wireName: string, key: "awaited_keys" | "settings") => {
+    if (e[wireName] === undefined) return {};
+    const l = strings(e[wireName]);
+    if (!l) faults.push(`${name} ${wireName} is malformed`);
+    return l ? { [key]: l } : {};
+  };
+  const awaited = listed("awaitedKeys", "awaited_keys");
+  const settings = listed("settings", "settings");
+  const undescribed = parseUndescribed(e.undescribed, name, faults);
   // Required of every entry (bridge, *Devices*): without it the reach is not known, never "always listens".
   const reach = count(e.reachMs);
   if (reach === undefined) faults.push(`${name} has no valid reachMs`);
@@ -443,6 +556,9 @@ function parseDeviceDoc(e: unknown, i: number, faults: string[]): DeviceDoc | un
     personal: strings(e.personal) ?? [],
     internal: e.internal === true,
     ...(extensions.length ? { extensions } : {}),
+    ...awaited,
+    ...settings,
+    ...(undescribed !== undefined ? { undescribed } : {}),
   };
 }
 

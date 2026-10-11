@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Clock } from "@ludentes/galatea-life-test-clock";
 import type { Mutation } from "../mutations.js";
+import { wellFormed } from "./canonical.js";
 import type { Store } from "./store.js";
 
 /**
@@ -46,9 +47,11 @@ export class Notices {
   }
 
   /** Raises a notice, or, with a `key` that stands, nothing. */
-  raise(n: Omit<Notice, "notice_id">, key?: string): Notice | undefined {
+  raise(n: Omit<Notice, "notice_id">, rawKey?: string): Notice | undefined {
+    // Whatever the notice holds, the store can keep it: its text may carry an owner's or a bridge's strings.
+    const key = rawKey === undefined ? undefined : wellFormed(rawKey);
     if (key !== undefined && this.standing(key)) return undefined;
-    const notice = { ...n, notice_id: randomUUID() } as Notice;
+    const notice = wellFormed({ ...n, notice_id: randomUUID() }) as Notice;
     const ms = Math.floor(this.clock.now());
     this.held.set(notice.notice_id, { notice, ms, ...(key !== undefined ? { key } : {}), taken: false, standing: key !== undefined });
     void this.store.write((tx) => tx.query(

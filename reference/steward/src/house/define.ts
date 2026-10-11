@@ -52,6 +52,7 @@ export function planDefine(house: House, changes: Change[], ctx: DefineContext):
     const schema = c.op === "delete" && !EXCEPTIONS.has(c.kind) ? "steward/define.delete.json" : `steward/define.${c.kind}.json`;
     const errors = validate(schema, c.value ?? {});
     if (errors.length) throw invalid(`${at}: ${errors.join("; ")}`);
+    if (c.op === "upsert") checkCreatedWith(c.kind, c.value as Args, at);
     apply(draft, c.op, c.kind, c.value as Args, at, ctx);
   });
   check(draft, ctx);
@@ -184,6 +185,32 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       h.credentials.set(v.id, c);
       return;
     }
+  }
+}
+
+/**
+ * The fields each kind's upsert creates an item with (steward, *Change sets*, GA-DEF-14); a rule needs
+ * a trigger or conditions besides. The schemas take an upsert naming its key only (the merge's update);
+ * where they allow null for one (an endpoint's room, person and served_by, a voice record's zone, a
+ * group's room), null is a value, "none".
+ */
+const CREATED_WITH: Record<string, string[]> = {
+  room: ["name"], person: ["name", "role"], endpoint: ["name", "type", "room", "person", "served_by"],
+  voice: ["listening", "wake_words", "zone", "output", "follow_up", "heard_by"], credential: ["kind", "secret"],
+  group: ["name", "room", "members", "aggregate"], rule: ["name", "actions"], scenario: ["name", "mode", "steps"], schedule: ["scenario", "time"],
+};
+
+/**
+ * An upsert gives its kind's created-with fields (GA-DEF-14), and a rule a trigger or conditions, not
+ * both null. Ruled: the build still replaces an item whole on an upsert (the merge GA-DEF-14 asks for is
+ * not built yet), so an upsert of an item that exists must give them too, refused rather than leaving the
+ * item without them; once the merge is built, this applies to an upsert that creates an item only.
+ */
+function checkCreatedWith(kind: string, v: Args, at: string): void {
+  const missing = (CREATED_WITH[kind] ?? []).filter((f) => v[f] === undefined);
+  if (missing.length) throw invalid(`${at}: a ${kind} is created with ${missing.join(", ")}, which it leaves out (GA-DEF-14)`);
+  if (kind === "rule" && (v.trigger ?? undefined) === undefined && (v.conditions ?? undefined) === undefined) {
+    throw invalid(`${at}: a rule is created with a trigger or conditions (GA-DEF-14)`);
   }
 }
 

@@ -5,7 +5,8 @@ import type { Declarations } from "../model/declarations.js";
 import type { SafetyRule } from "../safety/language.js";
 
 export type Level = "Act" | "Safe";
-export type Client = { id: string; credential: string; token_key?: string; kind: "steward" | "parent" };
+/** A client: its bearer credential is held only as its SHA-256 (`hashSecret`), in memory and in the store. */
+export type Client = { id: string; credential_sha256: string; token_key?: string; kind: "steward" | "parent" };
 export type Bridge = { id: string; identity: string };
 /** The owner's adoption of a device (applier, *Adoption*): its class is the owner's. */
 export type Adoption = { class: string | null };
@@ -54,10 +55,10 @@ export function copyConfig(c: Config): Config {
 
 export async function loadConfig(q: Pick<Tx, "query">, o: { forgetsIgnores?: boolean } = {}): Promise<Config> {
   const c = emptyConfig();
-  const clients = await q.query<{ id: string; credential: string; token_key: string | null; kind: Client["kind"] }>(
-    "SELECT id, credential, token_key, kind FROM clients ORDER BY id");
+  const clients = await q.query<{ id: string; credential_sha256: string; token_key: string | null; kind: Client["kind"] }>(
+    "SELECT id, credential_sha256, token_key, kind FROM clients ORDER BY id");
   for (const r of clients.rows) {
-    c.clients.set(r.id, { id: r.id, credential: r.credential, kind: r.kind, ...(r.token_key ? { token_key: r.token_key } : {}) });
+    c.clients.set(r.id, { id: r.id, credential_sha256: r.credential_sha256, kind: r.kind, ...(r.token_key ? { token_key: r.token_key } : {}) });
   }
   const bridges = await q.query<Bridge>("SELECT id, identity FROM bridges ORDER BY id");
   for (const r of bridges.rows) c.bridges.set(r.id, { id: r.id, identity: r.identity });
@@ -94,8 +95,8 @@ export async function saveConfig(tx: Tx, c: Config, now = 0): Promise<void> {
   await tx.query("DELETE FROM routes");
   await tx.query("DELETE FROM safety_rules");
   for (const x of c.clients.values()) {
-    await tx.query("INSERT INTO clients (id, credential, token_key, kind) VALUES ($1, $2, $3, $4)",
-      [x.id, x.credential, x.token_key ?? null, x.kind]);
+    await tx.query("INSERT INTO clients (id, credential_sha256, token_key, kind) VALUES ($1, $2, $3, $4)",
+      [x.id, x.credential_sha256, x.token_key ?? null, x.kind]);
   }
   for (const x of c.bridges.values()) {
     await tx.query("INSERT INTO bridges (id, identity) VALUES ($1, $2)", [x.id, x.identity]);

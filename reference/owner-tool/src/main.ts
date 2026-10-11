@@ -104,6 +104,11 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<numb
       }
     },
     now: () => Date.now(),
+    // While a command listens, SIGINT is its to handle (join closes its window first); otherwise Node's default ends the process.
+    onInterrupt: (handler) => {
+      process.on("SIGINT", handler);
+      return () => void process.off("SIGINT", handler);
+    },
   };
   try {
     return await run(argv, deps);

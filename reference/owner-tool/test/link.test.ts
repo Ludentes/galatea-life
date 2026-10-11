@@ -29,11 +29,11 @@ async function link(url: string, ca?: string) {
 
 describe("checkUrl", () => {
   it("takes https anywhere and http on loopback only", () => {
-    expect(checkUrl("https://box.lan:18444/mcp", "steward").host).toBe("box.lan:18444");
+    expect(checkUrl("https://box.example:18444/mcp", "steward").host).toBe("box.example:18444");
     expect(checkUrl("http://127.0.0.1:1/mcp", "steward").port).toBe("1");
     expect(checkUrl("http://localhost:1/mcp", "steward").hostname).toBe("localhost");
     expect(checkUrl("http://[::1]:1/mcp", "steward").hostname).toBe("[::1]");
-    expect(() => checkUrl("http://192.168.1.5:18444/mcp", "steward")).toThrow(BadUrl);
+    expect(() => checkUrl("http://198.51.100.5:18444/mcp", "steward")).toThrow(BadUrl);
     expect(() => checkUrl("not a url", "applier")).toThrow(/applier's URL is not a URL/);
   });
 

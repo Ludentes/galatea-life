@@ -24,12 +24,14 @@ const SESSION_TAKEN_OVER = 0x8e;
  * generated), a clean session that expires at once, a 10 s keepalive, and no reconnect of the
  * library's own: each connection is a new client, so nothing is queued offline or replayed after it.
  */
-export function connectOptions(identity: string, password?: string): IClientOptions {
+export function connectOptions(identity: string, password?: string, ca?: string): IClientOptions {
   return {
     protocolVersion: 5,
     clientId: identity,
     username: identity,
     ...(password ? { password } : {}),
+    // An `mqtts` broker's certificate is validated against this CA, else against the system's store.
+    ...(ca ? { ca } : {}),
     clean: true,
     keepalive: KEEPALIVE_S,
     reconnectPeriod: 0,
@@ -80,6 +82,8 @@ export interface BusOptions {
   url: string;
   identity: string;
   password?: string;
+  /** The CA (PEM) an `mqtts` broker's certificate is validated against (`GALATEA_BROKER_CA`); the system's store without it. */
+  ca?: string;
   root: string;
   clock: Clock;
   /** One message from a bridge's tree, by the identity in its topic. */
@@ -222,7 +226,7 @@ export class Bus {
 
   private connect(first?: () => void): void {
     if (this.closed) return;
-    const c = connect(this.o.url, connectOptions(this.o.identity, this.o.password));
+    const c = connect(this.o.url, connectOptions(this.o.identity, this.o.password, this.o.ca));
     this.client = c;
     this.reasons.clear();
     let up = false;

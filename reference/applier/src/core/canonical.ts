@@ -23,3 +23,18 @@ export function storable(value: unknown): boolean {
   if (value && typeof value === "object") return Object.entries(value).every(([k, v]) => storable(k) && storable(v));
   return true;
 }
+
+/**
+ * `value` with every string, keys included, made one Postgres keeps: U+0000 and each lone surrogate
+ * become U+FFFD. The sinks that take text from anywhere (the event log, the notices) pass what they
+ * keep through it, so no fault text can stop the writer.
+ */
+export function wellFormed<T>(value: T): T {
+  if (typeof value === "string") return value.replaceAll("\u0000", "\ufffd").toWellFormed() as T;
+  if (Array.isArray(value)) return (storable(value) ? value : value.map(wellFormed)) as T;
+  if (value && typeof value === "object") {
+    if (storable(value)) return value;
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [wellFormed(k), wellFormed(v)])) as T;
+  }
+  return value;
+}

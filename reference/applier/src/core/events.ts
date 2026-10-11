@@ -1,4 +1,5 @@
 import type { Clock } from "@ludentes/galatea-life-test-clock";
+import { wellFormed } from "./canonical.js";
 import { RequestError } from "./errors.js";
 import { getMeta, RisingMeta, setMeta, type Store } from "./store.js";
 import type { Mutation } from "../mutations.js";
@@ -14,6 +15,9 @@ export const SEQ_LIFE_GAP = 1_000_000;
 /** The kinds `history` returns (GA-EVT-5); `history_v` in `0010_occurrences.sql` lists the same. */
 const HISTORY_TYPES = new Set(["state", "outcome", "late_ack", "liveness", "rule_fired", "latch", "model",
   "route_conflict", "provision", "freshness", "transport", "other_admins", "bridge_fault", "occurrence"]);
+
+/** The most events one `history` call returns; a range holding more is refused, to be asked for in parts. */
+export const HISTORY_LIMIT = 10_000;
 
 /** How an event is kept: `eventsOnly`, served by `events` and never by `history` (GA-EVT-5's personal occurrence). */
 export type Keep = { eventsOnly?: boolean };
@@ -96,7 +100,8 @@ export class EventLog {
   append(type: string, body: Record<string, unknown>, keep: Keep = {}): AppEvent {
     const seq = ++this.last;
     const ms = this.now();
-    const own = unreserved(body);
+    // Whatever the body holds, the store can keep it: a fault text carries a bridge's strings.
+    const own = wellFormed(unreserved(body));
     const event: AppEvent = { ...own, seq, time: new Date(ms).toISOString(), type };
     this.kept.push({ event, ms });
     void this.store.write((tx) => tx.query("INSERT INTO events (seq, time_ms, type, body, events_only) VALUES ($1, $2, $3, $4, $5) "
@@ -137,21 +142,38 @@ export class EventLog {
     });
   }
 
+  /** The applier stops (an embedding host's stop): every long poll waiting is released at once, its timer cleared. */
+  stop(): void {
+    for (const w of [...this.waiters]) w();
+  }
+
   /**
    * The history kinds in `[fromMs, toMs]` from the store, oldest first; with `targets`, those naming
-   * one of them. It waits for the writer to commit what was handed to it before, so an event served
-   * by `events` is in `history` too.
+   * one of them. Both filters run in the store, so a range on a chatty home loads only what it returns.
+   * More than `limit` such events is a request error: the caller asks for a shorter range (the wire has
+   * no page yet). It waits for the writer to commit what was handed to it before, so an event served by
+   * `events` is in `history` too. `hidden` leaves out what is to be hidden as things stand now: an
+   * occurrence of a key the device's `personal` holds now, beside the rows marked events-only when they
+   * happened (GA-EVT-5).
    */
-  /**
-   * `hidden` leaves out what is to be hidden as things stand now: an occurrence of a key the device's
-   * `personal` holds now, beside the rows marked events-only when they happened (GA-EVT-5).
-   */
-  async history(fromMs: number, toMs: number, targets?: string[], hidden?: (e: AppEvent) => boolean): Promise<AppEvent[]> {
+  async history(fromMs: number, toMs: number, targets?: string[], hidden?: (e: AppEvent) => boolean,
+    limit = HISTORY_LIMIT): Promise<AppEvent[]> {
     await this.store.settled();
+    // The devices an event names: its target, a model event's device, a provision event's transport (a
+    // transport event's is left as it was: no target reads it back), and a rule_fired or latch event's
+    // devices (GA-LEASE-6 reads them back by device).
+    const named = "($4::text[] IS NULL OR body->>'target' = ANY($4) OR body->>'device' = ANY($4) "
+      + "OR (type = 'provision' AND body->>'transport' = ANY($4)) OR (jsonb_typeof(body->'devices') = 'array' AND body->'devices' ?| $4))";
     const rows = await this.store.query<Row>(
-      "SELECT seq, time_ms, type, body FROM events WHERE time_ms >= $1 AND time_ms <= $2 AND NOT events_only ORDER BY seq", [fromMs, toMs]);
-    return rows.rows.map((r) => toKept(r).event).filter((e) => HISTORY_TYPES.has(e.type) && !isSpeech(e)
-      && (!targets || names(e).some((t) => targets.includes(t))) && !hidden?.(e));
+      "SELECT seq, time_ms, type, body FROM events WHERE time_ms >= $1 AND time_ms <= $2 AND NOT events_only AND type = ANY($3) "
+      // A state event's speech key is kept in events only (GA-EVT-5).
+      + `AND NOT (type = 'state' AND body->>'key' = 'speech') AND ${named} ORDER BY seq LIMIT $5`,
+      [fromMs, toMs, [...HISTORY_TYPES], targets ?? null, limit + 1]);
+    if (rows.rows.length > limit) {
+      throw new RequestError("invalid_request", `more than ${limit} events between ${new Date(fromMs).toISOString()} and `
+        + `${new Date(toMs).toISOString()}; ask for a shorter range`);
+    }
+    return rows.rows.map((r) => toKept(r).event).filter((e) => !hidden?.(e));
   }
 
   /** Stops serving events past the retention, and hands the store's prune of the 7 days to the writer. */
@@ -170,19 +192,4 @@ export class EventLog {
         + "DO UPDATE SET value = GREATEST(meta.value::bigint, EXCLUDED.value::bigint)::text", [String(n)]);
     });
   }
-}
-
-/** A `state` event's `speech` key is kept in `events` only (GA-EVT-5). */
-const isSpeech = (e: AppEvent) => e.type === "state" && e.key === "speech";
-
-/**
- * The devices an event names: its `target`, a `model` event's `device`, and the `devices` a
- * `rule_fired` event's rule reads and actuates (GA-LEASE-6 reads them back by device); slice 6b gives
- * a `latch` event its own; a `provision` event's `transport` (slice 5a).
- */
-function names(e: AppEvent): string[] {
-  const devices = Array.isArray(e.devices) ? e.devices : [];
-  // Only a provision event's transport: a `transport` event's is left as it was (no target reads it back).
-  const transport = e.type === "provision" ? e.transport : undefined;
-  return [e.target, e.device, transport, ...devices].filter((x): x is string => typeof x === "string");
 }
