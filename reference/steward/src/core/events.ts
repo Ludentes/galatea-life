@@ -32,16 +32,22 @@ export const SEQ_LIFE_GAP = 1_000_000;
  * `history` at 7 days and never in the reader role's view; null when it was not known (its device not
  * described when it came), which counts as personal (the milestone 7+10+11 review, B5).
  */
-export type Keep = { eventsOnly?: boolean; personal?: boolean | null };
+export type Keep = { eventsOnly?: boolean; personal?: boolean | null; readers?: Readers };
 
-/** An event as the log serves it, with its `personal` mark as it was kept (`Keep`). */
-export type Marked = { event: AppEvent; personal: boolean | null };
+/**
+ * Who may read an `ask` event's `steps` or a `define` event's `diff` (GA-CONF-5, GA-STW-7): a read at
+ * `endpoint`, one whose derived role is `owner`, and one whose derived person is `speaker`.
+ */
+export type Readers = { endpoint: string; speaker?: string };
+
+/** An event as the log serves it, with its `personal` mark and its readers as it was kept (`Keep`). */
+export type Marked = { event: AppEvent; personal: boolean | null; readers?: Readers };
 
 export type AppEvent = { seq: number; time: string; type: string } & Record<string, unknown>;
 
 type Row = { seq: number | string; time_ms: number | string; type: string; body: Record<string, unknown>; events_only?: boolean;
-  personal: boolean | null };
-type Kept = { event: AppEvent; ms: number; personal: boolean | null };
+  personal: boolean | null; readers?: Readers | null };
+type Kept = { event: AppEvent; ms: number; personal: boolean | null; readers?: Readers };
 
 /** The meta key a clean stop leaves, and the next start clears (the reference applier's design, *Restart loss*). */
 export const CLEAN_STOP = "clean_stop";
@@ -57,6 +63,7 @@ const toKept = (r: Row): Kept => ({
   event: { ...unreserved(r.body), seq: Number(r.seq), time: new Date(Number(r.time_ms)).toISOString(), type: r.type },
   ms: Number(r.time_ms),
   personal: r.personal,
+  ...(r.readers ? { readers: r.readers } : {}),
 });
 
 /**
@@ -92,7 +99,7 @@ export class EventLog {
     const clean = (await getMeta(this.store, CLEAN_STOP)) !== undefined;
     const pruned = Number((await getMeta(this.store, "pruned_through")) ?? "0");
     const aged = await this.store.query<{ n: number | string | null }>("SELECT max(seq) AS n FROM events WHERE time_ms <= $1", [since]);
-    const rows = await this.store.query<Row>("SELECT seq, time_ms, type, body, personal FROM events WHERE time_ms > $1 ORDER BY seq", [since]);
+    const rows = await this.store.query<Row>("SELECT seq, time_ms, type, body, personal, readers FROM events WHERE time_ms > $1 ORDER BY seq", [since]);
     this.kept = rows.rows.map(toKept);
     this.last = last + SEQ_LIFE_GAP;
     this.trimmedThrough = clean ? Math.max(pruned, Number(aged.rows[0]?.n ?? 0)) : this.last;
@@ -120,15 +127,27 @@ export class EventLog {
     const own = unreserved(body);
     const event: AppEvent = { ...own, seq, time: new Date(ms).toISOString(), type };
     const personal = keep.personal === undefined ? false : keep.personal;
-    this.kept.push({ event, ms, personal });
+    this.kept.push({ event, ms, personal, ...(keep.readers ? { readers: keep.readers } : {}) });
     void this.store.write(async (tx) => {
-      await tx.query("INSERT INTO events (seq, time_ms, type, body, events_only, personal) VALUES ($1, $2, $3, $4, $5, $6) "
-        + "ON CONFLICT (seq) DO NOTHING", [seq, ms, type, JSON.stringify(own), keep.eventsOnly === true, personal]);
+      await tx.query("INSERT INTO events (seq, time_ms, type, body, events_only, personal, readers) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+        + "ON CONFLICT (seq) DO NOTHING", [seq, ms, type, JSON.stringify(own), keep.eventsOnly === true, personal,
+        keep.readers ? JSON.stringify(keep.readers) : null]);
       await also?.(tx);
     }, { droppable: true });
     this.lastSeq.schedule();
     for (const w of [...this.waiters]) w();
     return event;
+  }
+
+  /**
+   * Whether a `rule_fired` of `rule` was logged after the first event relaying an applier event at or
+   * after `applierMs` (its `applier_time`), within the hour kept in memory (GA-RULE-1): the applier's
+   * time is compared only with the applier's, and the firing placed by the log's order, never by the
+   * steward's clock (the code review, CR3). With no such event logged, none was fired since.
+   */
+  firedSince(rule: string, applierMs: number): boolean {
+    const at = this.kept.findIndex((k) => typeof k.event.applier_time === "string" && Date.parse(k.event.applier_time) >= applierMs);
+    return at >= 0 && this.kept.slice(at + 1).some((k) => k.event.type === "rule_fired" && k.event.rule === rule);
   }
 
   /** The last `seq` given, as a cursor. */
@@ -151,7 +170,7 @@ export class EventLog {
     if (after < this.trimmedThrough || this.kept.some((k) => k.event.seq > after && k.ms <= oldest)) {
       throw new RequestError("cursor_expired", `events after cursor ${cursor} are no longer kept`);
     }
-    return this.kept.filter((k) => k.event.seq > after).map((k) => ({ event: k.event, personal: k.personal }));
+    return this.kept.filter((k) => k.event.seq > after).map((k) => ({ event: k.event, personal: k.personal, ...(k.readers ? { readers: k.readers } : {}) }));
   }
 
   /** Resolves on the next event, or after `ms` on the clock. */
@@ -182,9 +201,9 @@ export class EventLog {
     const named = targets === undefined ? "" : (params.push(targets, rules), " AND ((body->>'target') = ANY($6) OR (body->>'device') = ANY($6) "
       + "OR (jsonb_typeof(body->'devices') = 'array' AND (body->'devices') ?| $6) OR (jsonb_typeof(body->'targets') = 'array' AND (body->'targets') ?| $6) "
       + "OR (type IN ('latch', 'rule_fired') AND (body->>'rule_id') = ANY($7)))");
-    const rows = await this.store.query<Row>("SELECT seq, time_ms, type, body, personal FROM events WHERE time_ms >= $1 AND time_ms <= $2 AND type = ANY($3) "
+    const rows = await this.store.query<Row>("SELECT seq, time_ms, type, body, personal, readers FROM events WHERE time_ms >= $1 AND time_ms <= $2 AND type = ANY($3) "
       + `AND seq > $5 AND NOT events_only${named} ORDER BY seq LIMIT $4`, params);
-    const events = rows.rows.map((r) => { const k = toKept(r); return { event: k.event, personal: k.personal }; });
+    const events = rows.rows.map((r) => { const k = toKept(r); return { event: k.event, personal: k.personal, ...(k.readers ? { readers: k.readers } : {}) }; });
     return { events: events.slice(0, cap), more: events.length > cap };
   }
 

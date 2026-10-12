@@ -35,7 +35,7 @@ creates and deletes the `galatea-pgdata-*` volumes.
    sed -i "s/^GALATEA_UID=.*/GALATEA_UID=$(id -u)/; s/^GALATEA_GID=.*/GALATEA_GID=$(id -g)/" .env
    ```
 2. `cp instances.example instances`
-3. `bin/galatea-db-prepare`. Expected: four lines, `wrote …/secrets/db/postgres`, `reader`,
+3. `bin/galatea-prepare`. Expected: four lines, `wrote …/secrets/db/postgres`, `reader`,
    `applier` and `steward`.
 4. `ls -l secrets/db`. Expected: every file `-rw-------` and owned by you.
 5. `docker compose up -d`, then `docker compose ps`. Expected: `postgres` healthy, `backup`
@@ -66,7 +66,7 @@ creates and deletes the `galatea-pgdata-*` volumes.
 ## Adding a build
 
 1. Add a line `voice_kitchen` to `instances`.
-2. `bin/galatea-db-prepare`. Expected: only `wrote …/voice_kitchen`.
+2. `bin/galatea-prepare`. Expected: only `wrote …/voice_kitchen`.
 3. `docker compose up -d`, then `docker compose logs db-init | tail -1`. Expected:
    `db-init: ready (3 instances)`.
 4. Remove the line again and run `docker compose up -d`. Then connect as `voice_kitchen` (step 1 of

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { PGlite, type Transaction } from "@electric-sql/pglite";
 import type { Clock } from "@ludentes/galatea-life-test-clock";
 import { fromStore, StoreError, type Db, type Tx } from "../src/core/db.js";
+import { migrationsFrom } from "../src/adapters/migrations.js";
 import { migrate } from "../src/core/migrate.js";
 import { Store } from "../src/core/store.js";
 import { FakeClock } from "./fake-clock.js";
@@ -18,6 +19,9 @@ import { FakeClock } from "./fake-clock.js";
  * (a lock the store cannot get, a connection lost on that statement): the transaction holding it
  * rolls back, and the writer tries it again.
  */
+/** The package's migrations, as an entry point reads them. */
+export const migrations = migrationsFrom(new URL("../migrations/", import.meta.url));
+
 export type Trouble = { down: boolean; fault?: string; failOn?: RegExp };
 
 export async function memoryDb(): Promise<Db & { trouble: Trouble }> {
@@ -76,7 +80,7 @@ export function migratedTemplate(): Promise<Blob> {
 /** The data directory of a `blankDb` that `migrate` brought up to date. */
 export async function buildTemplate(): Promise<Blob> {
   const db = await blankDb();
-  await migrate(db);
+  await migrate(db, migrations);
   const dir = await db.dumpDataDir("none");
   await db.close();
   return dir;
@@ -132,7 +136,7 @@ function wrap(pglite: PGlite): Db & { trouble: Trouble; dumpDataDir: PGlite["dum
 
 /** A store on a fresh `memoryDb`. A fault fails the test that met it. */
 export const memoryStore = async (clock: Clock = new FakeClock()): Promise<Store> =>
-  Store.open(await memoryDb(), clock, (err) => { throw err; });
+  Store.open(await memoryDb(), clock, (err) => { throw err; }, { migrations });
 
 /** The database, surviving its store's close, as the next process would find it. */
 export const lasting = <T extends { close(): Promise<void> }>(db: T): T => ({ ...db, close: async () => undefined });

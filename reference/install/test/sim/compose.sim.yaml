@@ -1,0 +1,34 @@
+# Test only (plan C1, first light simulated): added to the installation's compose.yaml by
+# first-light.test.ts, never by an installation. Relative paths are the installation's directory's
+# (reference/install), the first file's.
+# - The broker runs broker-init.sh unchanged, through a wrapper that adds the simulated bridge's test
+#   transport grants and the test's own control identity, sim_control.
+# - sim-bridge is the harness's simulated bridge as broker identity bridge_sim, on mqtts with the
+#   installation's CA, from this checkout's built packages (pnpm -r build first).
+services:
+  broker:
+    entrypoint: ["/broker-sim/broker-sim-init.sh"]
+    volumes:
+      - { type: bind, source: ./test/sim, target: /broker-sim, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SIM_SECRETS}/sim_control", target: /run/sim-secrets/sim_control, read_only: true, bind: { create_host_path: false } }
+
+  sim-bridge:
+    image: node:24-bookworm-slim
+    restart: "no"
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    init: true
+    depends_on:
+      broker: { condition: service_healthy }
+    working_dir: ${GALATEA_REPO}/reference/install
+    command: ["node", "test/sim/sim-bridge.mjs"]
+    environment:
+      GALATEA_BROKER: mqtts://bridge_sim@broker:8883
+      GALATEA_BROKER_PASSWORD_FILE: /run/secrets/broker
+      GALATEA_ROOT: ${GALATEA_ROOT:-galatea}
+      GALATEA_TEST_TRANSPORT: ${GALATEA_ROOT:-galatea}/test/bridge_sim/control
+      GALATEA_TEST_RUN_ID: ${GALATEA_SIM_RUN_ID}
+      NODE_EXTRA_CA_CERTS: /run/tls/ca.pem
+    volumes:
+      - { type: bind, source: "${GALATEA_REPO}", target: "${GALATEA_REPO}", read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/broker/bridge_sim", target: /run/secrets/broker, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/ca.pem", target: /run/tls/ca.pem, read_only: true, bind: { create_host_path: false } }

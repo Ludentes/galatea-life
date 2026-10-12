@@ -6,7 +6,7 @@ import type { Mutation } from "../mutations.js";
 
 /**
  * The least spacing between a rule's tries of one action (steward, *Constants*: at least the action's
- * `ack_within_s`, at most 300 s or the `ack_within_s` when longer; ⚠️ a guess). A pick within that
+ * `ack_within_s`, at most 300 s, or the `ack_within_s` plus 60 s when it is longer; ⚠️ a guess). A pick within that
  * range: once a minute, as the notice pump retries, so a dead device costs one firing a minute.
  */
 export const RETRY_SPACING_MS = 60_000;
@@ -176,7 +176,11 @@ export class RuleOutcomes {
   private readonly retries = new Map<string, number>();
   /** The notices held for a late ack, by `rule\u0000firing\u0000step`, in the order held; at most `HELD_CAP`. */
   private readonly held = new Map<string, Held>();
-  /** The rooms each rule's `skipped(occupancy_unknown)` was noticed for (ruled Q4); forgotten with the rule. */
+  /**
+   * The rooms (or, for a target with no room, the targets) each rule's `skipped(occupancy_unknown)` was
+   * noticed for while the room stayed unknown (GA-RULE-8, ruled Q4); a room known again is let go
+   * (`roomKnown`), and the rule's marks are forgotten with it.
+   */
   private readonly roomsNoticed = new Map<string, Set<string>>();
   /** When each action tried again began failing in its rule's current becoming true, by the retry's key. */
   private readonly failing = new Map<string, { episode: number; sinceMs: number }>();
@@ -274,6 +278,33 @@ export class RuleOutcomes {
     return false;
   }
 
+  /**
+   * A step: `room`'s occupancy is known now, so the next `skipped(occupancy_unknown)` of each rule in it
+   * raises its notice again (GA-RULE-8).
+   */
+  roomKnown(room: string): void {
+    if (this.o.mutation === "never-notices-again") return;
+    for (const [rule, rooms] of [...this.roomsNoticed]) {
+      rooms.delete(room);
+      if (!rooms.size) this.roomsNoticed.delete(rule);
+    }
+  }
+
+  /** The key a `skipped(occupancy_unknown)` is coalesced by: its target's room, or the target itself where it has none. */
+  private roomKey(target: string): string {
+    const room = this.o.roomOf?.(target);
+    return room ? room : `\u0000${target}`;
+  }
+
+  /** Whether `rule` already raised its notice under `key` (marking it if not): a notice coalesced is not raised again. */
+  private coalesced(rule: string, key: string): boolean {
+    const rooms = this.roomsNoticed.get(rule) ?? new Set<string>();
+    if (rooms.has(key)) return true;
+    rooms.add(key);
+    this.roomsNoticed.set(rule, rooms);
+    return false;
+  }
+
   /** A deleted rule: its retries and held notices are dropped and its noticed marks forgotten (the milestone review, M3). */
   forget(rule: string): void {
     const mine = (k: string) => k.startsWith(`${rule}\u0000`);
@@ -314,11 +345,7 @@ export class RuleOutcomes {
     // Only an outcome that ends while the conditions hold is fired again for (GA-RULE-7) or noticed (GA-RULE-8).
     if (a.kind === "none" || !this.o.holds(f.rule)) return;
     if (a.kind === "notice" && a.perRoom) {
-      const rooms = this.roomsNoticed.get(f.rule) ?? new Set<string>();
-      const room = this.o.roomOf?.(s.target) ?? "";
-      if (rooms.has(room)) return;
-      rooms.add(room);
-      this.roomsNoticed.set(f.rule, rooms);
+      if (this.coalesced(f.rule, this.roomKey(s.target))) return;
       this.raise(f, stepId, outcome, reason);
       return;
     }
@@ -447,6 +474,8 @@ export class RuleOutcomes {
   private raise(f: Firing, stepId: string, outcome: string, reason?: string, still = false): void {
     const s = f.steps[stepId];
     if (!s) return;
+    // Only `skipped(occupancy_unknown)`'s notice may be coalesced; the mutation coalesces a failed lock's too.
+    if (this.o.mutation === "coalesces-a-failed-lock" && outcome === "failed" && reason === "not_locked" && this.coalesced(f.rule, `lock\u0000${this.roomKey(s.target)}`)) return;
     const marks = this.noticed.get(f.rule) ?? new Set<string>();
     // An edge rule's firings are each their own (G3); a level rule's, once per becoming true.
     const mark = `${f.edge ? `n${f.n}` : f.episode}\u0000${canonical([s.target, s.action, s.args])}`;

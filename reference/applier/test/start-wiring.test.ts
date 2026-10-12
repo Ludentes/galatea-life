@@ -2,8 +2,9 @@ import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import type { BusOptions } from "../src/bus/client.js";
 import { settingsFromEnv, type ReadSecret } from "../src/entry.js";
+import { Mutant } from "../src/mutations.js";
 import { startApplier } from "../src/start.js";
-import { memoryDb } from "./db.js";
+import { memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 import { privateCa } from "./private-ca.js";
 
@@ -37,7 +38,9 @@ describe("startApplier wires exactly what the settings hold", () => {
       connectPg: (url) => { pgUrls.push(url); return db; },
       bus: (o) => { busOptions.push(o); return { follow: () => undefined, snapshot: async () => "ok", request: async () => "ok", command: async () => "ok",
         start: async () => undefined, close: async () => undefined } as never; },
-      serveMcp: async (_applier, opts) => { served.push(opts); return { url: "https://0.0.0.0:18443/mcp", close: async () => undefined }; },
+      serveMcp: async (_applier, _tools, opts) => { served.push(opts); return { url: "https://0.0.0.0:18443/mcp", close: async () => undefined }; },
+      migrations,
+      log: () => undefined,
       fatal: (m) => { throw new Error(m); },
     });
 
@@ -45,7 +48,7 @@ describe("startApplier wires exactly what the settings hold", () => {
     expect(parsePg(pgUrls[0]!)).toMatchObject({ user: "applier", password: DB_PW, host: "postgres", port: "5432", database: "galatea" });
     expect(busOptions).toHaveLength(1);
     expect(busOptions[0]).toMatchObject({ url: "mqtts://broker:8883", identity: "applier", password: BROKER_PW, ca: pki.ca, root: "galatea", retainsRequests: false });
-    expect(served).toEqual([{ port: 18443, host: "0.0.0.0", tls: { cert: pki.cert, key: pki.key } }]);
+    expect(served).toEqual([{ port: 18443, host: "0.0.0.0", tls: { cert: pki.cert, key: pki.key }, log: expect.any(Function), mutant: Mutant.none }]);
     await started.stop();
   });
 });

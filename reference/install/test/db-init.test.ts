@@ -44,12 +44,20 @@ describe("db-init", () => {
 
   it("runs again without change, and adds an instance listed later", async () => {
     s.setInstances(["applier", "voice_kitchen", "bridge_zigbee"]);
-    await s.must(s.bin("galatea-db-prepare"));
+    await s.must(s.bin("galatea-prepare"));
     const again = await s.must(s.compose("run", "--rm", "db-init"));
     expect(again.stderr).not.toContain("NOTICE");
     expect((await s.admin("SELECT count(*) FROM applier.t")).stdout.trim()).toBe("1");
     expect((await s.sql("bridge_zigbee", pw("bridge_zigbee"), "SELECT current_schema()")).stdout.trim())
       .toBe("bridge_zigbee");
+  });
+
+  it("gives a watcher no role and no schema: it is the broker's alone", async () => {
+    s.setInstances(["applier", "watch", "watch-2"]);
+    await s.must(s.bin("galatea-prepare"));
+    await s.must(s.compose("run", "--rm", "db-init"));
+    expect((await s.admin("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'watch%'")).stdout.trim()).toBe("0");
+    expect((await s.admin("SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'watch%'")).stdout.trim()).toBe("0");
   });
 
   it("never drops an instance that is no longer listed", async () => {

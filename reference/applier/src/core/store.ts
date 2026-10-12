@@ -1,9 +1,16 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "./clock.js";
 import type { Db, Tx } from "./db.js";
 import { CLEAN_STOP } from "./events.js";
 import { StoreUnavailable } from "./errors.js";
-import { migrate } from "./migrate.js";
+import type { Log } from "./log.js";
+import { migrate, type Migration } from "./migrate.js";
 import { Writer, type WriteOptions, type WriteSet } from "./writer.js";
+
+/**
+ * How `Store.open` finds the schema: brought up to date with `migrations` (the package's, read by an
+ * entry point through `migrationsFrom`), or, `migrate: false`, as a host that migrates elsewhere left it.
+ */
+export type StoreOpenOptions = ({ migrations: readonly Migration[] } | { migrate: false }) & { backlogCap?: number; log?: Log };
 
 /** How long a caller waits for a commit its reply depends on (the storage design). */
 export const GATE_MS = 10_000;
@@ -16,12 +23,13 @@ export class Store {
   private constructor(private readonly db: Db, private readonly writer: Writer, private readonly clock: Clock) {}
 
   /**
-   * Brings the schema up to date and opens the store; the applier cannot start without it.
-   * `onFault` is told when the writer stops on a statement the store refuses for good.
+   * Brings the schema up to date (unless `migrate: false`) and opens the store; the applier cannot start without it.
+   * `onFault` is told when the writer stops on a statement the store refuses for good; `log` hears the
+   * writer say the store went away and came back (default: nowhere).
    */
-  static async open(db: Db, clock: Clock, onFault: (err: unknown) => void, o: { backlogCap?: number } = {}): Promise<Store> {
-    await migrate(db);
-    return new Store(db, new Writer(db, clock, onFault, undefined, o.backlogCap), clock);
+  static async open(db: Db, clock: Clock, onFault: (err: unknown) => void, o: StoreOpenOptions): Promise<Store> {
+    if ("migrations" in o) await migrate(db, o.migrations);
+    return new Store(db, new Writer(db, clock, onFault, o.log, o.backlogCap), clock);
   }
 
   /** Reads what is committed; fails while the store is unreachable. */

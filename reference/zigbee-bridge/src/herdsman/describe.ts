@@ -272,6 +272,26 @@ function longestReport(device: Zh.Device): number {
   return longest;
 }
 
+/** The model database's words for a device one plugs a load into. */
+const PLUG_WORDS = /\b(plug|socket|outlet)s?\b/i;
+/**
+ * Words that make a plug word ambiguous: a lamp holder ("light socket"), an in-wall or DIN relay
+ * ("Socket Switch Module", "relay"), a thermostat or valve with an outlet. Such a device proposes no
+ * class; the owner names it at adoption.
+ */
+const NOT_A_PLUG = /\b(light|lamp|bulb|module|relay|relais|thermostat|thermostatic|valve|breaker|din)\b/i;
+
+/**
+ * Whether the model database's description, a whitelabel's where the converters matched one, names
+ * the device a plug, a socket or an outlet, and nothing that makes it another thing. A generated
+ * definition's description is the converters' own, never a model's: never a plug.
+ */
+export function isPlug(definition: Definition): boolean {
+  if (definition.generated) return false;
+  const text = definition.description ?? "";
+  return PLUG_WORDS.test(text) && !NOT_A_PLUG.test(text);
+}
+
 /**
  * How the bridge learns of the device (*The roster and freshness*): a device it polls (`polling.ts`)
  * is `poll` at POLL_MS, its bound three times that; any other reports on its own, its bound
@@ -302,6 +322,8 @@ export async function describe(device: Zh.Device, definition: Definition,
   const sensorKeys: string[] = [];
   const extension: { keys: ExtensionKey[]; actions: ExtensionAction[] } = { keys: [], actions: [] };
   let proposedClass: string | null = null;
+  /** The device's on/off is a closed `switch`'s, which plugs, relays, valves and the button pusher all use alike. */
+  let switched = false;
   let pinRequired: boolean | undefined;
 
   /** The actions to offer, in order, each with its dry runs under way: all run at once (plan 2c-1 review M2). */
@@ -318,6 +340,7 @@ export async function describe(device: Zh.Device, definition: Definition,
     if (closed && (parent === "switch" || parent === "light") && e.name === "state" && e.type === "binary") {
       capabilities.push("onoff");
       if (parent === "light") proposedClass = "light";
+      else switched = true;
       keys.set(property, { key: "on", kind: "state", from: binary(e) });
       if (has(e, SET)) {
         offer({ action: "onoff.turn_on", idempotent: true, stateless: false }, property, [e.value_on], { property, value: () => e.value_on });
@@ -423,6 +446,8 @@ export async function describe(device: Zh.Device, definition: Definition,
   // A device of no closed actuator that senses, or tells of events, is proposed as a sensor; the owner decides.
   const senses = sensorKeys.length > 0 || [...keys.values()].some((k) => k.kind === "event");
   if (!proposedClass && !capabilities.some((c) => c !== "sensor") && senses) proposedClass = "sensor";
+  // A closed switch alone, whose model database names it a plug: a socket (the plug rehearsal's F1).
+  if (!proposedClass && switched && !capabilities.some((c) => c !== "onoff" && c !== "sensor") && isPlug(definition)) proposedClass = "socket";
 
   const settings = new Map<string, string>();
   for (const property of override?.settings ?? []) {
@@ -451,7 +476,8 @@ export async function describe(device: Zh.Device, definition: Definition,
     feedback: "closed",
     reachMs,
     proposedClass,
-    classEvidence: definition.generated ? "protocol" : "model_db",
+    // No class proposed is nothing found: `none` (`standard/bridge.md`, *Devices*; GA-BRIDGE-15).
+    classEvidence: proposedClass === null ? "none" : definition.generated ? "protocol" : "model_db",
     otherAdmins: "unknown",
     ...(extensions.length ? { extensions } : {}),
     ...(settings.size ? { settings: [...settings.values()] } : {}),

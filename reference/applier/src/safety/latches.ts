@@ -2,7 +2,7 @@ import { isExtension } from "../bus/wire.js";
 import { canonical } from "../core/canonical.js";
 import type { Store } from "../core/store.js";
 import { sets, sideEffects } from "../gate/actions.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import type { Liveness } from "../state/liveness.js";
 import { actuated, evaluate, terms, type SafetyRule } from "./language.js";
 
@@ -16,7 +16,7 @@ export type Latch = { rule_id: string; set_ms: number; devices: string[]; keys: 
 export interface LatchPorts {
   store: Store;
   now(): number;
-  mutation?: Mutation;
+  mutant: Mutant;
   /** A device's latest reported value of `key`; never an assumed one (GA-SAFE-7). */
   reported(device: string, key: string): unknown;
   /** An open device's assumed value of `key`: read only under `clears-a-latch-on-an-assumed-value`. */
@@ -45,7 +45,7 @@ export class Latches {
   /** Loads what a restart keeps: the latches held and the undos still raised (GA-PERSIST-1). */
   async load(): Promise<void> {
     // `forgets-a-latch`: the latches held before the restart are not read back.
-    if (this.o.mutation === "forgets-a-latch") return;
+    if (this.o.mutant.forgetsALatch) return;
     const held = await this.o.store.query<{ rule_id: string; set_ms: number | string; devices: string[]; keys: Kept[] }>(
       "SELECT rule_id, set_ms, devices, keys FROM safety_latches");
     for (const r of held.rows) this.held.set(r.rule_id, { rule_id: r.rule_id, set_ms: Number(r.set_ms), devices: r.devices, keys: r.keys });
@@ -110,7 +110,7 @@ export class Latches {
   /** What a latch's condition reads: the reported value; an assumed one only under `clears-a-latch-on-an-assumed-value`. */
   private readonly read = (device: string, key: string): unknown => {
     const v = this.o.reported(device, key);
-    return v === undefined && this.o.mutation === "clears-a-latch-on-an-assumed-value" ? this.o.assumed(device, key) : v;
+    return v === undefined && this.o.mutant.clearsALatchOnAnAssumedValue ? this.o.assumed(device, key) : v;
   };
 
   /** A latch clears: its undos are `no_voice`, with a person's token, until one next runs (GA-SAFE-7). */
@@ -170,7 +170,7 @@ export class Latches {
   }
 
   private undoes(keys: Kept[], device: string, action: string, args: Record<string, unknown>): boolean {
-    if (isExtension(action)) return this.o.mutation !== "latch-misses-an-extension";
+    if (isExtension(action)) return !this.o.mutant.latchMissesAnExtension;
     return this.undone(keys, device, action, args).length > 0;
   }
 

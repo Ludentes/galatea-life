@@ -93,7 +93,7 @@ export class FakeApplier extends Fake implements Applier {
 }
 
 /**
- * An asked step as the steward 0.11 draft's `ask` event carries it (GA-CONF-5): a define's
+ * An asked step as the steward 0.11 `ask` event carries it (GA-CONF-5): a define's
  * confirmation `{ step_id, reason: "confirm_define", diff }`, any other `{ step_id, target, action,
  * args, tier, reason }`; a personal value in either may be `withheld` (GA-AUTH-7).
  */
@@ -109,6 +109,8 @@ interface FakePlan {
   askedAt: string;
   answers: Record<string, "yes" | "no">;
   applied: boolean;
+  /** A run's toggle steps asked again (GA-SCN-3): open to their answer alone until `untilMs`, as the reference's `reopened`. */
+  reopened?: { steps: string[]; untilMs: number };
 }
 
 /** An apply the fake steward made: its outcomes as dispatched, and when they land on the fake clock. */
@@ -116,6 +118,32 @@ interface FakeApply {
   apply_id: string;
   outcomes: Body[];
   at: number;
+}
+
+/** A run the fake steward started: what it has to land, when, and its end. */
+interface FakeRun {
+  run_id: string;
+  scenario: string;
+  status: "running" | "ended";
+  reason?: string;
+  outcomes: Body[];
+  due: { at: number; outcome: Body }[];
+  endAt?: number;
+  cause: Body;
+}
+
+/** A scenario's action steps, top level only (the fake runs no `if`, `wait` or `run` step; the reference steward does). */
+const actionSteps = (sc: Body): Body[] => (sc.steps as Body[]).filter((x) => "target" in x);
+
+const SUCCESS = new Set(["acked", "delivered", "sent", "confirmed"]);
+const NOT_FAILED = new Set(["already", "occupied", "in_use"]);
+
+/** A run as `scenario_status` returns it, as the reference's `statusOf` (GA-SCN-11). */
+function statusOf(r: FakeRun): Body {
+  const failed_steps = r.outcomes.filter((o) => !SUCCESS.has(o.outcome) && !(o.outcome === "skipped" && NOT_FAILED.has(o.reason)))
+    .map((o) => ({ step_id: o.step_id, outcome: o.outcome, ...(o.reason !== undefined ? { reason: o.reason } : {}), time: o.time }));
+  const sent_steps = r.outcomes.filter((o) => o.outcome === "sent").map((o) => ({ step_id: o.step_id }));
+  return { run_id: r.run_id, status: r.status, ...(r.reason ? { reason: r.reason } : {}), failed_steps, sent_steps };
 }
 
 export class FakeSteward extends Fake implements Steward {
@@ -132,9 +160,9 @@ export class FakeSteward extends Fake implements Steward {
   confirmOn?: string;
   /** Whether the fake leaves the `ask` event out, as a steward that emits none would. */
   noAskEvent = false;
-  /** The step fields an `ask` event carries (steward 0.11), or none (0.10). */
-  askCarriesSteps = false;
-  /** The `run_id` the fake's `ask` event names, as a scenario's re-ask may (steward 0.11 draft). */
+  /** The notices the fake holds, `describe`'s `held_notices`, shown only while it has no notify channel (GA-NOTE-1). */
+  heldNotices?: number;
+  /** The `run_id` the fake's `ask` event names, as a scenario's re-ask may (GA-CONF-5). */
   askRunId?: string;
   /** How long after the apply a dispatched step lands, and what it lands as. */
   landAfterMs = 0;
@@ -148,20 +176,29 @@ export class FakeSteward extends Fake implements Steward {
       // A long-poll on the revision it has waits out its wait_s on the fake clock.
       describe: (a) => {
         if (a.since_revision === this.revision && a.wait_s) this.clock.advance(a.wait_s * 1000);
-        return ok({ steward_id: "steward", standard_version: "0.10", revision: this.revision, home: { ask_expiry_s: 300 },
-          rooms: this.rooms, targets: this.targets });
+        return ok({ steward_id: "steward", standard_version: "0.11", revision: this.revision, home: { ask_expiry_s: 300 },
+          rooms: this.rooms, targets: this.targets, scenarios: this.scenarios, modes: ["single", "restart", "queued", "parallel"], ...(this.heldNotices !== undefined ? { held_notices: this.heldNotices } : {}) });
       },
       state: (a) => ok({ targets: Object.fromEntries((a.targets ?? []).map((id: string) => [id, { liveness: id.endsWith("lamp") ? "dead" : "live" }])),
         transports: [], latches: [] }),
       history: () => ok({ events: [] }),
-      define: (a) => ok(a.dry_run ? { diff: "home: x" } : { revision: ++this.revision }),
+      define: (a) => {
+        if (a.dry_run) return ok({ diff: "home: x" });
+        for (const c of a.changes as Change[]) this.change(c);
+        return ok({ revision: ++this.revision });
+      },
+      // A long-poll with nothing after its cursor waits until a run's next step is due, or out its wait_s.
       events: (a) => {
-        const last = String(this.log.length);
-        if (a.cursor === undefined) return ok({ events: [], cursor: last });
+        this.advanceRuns();
+        if (a.cursor === undefined) return ok({ events: [], cursor: String(this.log.length) });
         if (Number(a.cursor) > this.log.length) return refused("cursor_expired", `cursor ${a.cursor} is not this steward's`);
-        const after = this.log.slice(Number(a.cursor));
-        if (!after.length && a.wait_s) this.clock.advance(a.wait_s * 1000);
-        return ok({ events: after, cursor: last });
+        if (this.log.length === Number(a.cursor) && a.wait_s) {
+          const until = this.clock.now() + a.wait_s * 1000;
+          const due = this.nextDue();
+          this.clock.t = due !== undefined && due < until ? Math.max(due, this.clock.now()) : until;
+          this.advanceRuns();
+        }
+        return ok({ events: this.log.slice(Number(a.cursor)), cursor: String(this.log.length) });
       },
       plan: (a) => {
         const plan_id = `p${this.plans.size + 1}`;
@@ -180,21 +217,25 @@ export class FakeSteward extends Fake implements Steward {
         if (asked.length && !this.noAskEvent) {
           this.feed({ type: "ask", plan_id, step_ids: asked.map((x) => x.step_id), endpoint: this.confirmOn ?? a.endpoint,
             ...(this.askRunId !== undefined ? { run_id: this.askRunId } : {}),
-            ...(this.askCarriesSteps ? { steps: asked.map(askEntry) } : {}) });
+            steps: asked.map(askEntry) });
         }
         return ok(plan);
       },
       answer: (a) => {
         const held = this.plans.get(a.plan_id);
-        if (!held) return refused("invalid_request", `no plan ${a.plan_id}`);
+        if (!held) return refused("unknown_plan", `no plan ${a.plan_id} is held`);
         for (const id of Object.keys(a.answers)) {
           if (!held.plan.steps.some((x: Body) => x.step_id === id && x.verdict === "ask")) return refused("invalid_request", `step ${id} was not asked`);
         }
-        // As the reference's judgeAnswer: a yes after a no needs a new plan; then who may answer (GA-CONF-1); then expiry.
+        // As the reference's judgeAnswer: an applied plan, unless the answer is to its run's re-ask alone, while open;
+        // then who may answer (GA-CONF-1), then a yes after a no.
+        const named = Object.keys(a.answers);
+        const re = held.reopened !== undefined && named.length > 0 && named.every((id) => held.reopened!.steps.includes(id))
+          && this.clock.now() <= held.reopened.untilMs;
+        if (held.applied && !re) return refused("not_permitted", "the plan was applied: it takes no answer (GA-CONF-1)");
+        if (a.endpoint !== held.askedAt) return refused("not_permitted", `the question is put on ${held.askedAt} (GA-CONF-1)`);
         const again = Object.entries(a.answers).filter(([id, w]) => w === "yes" && held.answers[id] === "no").map(([id]) => id);
         if (again.length) return refused("invalid_request", `step ${again.join(", ")} was answered no: a yes after a no needs a new plan`);
-        if (a.endpoint !== held.askedAt) return refused("not_permitted", `the question is put on ${held.askedAt} (GA-CONF-1)`);
-        if (held.applied) return refused("plan_expired", "the plan was applied already");
         held.answers = { ...held.answers, ...a.answers };
         this.feed({ type: "answer", plan_id: a.plan_id, endpoint: a.endpoint, answers: a.answers });
         return ok(this.view(held));
@@ -236,7 +277,169 @@ export class FakeSteward extends Fake implements Steward {
         }
         return ok({ apply_id: r.apply_id, outcomes: structuredClone(r.outcomes) });
       },
+      // As the reference's scenarioPlan: an unknown scenario is invalid_request; one step per action step, judged as `plan` judges.
+      scenario_plan: (a) => {
+        const sc = this.scenarios.find((x) => x.id === a.scenario);
+        if (!sc) return refused("invalid_request", `no scenario ${a.scenario}`);
+        const steps = actionSteps(sc).map((x, i) => this.judge(`s${i + 1}`, x));
+        const asked = steps.filter((x) => x.verdict === "ask");
+        const plan_id = `p${this.plans.size + 1}`;
+        const plan = { plan_id, expires_at: new Date(this.clock.now() + (asked.length ? 300_000 : 60_000)).toISOString(), revision: this.revision,
+          endpoint: a.endpoint, client: "owner-app-credential", request: { endpoint: a.endpoint, scenario: a.scenario }, steps };
+        this.plans.set(plan_id, { plan, askedAt: this.confirmOn ?? a.endpoint, answers: {}, applied: false });
+        if (asked.length && !this.noAskEvent) {
+          this.feed({ type: "ask", plan_id, step_ids: asked.map((x) => x.step_id), endpoint: this.confirmOn ?? a.endpoint, steps: asked.map(askEntry) });
+        }
+        return ok(plan);
+      },
+      // As the reference's scenarioRun: a repeated key returns its run; the plan's rules are apply's; a running single scenario is ignored.
+      scenario_run: (a) => {
+        const prior = this.runKeys.get(a.idempotency_key);
+        if (prior) {
+          if (prior.plan_id !== a.plan_id) return refused("idempotency_conflict", "this key was used with another plan (GA-SCN-6)");
+          return ok({ run_id: prior.run_id, ...(prior.ignored ? { ignored: true } : {}) });
+        }
+        const held = this.plans.get(a.plan_id);
+        if (!held) return refused("unknown_plan", `no plan ${a.plan_id} is held`);
+        const scenario = held.plan.request.scenario;
+        if (typeof scenario !== "string") return refused("invalid_request", "a request's plan is applied, not run");
+        if (held.applied) return refused("plan_expired", "the plan was run already: a run spends it");
+        const sc = this.scenarios.find((x) => x.id === scenario)!;
+        const running = [...this.runs.values()].find((r) => r.scenario === scenario && r.status === "running");
+        if (running && (sc.mode ?? "single") === "single") {
+          this.runKeys.set(a.idempotency_key, { plan_id: a.plan_id, run_id: running.run_id, ignored: true });
+          return ok({ run_id: running.run_id, ignored: true });
+        }
+        held.applied = true;
+        const run_id = `r${this.runs.size + 1}`;
+        this.runKeys.set(a.idempotency_key, { plan_id: a.plan_id, run_id });
+        this.runs.set(run_id, this.startRun(run_id, sc, held));
+        return ok({ run_id });
+      },
+      scenario_status: (a) => {
+        this.advanceRuns();
+        const r = this.runs.get(a.run_id);
+        if (!r) return refused("unknown_run", `no run ${a.run_id} of this credential's is held`);
+        return ok(statusOf(r));
+      },
+      // As the reference's scenarioStop: unknown_run; a running run ends stopped, its steps not yet due never sent; an ended one as it ended.
+      scenario_stop: (a) => {
+        this.advanceRuns();
+        const r = this.runs.get(a.run_id);
+        if (!r) return refused("unknown_run", `no run ${a.run_id} is held`);
+        if (r.status === "running") this.endRun(r, "stopped");
+        return ok(statusOf(r));
+      },
     });
+  }
+  /** The scenarios `describe` lists; `define` does not add to them (the fake's house is apart). */
+  scenarios: Body[] = [];
+  /** The fake's runs, and each scenario_run key's run (GA-SCN-6). */
+  runs = new Map<string, FakeRun>();
+  runKeys = new Map<string, { plan_id: string; run_id: string; ignored?: true }>();
+  /** A step of a plan, judged as `plan` judges one: its tier and any verdict given for its `target action`. */
+  private judge(step_id: string, x: Body): Body {
+    const key = `${x.target} ${x.action}`;
+    const tier = this.tiers[key] ?? "reversible";
+    const v = this.verdicts[key] ?? (tier === "reversible" ? { verdict: "op" } : { verdict: "ask", reason: "confirm_tier" });
+    return { step_id, target: x.target, action: x.action, args: x.args ?? {}, verdict: v.verdict, ...(v.reason ? { reason: v.reason } : {}),
+      tier, stale: false, basis: "reported" };
+  }
+  /**
+   * A run's timeline on the fake clock, as the reference drives one: each action step dispatched once
+   * the step before it has ended, a delay waited out; a step judged at dispatch as `apply` judges it
+   * (GA-SCN-7: an unanswered ask `skipped(not_confirmed)`), a sent one landing `landAs` after
+   * `landAfterMs`. The run ends `ended(done)` once its last step has ended.
+   */
+  private startRun(run_id: string, sc: Body, held: FakePlan): FakeRun {
+    const cause = { run: run_id, endpoint: held.plan.endpoint };
+    const r: FakeRun = { run_id, scenario: sc.id, status: "running", outcomes: [], due: [], cause };
+    this.feed({ type: "scenario", run_id, scenario: sc.id, change: "started", cause });
+    let t = this.clock.now();
+    let n = 0;
+    for (const st of sc.steps as Body[]) {
+      if ("delay" in st) {
+        t += Number(st.delay) * 1000;
+        continue;
+      }
+      if (!("target" in st)) continue;
+      const id = `s${++n}`;
+      const step = held.plan.steps.find((x: Body) => x.step_id === id);
+      if (!step) continue;
+      const base = { step_id: step.step_id, target: step.target };
+      const unconfirmed = step.verdict === "ask" && held.answers[step.step_id] !== "yes";
+      const now = step.verdict === "refuse" ? { outcome: "refused", reason: step.reason } : step.verdict === "skip" ? { outcome: "skipped", reason: step.reason }
+        : unconfirmed ? { outcome: "skipped", reason: "not_confirmed" } : undefined;
+      if (now) r.due.push({ at: t, outcome: { ...base, ...now } });
+      else {
+        t += this.landAfterMs;
+        r.due.push({ at: t, outcome: { ...base, outcome: this.landAs } });
+      }
+    }
+    r.endAt = t;
+    this.advanceRuns();
+    return r;
+  }
+  /**
+   * A run's toggle steps asked again, as the reference's `reaskToggles` does (GA-SCN-3): their yes
+   * taken away, the plan reopened to their answer for `ask_expiry_s`, and a new `ask` event on it,
+   * naming the run when `runId` is given (GA-CONF-5 says it may). The fake's run does not wait on
+   * it: it judged its steps once, at its start.
+   */
+  reask(planId: string, steps: string[], o: { runId?: string } = {}): void {
+    const held = this.plans.get(planId)!;
+    held.answers = Object.fromEntries(Object.entries(held.answers).filter(([id]) => !steps.includes(id)));
+    held.reopened = { steps, untilMs: this.clock.now() + 300_000 };
+    this.feed({ type: "ask", plan_id: planId, step_ids: steps, endpoint: held.askedAt, ...(o.runId !== undefined ? { run_id: o.runId } : {}),
+      steps: held.plan.steps.filter((x: Body) => steps.includes(x.step_id)).map(askEntry) });
+  }
+  /** The earliest time a running run has something due. */
+  private nextDue(): number | undefined {
+    const times = [...this.runs.values()].filter((r) => r.status === "running").flatMap((r) => [...r.due.map((d) => d.at), r.endAt!]);
+    return times.length ? Math.min(...times) : undefined;
+  }
+  /** Lands what is due on every running run, in order: each outcome as an `outcome` event with the run's cause, then the run's end. */
+  advanceRuns(): void {
+    for (const r of this.runs.values()) {
+      while (r.status === "running" && r.due.length && r.due[0].at <= this.clock.now()) {
+        const d = r.due.shift()!;
+        const o = { ...d.outcome, time: new Date(this.clock.now()).toISOString() };
+        r.outcomes.push(o);
+        this.feed({ type: "outcome", apply_id: `run:${r.run_id}`, ...d.outcome, cause: r.cause });
+      }
+      if (r.status === "running" && !r.due.length && r.endAt !== undefined && r.endAt <= this.clock.now()) this.endRun(r, "done");
+    }
+  }
+  private endRun(r: FakeRun, reason: string): void {
+    r.status = "ended";
+    r.reason = reason;
+    r.due = [];
+    this.feed({ type: "scenario", run_id: r.run_id, scenario: r.scenario, change: "ended", reason, cause: r.cause });
+  }
+  /** What `define` has made of each item, by `kind:key`: merged as the reference's `define` merges (GA-DEF-14). */
+  house = new Map<string, Body>();
+  /** An item as the fake's `define` left it, or undefined. */
+  item(kind: string, key: string): Body | undefined {
+    return this.house.get(`${kind}:${key}`);
+  }
+  /** An item set as if an earlier `define` had made it. */
+  seed(kind: string, value: Body): void {
+    this.house.set(`${kind}:${value.id ?? value.endpoint}`, structuredClone(value));
+  }
+  /**
+   * One change, as the reference steward's `merged` applies it: an upsert sets only the fields it
+   * names, a null one removed (back to its default), a delete removes the item.
+   */
+  private change(c: Change): void {
+    const v = c.value as Body;
+    const key = `${c.kind}:${v.id ?? v.endpoint}`;
+    if (c.op === "delete") return void this.house.delete(key);
+    const out: Body = { ...(this.house.get(key) ?? {}) };
+    for (const [k, x] of Object.entries(v)) {
+      if (x === null) delete out[k];
+      else out[k] = structuredClone(x);
+    }
+    this.house.set(key, out);
   }
   /** A held plan as `answer` returns it: each answered step with the answer that stands. */
   view(held: FakePlan): Body {
@@ -273,6 +476,18 @@ export class FakeSteward extends Fake implements Steward {
   }
   events(a: { cursor?: string; wait_s?: number }): Promise<Reply> {
     return this.reply("events", a);
+  }
+  scenarioPlan(a: { scenario: string }): Promise<Reply> {
+    return this.reply("scenario_plan", { ...a, endpoint: "owner-app" });
+  }
+  scenarioRun(a: { plan_id: string; idempotency_key: string }): Promise<Reply> {
+    return this.reply("scenario_run", a);
+  }
+  scenarioStatus(a: { run_id: string }): Promise<Reply> {
+    return this.reply("scenario_status", a);
+  }
+  scenarioStop(a: { run_id: string }): Promise<Reply> {
+    return this.reply("scenario_stop", { ...a, endpoint: "owner-app" });
   }
 }
 

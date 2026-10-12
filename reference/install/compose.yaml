@@ -1,22 +1,29 @@
-# Galatea Home's store and broker: one Postgres, its provisioning and its backups,
-# and the broker the applier and the bridges share.
-# The builds join this file as they gain their stores; each one depends on
-#   db-init: { condition: service_completed_successfully }
+# Galatea Home's installation (the install-core design): one Postgres with its provisioning and its
+# backups; the broker, on mqtts only; the applier and the steward, each with its one-off migration;
+# and the Zigbee bridge under its profile. Every secret is a file under secrets/ (bin/galatea-prepare),
+# every public certificate under tls/ (bin/galatea-certs); none is in this file, .env or an environment.
+# Each build's service mounts only its own files, each bind refusing a missing source.
 # Settings come from .env beside this file (see .env.example).
 name: galatea
+
+# Every service's log, capped: a deployed fleet's broker log once filled a disk.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 50m, max-file: "3" }
 
 services:
   postgres:
     image: postgres:${PG_MAJOR:-18}-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: galatea
       POSTGRES_PASSWORD_FILE: /run/db-secrets/postgres
     volumes:
       # From 18 the image keeps its data under /var/lib/postgresql/<major>/docker
       - pgdata:/var/lib/postgresql
-      - ${GALATEA_DB_SECRETS:-./secrets/db}:/run/db-secrets:ro
-    # No ports: the builds reach it on the stack's own network.
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db", target: /run/db-secrets, read_only: true, bind: { create_host_path: false } }
+    # No ports: the builds reach it on the stack's own network, the one plain link inside the stack.
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "postgres", "-d", "galatea"]
       interval: 5s
@@ -26,6 +33,7 @@ services:
   db-init:
     image: postgres:${PG_MAJOR:-18}-alpine
     restart: "no"
+    logging: *logging
     depends_on:
       postgres: { condition: service_healthy }
     entrypoint: ["/scripts/db-init.sh"]
@@ -33,12 +41,13 @@ services:
     tmpfs: [/var/lib/postgresql]
     volumes:
       - ./db:/scripts:ro
-      - ${GALATEA_DB_SECRETS:-./secrets/db}:/run/db-secrets:ro
-      - ${GALATEA_INSTANCES:-./instances}:/config/instances:ro
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db", target: /run/db-secrets, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_INSTANCES:-./instances}", target: /config/instances, read_only: true, bind: { create_host_path: false } }
 
   backup:
     image: postgres:${PG_MAJOR:-18}-alpine
     restart: unless-stopped
+    logging: *logging
     user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
     # PID 1 would ignore SIGTERM, and every stop would end in SIGKILL.
     init: true
@@ -53,8 +62,8 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       - ./db:/scripts:ro
-      - ${GALATEA_DB_SECRETS:-./secrets/db}:/run/db-secrets:ro
-      - ${GALATEA_BACKUPS:-./backups}:/backups
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db", target: /run/db-secrets, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_BACKUPS:-./backups}", target: /backups, bind: { create_host_path: false } }
     healthcheck:
       test: ["CMD", "/scripts/backup.sh", "health"]
       interval: 5m
@@ -64,22 +73,150 @@ services:
   broker:
     image: eclipse-mosquitto:2
     restart: unless-stopped
+    logging: *logging
     entrypoint: ["/broker/broker-init.sh"]
     environment:
       GALATEA_ROOT: ${GALATEA_ROOT:-galatea}
-    # The hashed passwords and the rules are written here at each start, never to the host.
+    # The hashed passwords, the rules and its key's copy are written here at each start, never to the host.
     tmpfs: [/mosquitto/run]
     volumes:
       - ./broker:/broker:ro
-      - ${GALATEA_BROKER_SECRETS:-./secrets/broker}:/run/broker-secrets:ro
-      - ${GALATEA_INSTANCES:-./instances}:/config/instances:ro
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/broker", target: /run/broker-secrets, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_INSTANCES:-./instances}", target: /config/instances, read_only: true, bind: { create_host_path: false } }
       - brokerdata:/mosquitto/data
-    # No ports: the builds reach it as broker:1883 on the stack's own network.
+      # Its key, its certificate and the CA's, file by file: never the whole secrets/tls/, which holds
+      # the applier's and the steward's keys.
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/tls/broker.key", target: /run/broker-key/broker.key, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/broker.pem", target: /run/tls/broker.pem, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/ca.pem", target: /run/tls/ca.pem, read_only: true, bind: { create_host_path: false } }
+    # No ports: the builds reach it as broker:8883 on the stack's own network (compose.lan.yaml
+    # publishes it on the LAN).
+    # Healthy once Mosquitto listens on 8883 (0x22B3 in /proc/net/tcp, state 0A). Not a connection: a TLS
+    # probe that sends no CONNECT is logged as a failed connection, every interval, and would bury the
+    # refusals connection_messages is there to show. tcp6 is missing on a host without IPv6: cat skips it.
     healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "1883"]
+      test: ["CMD-SHELL", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$$2 ~ /:22B3$$/ && $$4 == \"0A\" { found = 1 } END { exit !found }'"]
       interval: 5s
       timeout: 5s
       retries: 24
+
+  applier-migrate:
+    image: galatea-applier:local
+    build: { context: ../.., dockerfile: reference/applier/Dockerfile }
+    restart: "no"
+    logging: *logging
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    init: true
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    command: ["node", "dist/migrate-main.js"]
+    environment:
+      GALATEA_DATABASE_URL: postgres://applier@postgres:5432/galatea
+      GALATEA_DATABASE_PASSWORD_FILE: /run/secrets/db
+    volumes:
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db/applier", target: /run/secrets/db, read_only: true, bind: { create_host_path: false } }
+
+  applier:
+    image: galatea-applier:local
+    build: { context: ../.., dockerfile: reference/applier/Dockerfile }
+    restart: unless-stopped
+    logging: *logging
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    # SIGTERM reaches node, and its stop has time to commit what it queued (3 s).
+    init: true
+    stop_grace_period: 10s
+    depends_on:
+      applier-migrate: { condition: service_completed_successfully }
+      broker: { condition: service_healthy }
+    environment:
+      GALATEA_DATABASE_URL: postgres://applier@postgres:5432/galatea
+      GALATEA_DATABASE_PASSWORD_FILE: /run/secrets/db
+      GALATEA_BROKER: mqtts://applier@broker:8883
+      GALATEA_BROKER_PASSWORD_FILE: /run/secrets/broker
+      GALATEA_BROKER_CA: /run/tls/ca.pem
+      GALATEA_ROOT: ${GALATEA_ROOT:-galatea}
+      GALATEA_OWNER_CREDENTIAL_FILE: /run/secrets/owner
+      GALATEA_MCP_PORT: "18443"
+      GALATEA_APPLIER_HOST: 0.0.0.0
+      GALATEA_APPLIER_TLS_CERT: /run/tls/applier.pem
+      GALATEA_APPLIER_TLS_KEY: /run/secrets/tls.key
+    volumes:
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db/applier", target: /run/secrets/db, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/broker/applier", target: /run/secrets/broker, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/mcp/applier-owner", target: /run/secrets/owner, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/tls/applier.key", target: /run/secrets/tls.key, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/applier.pem", target: /run/tls/applier.pem, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/ca.pem", target: /run/tls/ca.pem, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: ./health/mcp-health.mjs, target: /health/mcp-health.mjs, read_only: true, bind: { create_host_path: false } }
+    # On the host's loopback only; the LAN never reaches the applier.
+    ports: ["127.0.0.1:${GALATEA_APPLIER_PORT:-18443}:18443"]
+    healthcheck:
+      test: ["CMD", "node", "/health/mcp-health.mjs", "18443"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 1s
+      retries: 3
+
+  steward-migrate:
+    image: galatea-steward:local
+    build: { context: ../.., dockerfile: reference/steward/Dockerfile }
+    restart: "no"
+    logging: *logging
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    init: true
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+    command: ["node", "dist/migrate-main.js"]
+    environment:
+      GALATEA_DATABASE_URL: postgres://steward@postgres:5432/galatea
+      GALATEA_DATABASE_PASSWORD_FILE: /run/secrets/db
+    volumes:
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db/steward", target: /run/secrets/db, read_only: true, bind: { create_host_path: false } }
+
+  steward:
+    image: galatea-steward:local
+    build: { context: ../.., dockerfile: reference/steward/Dockerfile }
+    restart: unless-stopped
+    logging: *logging
+    user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
+    init: true
+    stop_grace_period: 10s
+    # It serves without its applier, and its link retries with a backoff: started is enough.
+    depends_on:
+      steward-migrate: { condition: service_completed_successfully }
+      applier: { condition: service_started }
+    environment:
+      GALATEA_DATABASE_URL: postgres://steward@postgres:5432/galatea
+      GALATEA_DATABASE_PASSWORD_FILE: /run/secrets/db
+      GALATEA_OWNER_CREDENTIAL_FILE: /run/secrets/owner
+      GALATEA_MCP_PORT: "18444"
+      GALATEA_STEWARD_HOST: 0.0.0.0
+      GALATEA_STEWARD_TLS_CERT: /run/tls/steward.pem
+      GALATEA_STEWARD_TLS_KEY: /run/secrets/tls.key
+      GALATEA_APPLIER_URL: https://applier:18443/mcp
+      GALATEA_APPLIER_CLIENT: steward
+      GALATEA_APPLIER_CREDENTIAL_FILE: /run/secrets/at-applier
+      GALATEA_APPLIER_TOKEN_KEY_FILE: /run/secrets/token-key
+      GALATEA_APPLIER_CA: /run/tls/ca.pem
+    volumes:
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db/steward", target: /run/secrets/db, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/mcp/steward-owner", target: /run/secrets/owner, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/mcp/steward-at-applier", target: /run/secrets/at-applier, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/mcp/steward-token-key", target: /run/secrets/token-key, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/tls/steward.key", target: /run/secrets/tls.key, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/steward.pem", target: /run/tls/steward.pem, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/ca.pem", target: /run/tls/ca.pem, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: ./health/mcp-health.mjs, target: /health/mcp-health.mjs, read_only: true, bind: { create_host_path: false } }
+    # On the host's loopback only; reach from the LAN would be an override of its own.
+    ports: ["127.0.0.1:${GALATEA_STEWARD_PORT:-18444}:18444"]
+    healthcheck:
+      test: ["CMD", "node", "/health/mcp-health.mjs", "18444"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 1s
+      retries: 3
 
   # The reference Zigbee bridge (plan 4a), only under the profile `zigbee`
   # (COMPOSE_PROFILES=zigbee in .env), and only with `bridge_zigbee` in instances.
@@ -90,6 +227,7 @@ services:
       context: ../..
       dockerfile: reference/zigbee-bridge/Dockerfile
     restart: unless-stopped
+    logging: *logging
     # The owner's account owns the data directory, which holds the network key.
     user: "${GALATEA_UID:-1000}:${GALATEA_GID:-1000}"
     # Docker's SIGTERM reaches the bridge, and its stop has time for the coordinator's backup (up to 30 s).
@@ -99,7 +237,7 @@ services:
       db-init: { condition: service_completed_successfully }
       broker: { condition: service_healthy }
     environment:
-      GALATEA_BROKER: mqtt://bridge_zigbee@broker:1883
+      GALATEA_BROKER: mqtts://bridge_zigbee@broker:8883
       GALATEA_CREDENTIAL_FILE: /run/broker-secrets/bridge_zigbee
       GALATEA_DATABASE_URL: postgres://bridge_zigbee@postgres:5432/galatea
       GALATEA_DATABASE_PASSWORD_FILE: /run/db-secrets/bridge_zigbee
@@ -107,23 +245,16 @@ services:
       GALATEA_STATE_DIR: /data
       GALATEA_ZIGBEE_COORDINATOR: ${GALATEA_ZIGBEE_COORDINATOR:-}
       GALATEA_ZIGBEE_NO_ACTIONS: ${GALATEA_ZIGBEE_NO_ACTIONS:-0}
+      # The interim until the bridge has a CA option of its own (the Zigbee session's gap): this
+      # process's one TLS connection is the broker's.
+      NODE_EXTRA_CA_CERTS: /run/tls/ca.pem
     # Its data directory and its own two passwords, and no other build's. Each must be there:
     # Docker would make a missing one as a directory owned by root.
     volumes:
-      - type: bind
-        source: ${GALATEA_ZIGBEE_DATA:-./zigbee}
-        target: /data
-        bind: { create_host_path: false }
-      - type: bind
-        source: ${GALATEA_DB_SECRETS:-./secrets/db}/bridge_zigbee
-        target: /run/db-secrets/bridge_zigbee
-        read_only: true
-        bind: { create_host_path: false }
-      - type: bind
-        source: ${GALATEA_BROKER_SECRETS:-./secrets/broker}/bridge_zigbee
-        target: /run/broker-secrets/bridge_zigbee
-        read_only: true
-        bind: { create_host_path: false }
+      - { type: bind, source: "${GALATEA_ZIGBEE_DATA:-./zigbee}", target: /data, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db/bridge_zigbee", target: /run/db-secrets/bridge_zigbee, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/broker/bridge_zigbee", target: /run/broker-secrets/bridge_zigbee, read_only: true, bind: { create_host_path: false } }
+      - { type: bind, source: "${GALATEA_TLS:-./tls}/ca.pem", target: /run/tls/ca.pem, read_only: true, bind: { create_host_path: false } }
 
 volumes:
   brokerdata:

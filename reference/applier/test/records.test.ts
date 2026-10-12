@@ -5,7 +5,7 @@ import {
   dropLate, dropWaiting, forgetAssumed, HELD_MS, loadRecords, pruneRecords, releaseToken, saveApply, saveAssumed, saveLate, saveWaiting, useToken, type Late,
   type Waiting,
 } from "../src/dispatch/records.js";
-import { memoryDb } from "./db.js";
+import { memoryDb, migrations } from "./db.js";
 
 const NOW = Date.parse("2030-01-01T08:00:00Z");
 const waiting: Waiting = {
@@ -17,7 +17,7 @@ const waiting: Waiting = {
 describe("dispatch's records (GA-PERSIST-1)", () => {
   it("keeps held applies, waiting steps and used tokens, each write safe to run twice, and loads what still holds", async () => {
     const db = await memoryDb();
-    await migrate(db);
+    await migrate(db, migrations);
     await db.transaction(async (tx) => {
       for (let i = 0; i < 2; i++) {
         await saveApply(tx, { apply_id: "a-1", client: "h", created_ms: NOW, outcomes: [{ step_id: "s1", target: "hall:lamp", outcome: "dispatched" }] });
@@ -46,7 +46,7 @@ describe("dispatch's records (GA-PERSIST-1)", () => {
 
   it("loads waiting steps in dispatch order, and prunes one its apply outlived (M8, M4)", async () => {
     const db = await memoryDb();
-    await migrate(db);
+    await migrate(db, migrations);
     await db.transaction(async (tx) => {
       // Dispatched later, with a shorter bound: its deadline comes first, its dispatch second.
       await saveWaiting(tx, { ...waiting, command_id: "c-2", dispatched_ms: NOW + 1000, bound_ms: NOW + 3000 }, NOW + 4000);
@@ -60,7 +60,7 @@ describe("dispatch's records (GA-PERSIST-1)", () => {
 
   it("keeps an apply's idempotency key and body with it, and a later write of its outcomes keeps them (GA-APPLY-4)", async () => {
     const db = await memoryDb();
-    await migrate(db);
+    await migrate(db, migrations);
     const held = { apply_id: "a-1", client: "h", created_ms: NOW, outcomes: [], idempotency_key: "k-1", body: '{"request":{}}' };
     await db.transaction(async (tx) => {
       await saveApply(tx, held);
@@ -74,7 +74,7 @@ describe("dispatch's records (GA-PERSIST-1)", () => {
 
   it("keeps a late window until its deadline, each write safe to run twice (GA-APPLY-11)", async () => {
     const db = await memoryDb();
-    await migrate(db);
+    await migrate(db, migrations);
     const late: Late = { command_id: "c-1", apply_id: "a-1", step_id: "s1", target: "hall:lamp", action: "onoff.turn_on", args: {},
       cause: { apply: "a-1", client: "h", for: { person: "demo" } }, until_ms: NOW + 60_000 };
     await db.transaction(async (tx) => {
@@ -96,7 +96,7 @@ describe("dispatch's records (GA-PERSIST-1)", () => {
 
   it("keeps an open device's assumed state, the latest value of each key with the dispatch it came from, each write safe to run twice; a forget drops it (GA-STATE-4)", async () => {
     const db = await memoryDb();
-    await migrate(db);
+    await migrate(db, migrations);
     const src = { source_seq: 2 };
     await db.transaction(async (tx) => {
       for (let i = 0; i < 2; i++) {
@@ -122,7 +122,7 @@ describe("dispatch's records (GA-PERSIST-1)", () => {
   });
   it("keeps an apply a rule or a cap still runs past its hour, in the store and at load (GA-SAFE-12, GA-LOAD-2)", async () => {
     const db = await memoryDb();
-    await migrate(db);
+    await migrate(db, migrations);
     await db.transaction(async (tx) => {
       for (const id of ["ruled", "capped", "done"]) await saveApply(tx, { apply_id: id, client: "", created_ms: NOW, outcomes: [] });
       await tx.query("INSERT INTO safety_state (rule_id, trigger_true, apply_id) VALUES ('r', true, 'ruled'), ('q', false, NULL)");

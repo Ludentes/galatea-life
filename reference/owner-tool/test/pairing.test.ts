@@ -432,7 +432,7 @@ describe("adopt with a name and a room", () => {
     }
   });
 
-  it("adopts, waits until the steward sees it adopted, then makes the room and names it there, keeping its aliases", async () => {
+  it("adopts, waits until the steward sees it adopted, then makes the room and names it there, sending only name and room (GA-DEF-14 merges)", async () => {
     const a = adopting();
     expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--name", "Лампа", "--room", "kitchen"], a.deps)).toBe(0);
     expect(a.applier.tools()).toEqual(["describe", "describe", "configure"]);
@@ -440,8 +440,17 @@ describe("adopt with a name and a room", () => {
       ["describe", undefined, undefined], ["describe", undefined, undefined], ["describe", undefined, undefined], ["define", undefined, undefined]]);
     expect(a.steward.calls.at(-1)!.args).toEqual({ expected_revision: 11, dry_run: false, changes: [
       { op: "upsert", kind: "room", value: { id: "kitchen", name: "kitchen" } },
-      { op: "upsert", kind: "target", value: { id: "sim-bridge:lamp", name: "Лампа", room: "kitchen", aliases: ["лампочка"] } }] });
+      { op: "upsert", kind: "target", value: { id: "sim-bridge:lamp", name: "Лампа", room: "kitchen" } }] });
     expect(a.out).toEqual(["adopted sim-bridge:lamp as light, revision 5", "named sim-bridge:lamp «Лампа» in kitchen (a new room), revision 12"]);
+  });
+
+  it("under the steward's merge, naming keeps the target's aliases and changes only name and room (GA-DEF-14)", async () => {
+    const a = adopting();
+    a.steward.seed("target", { id: "sim-bridge:lamp", name: "old", aliases: ["лампочка"], room: "hall" });
+    a.steward.rooms = [{ id: "hall", name: "Прихожая" }];
+    expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--name", "Лампа", "--room", "kitchen"], a.deps)).toBe(0);
+    expect(a.steward.item("target", "sim-bridge:lamp")).toEqual({ id: "sim-bridge:lamp", name: "Лампа", aliases: ["лампочка"], room: "kitchen" });
+    expect(a.steward.item("room", "kitchen")).toEqual({ id: "kitchen", name: "kitchen" });
   });
 
   it("finds an existing room by its id or its name, and makes none", async () => {
@@ -450,17 +459,25 @@ describe("adopt with a name and a room", () => {
       a.steward.rooms = [{ id: "kitchen", name: "Кухня" }];
       expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--name", "Лампа", "--room", room], a.deps)).toBe(0);
       expect(a.steward.calls.at(-1)!.args.changes).toEqual([
-        { op: "upsert", kind: "target", value: { id: "sim-bridge:lamp", name: "Лампа", room: "kitchen", aliases: ["лампочка"] } }]);
+        { op: "upsert", kind: "target", value: { id: "sim-bridge:lamp", name: "Лампа", room: "kitchen" } }]);
       expect(a.out[1]).toBe("named sim-bridge:lamp «Лампа» in kitchen, revision 12");
     }
   });
 
+  it("names it before the home has a channel, saying notices are held (steward 0.11: no_notify_channel)", async () => {
+    const a = adopting();
+    a.steward.queue("define", () => ok({ revision: 12, no_notify_channel: true }));
+    expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--name", "Лампа", "--room", "kitchen"], a.deps)).toBe(0);
+    expect(a.out).toEqual(["adopted sim-bridge:lamp as light, revision 5", "named sim-bridge:lamp «Лампа» in kitchen (a new room), revision 12",
+      "  no notify channel: notices are held until notice_channels names a device that offers notify"]);
+  });
+
   it("ends 1 after the applier's change when the steward refuses, printing the line to run again", async () => {
     const a = adopting();
-    a.steward.queue("define", refused("invalid_request", "notice_channels names no notify channel (GA-DEF-8, GA-NOTE-1)"));
+    a.steward.queue("define", refused("invalid_request", "target sim-bridge:lamp: no room kitchen"));
     expect(await run(["adopt", "sim-bridge:lamp", "--class", "light", "--name", "Лампа у окна", "--room", "kitchen", "--tier", "onoff.turn_on=confirm"], a.deps)).toBe(1);
     const err = a.err.join("\n");
-    expect(err).toMatch(/the steward refused define: invalid_request: notice_channels/);
+    expect(err).toMatch(/the steward refused define: invalid_request: target sim-bridge:lamp: no room kitchen/);
     expect(err).toMatch(/sim-bridge:lamp is adopted and not named; to name it, run again: galatea adopt sim-bridge:lamp --class light --name 'Лампа у окна' --room kitchen --tier onoff.turn_on=confirm/);
   });
 

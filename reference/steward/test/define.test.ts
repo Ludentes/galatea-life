@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { digest } from "../src/core/secret.js";
-import { planDefine, type Change } from "../src/house/define.js";
+import { hasNotifyChannel, planDefine, type Change } from "../src/house/define.js";
 import { houseKey } from "../src/house/model.js";
-import { baseline, BASELINE, context, del, furnished, FURNISHED, SECRETS, up, withOwner } from "./house.js";
+import { baseline, BASELINE, context, del, DEVICES, furnished, FURNISHED, SECRETS, up, withOwner } from "./house.js";
 
 const refused = (changes: Change[], message: RegExp, ctx = context(), h = baseline()) =>
   expect(() => planDefine(h, changes, ctx)).toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringMatching(message) }));
@@ -27,14 +27,48 @@ describe("planDefine", () => {
     expect(houseKey(h)).toBe(before);
   });
 
-  it("refuses a fresh steward's change set that names no notify channel, as GA-DEF-8 reads literally", () => {
-    refused([up("room", { id: "hall", name: "Холл" })], /no notify channel/, context(), withOwner());
-    refused([up("home", { notice_channels: ["sim-bridge:speaker"] })], /no notify channel/, context(), withOwner());
+  it("takes a fresh steward's change sets while notice_channels was never set, and a list of announcing channels alone (GA-DEF-8)", () => {
+    const room = planDefine(withOwner(), [up("room", { id: "hall", name: "Холл" })], context()).draft;
+    expect(room.home.notice_channels).toEqual([]);
+    const spoken = planDefine(room, [up("home", { notice_channels: ["sim-bridge:speaker"] })], context()).draft;
+    expect(spoken.home.notice_channels).toEqual(["sim-bridge:speaker"]);
     refused([up("home", { notice_channels: ["sim-bridge:stray"] })], /not adopted/, context(), withOwner());
     refused([up("home", { notice_channels: ["sim-bridge:lamp"] })], /neither notify nor media.announce/, context(), withOwner());
     refused([up("home", { notice_channels: ["sim-bridge:gone"] })], /no device the applier describes/, context(), withOwner());
-    expect(planDefine(withOwner(), [up("home", { notice_channels: ["sim-bridge:channel", "sim-bridge:speaker"] })], context())
-      .draft.home.notice_channels).toEqual(["sim-bridge:channel", "sim-bridge:speaker"]);
+    refused([up("home", { notice_channels: ["sim-bridge:lamp", "sim-bridge:channel"] })], /sim-bridge:lamp has neither notify nor media.announce/);
+  });
+
+  it("refuses leaving notice_channels empty once set, by an empty list or a null (GA-DEF-8)", () => {
+    refused([up("home", { notice_channels: [] })], /left empty once set \(GA-DEF-8\)/);
+    refused([up("home", { notice_channels: null })], /left empty once set/);
+    const spoken = planDefine(withOwner(), [up("home", { notice_channels: ["sim-bridge:speaker"] })], context()).draft;
+    refused([up("home", { notice_channels: [] })], /left empty once set/, context(), spoken);
+  });
+
+  it("checks only the entries a change set sets: a channel that left adoption does not refuse another change (GA-DEF-8)", () => {
+    const h = baseline();
+    const gone = context({ device: (id) => (id === "sim-bridge:channel" ? { ...DEVICES[id]!, adopted: false } : DEVICES[id]) });
+    expect(planDefine(h, [up("room", { id: "attic", name: "Чердак" })], gone).draft.rooms.has("attic")).toBe(true);
+    refused([up("home", { notice_channels: ["sim-bridge:channel"] })], /not adopted/, gone, h);
+  });
+
+  it("under refuses-the-first-define, refuses a fresh steward's change set naming no channel", () => {
+    refused([up("room", { id: "hall", name: "Холл" })], /no notify channel/, context({ mutation: "refuses-the-first-define" }), withOwner());
+  });
+
+  it("under refuses-an-announcing-channel, refuses a list of announcing channels alone; under takes-a-silent-channel, takes a lamp", () => {
+    refused([up("home", { notice_channels: ["sim-bridge:speaker"] })], /no notify channel/, context({ mutation: "refuses-an-announcing-channel" }), withOwner());
+    expect(planDefine(baseline(), [up("home", { notice_channels: ["sim-bridge:lamp", "sim-bridge:channel"] })],
+      context({ mutation: "takes-a-silent-channel" })).draft.home.notice_channels).toEqual(["sim-bridge:lamp", "sim-bridge:channel"]);
+  });
+
+  it("says whether the house has an adopted notify channel (GA-NOTE-1)", () => {
+    expect(hasNotifyChannel(baseline().home, context())).toBe(true);
+    expect(hasNotifyChannel(withOwner().home, context())).toBe(false);
+    const spoken = planDefine(withOwner(), [up("home", { notice_channels: ["sim-bridge:speaker"] })], context()).draft;
+    expect(hasNotifyChannel(spoken.home, context())).toBe(false);
+    expect(hasNotifyChannel(baseline().home, context({ device: (id) => (id === "sim-bridge:channel" ? { ...DEVICES[id]!, adopted: false } : DEVICES[id]) })))
+      .toBe(false);
   });
 
   it("refuses a change set whole: a valid room with an invalid endpoint leaves no room (GA-DEF-5)", () => {
@@ -61,7 +95,6 @@ describe("planDefine", () => {
     refused([voice({ skill_account: "acct", skill_surface: "s1" }), ep("bath-voice", {}),
       voice({ endpoint: "bath-voice", skill_account: "acct" })], /both a surfaced endpoint and one without/);
     refused([ep("bath-voice", { room: null })], /only an app endpoint has no room/);
-    refused([up("home", { notice_channels: [] })], /no notify channel/);
   });
 
   it("takes an app endpoint without a person under app-without-person, and nothing else of GA-DEF-8", () => {
@@ -138,9 +171,10 @@ describe("planDefine", () => {
     refused([up("rule", { id: "x", name: "x", actions, trigger: null, conditions: null })], /a trigger or conditions \(GA-DEF-14\)/);
   });
 
-  it("refuses an upsert of an existing item that leaves out a created-with field, while an upsert replaces the item whole (ruled)", () => {
-    refused([up("room", { id: "hall" })], /change 1 \(upsert room\): .*name/);
-    refused([up("endpoint", { id: "olga-app", name: "Телефон" })], /change 1 \(upsert endpoint\): .*type/);
+  it("takes an upsert of an existing item that leaves out a created-with field: it merges (GA-DEF-14)", () => {
+    expect(planDefine(baseline(), [up("room", { id: "hall" })], context()).draft.rooms.get("hall")).toEqual({ id: "hall", name: "Холл" });
+    expect(planDefine(baseline(), [up("endpoint", { id: "olga-app", name: "Телефон" })], context()).draft.endpoints.get("olga-app"))
+      .toMatchObject({ name: "Телефон", type: "app", person: "olga" });
   });
 
   it("refuses a delete of an item that does not exist, of every kind keyed by id (GA-DEF-14)", () => {
@@ -169,7 +203,7 @@ describe("planDefine", () => {
   it("resets a setting given null to its default: timezone to UTC, and notice_channels to none, which is refused", () => {
     const zoned = planDefine(baseline(), [up("home", { timezone: "Europe/Moscow" })], context()).draft;
     expect(planDefine(zoned, [up("home", { timezone: null })], context()).draft.home.timezone).toBe("UTC");
-    refused([up("home", { notice_channels: null })], /no notify channel/);
+    refused([up("home", { notice_channels: null })], /left empty once set/);
   });
 
   it("gives no diff for a change set that changes nothing", () => {
@@ -188,9 +222,9 @@ describe("planDefine's targets and groups", () => {
       members: ["sim-bridge:dimmer", "sim-bridge:lamp"], aggregate: "any" });
     expect(diff).toContain("+ target sim-bridge:dimmer: room \"hall\"");
     expect(diff.find((l) => l.startsWith("+ group hall-lights"))).toContain("aggregate \"any\"");
-    // An upsert replaces the overlay whole; a delete takes it away.
+    // An upsert merges into the overlay (GA-DEF-14); a delete takes it away.
     const renamed = planDefine(draft, [up("target", { id: "sim-bridge:lamp", name: "Торшер" })], context()).draft;
-    expect(renamed.targets.get("sim-bridge:lamp")).toEqual({ id: "sim-bridge:lamp", name: "Торшер" });
+    expect(renamed.targets.get("sim-bridge:lamp")).toEqual({ id: "sim-bridge:lamp", name: "Торшер", aliases: ["свет"], room: "hall" });
     expect(planDefine(draft, [del("target", { id: "sim-bridge:lamp" }), del("group", { id: "hall-lights" })], context()).draft.targets
       .has("sim-bridge:lamp")).toBe(false);
   });
@@ -243,11 +277,11 @@ describe("planDefine's rules", () => {
     trigger: { state: { target: "sim-bridge:dimmer", key: "on", op: "eq", value: true } },
     actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }], ...v }).filter(([, x]) => x !== undefined));
 
-  it("keeps a rule whole, active and with no exception unless given, a diff line for it, and replaces it whole on an upsert", () => {
+  it("keeps a rule whole, active and with no exception unless given, a diff line for it, and merges an upsert into it", () => {
     const { draft, diff } = planDefine(baseline(), [up("rule", rule())], context());
     expect(draft.rules.get("night")).toEqual({ ...rule(), active: true, exceptions: [] });
     expect(diff.some((l) => l.startsWith("+ rule night: "))).toBe(true);
-    const next = planDefine(draft, [up("rule", rule({ active: false, trigger: undefined,
+    const next = planDefine(draft, [up("rule", rule({ active: false, trigger: null,
       conditions: [{ between: { from: "23:00", until: "06:00" } }] }))], context()).draft;
     expect(next.rules.get("night")!.active).toBe(false);
     expect(next.rules.get("night")!.trigger).toBeUndefined();

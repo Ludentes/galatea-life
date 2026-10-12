@@ -9,20 +9,19 @@ author: Galatea maintainers
 
 # The reference applier
 
-A TypeScript build of the Galatea applier standard ([`standard/applier.md`](https://github.com/Ludentes/galatea-life-standard/blob/main/standard/applier.md), 0.15), graded by the
+A TypeScript build of the Galatea applier standard ([`standard/applier.md`](https://github.com/Ludentes/galatea-life-standard/blob/main/standard/applier.md), 0.16), graded by the
 conformance harness on the ids in `graded-ids.json`. The design is
 `docs/specs/2026-09-28-reference-applier-design.md`. This page says what the build does now; how it
 got here, slice by slice, is under *History* below.
 
 ## Not built: the PC ids
 
-`describe` claims `Act` and `Safe` at 0.15, but twelve Act MUSTs are neither built nor graded. They
+`describe` claims `Act` and `Safe` at 0.16, but eleven Act MUSTs are neither built nor graded. They
 are the PC work's, done separately and at a lower priority:
 
 | Id | What is missing |
 |---|---|
 | GA-DESC-10 | `wake_via`: a computer's wake through another device, and its checks |
-| GA-DESC-11 | A replacement that changes a plugin action's tool hash, argument schema or `requested_tier` dropping the owner's lower tier |
 | GA-DESC-15 | An owner's `idempotent: true` on a plugin action falling back on a new tool hash |
 | GA-DESC-16 | `personal` and `self_changing` kept across a plugin's replacements |
 | GA-DESC-17 | `session.lock`'s `account` argument limited to the computer's accounts |
@@ -46,7 +45,7 @@ bridge is a stopgap channel for notices), and their actions run through the rule
   staged version's devices can raise a `route_conflict`.
 - `provision`'s `install` and `uninstall` answer `invalid_request` (not built); a plugin's devices
   stay in the model after it is uninstalled another way, until the owner forgets them.
-- `session.lock` takes any `account` token, and a plugin's tool changes keep the owner's tier and
+- `session.lock` takes any `account` token, and a plugin's tool changes keep the owner's
   `idempotent: true`.
 
 ## What it does now
@@ -82,6 +81,29 @@ bridge is a stopgap channel for notices), and their actions run through the rule
 The harness's mutations run only under its run id; the three that defeat a safety floor
 (`trusts-any-token`, `applies-without-token`, `lets-a-client-undo-safety`) also need its clock
 (`GALATEA_TIME_SOURCE`).
+
+## Architecture notes
+
+- **The core is free of its adapters.** Nothing under `core/`, `model/`, `dispatch/`, `safety/`,
+  `config/`, `gate/`, `state/`, `provision/` or `net/` (nor `applier.ts`, `mutations.ts`) imports pg,
+  mqtt, the MCP SDK or the file system. `test/modularity.test.ts` pins this.
+- **The adapters sit beside the core.** The drivers live in `adapters/pg.ts` (the pool),
+  `adapters/migrations.ts` (`migrationsFrom` reads `migrations/`), `bus/client.ts` (MQTT, behind
+  `bus/port.ts`'s `BusPort`) and `mcp/server.ts` (serves any `ApplierService` with the tools it is
+  given).
+- **Only the entry points read the outside world.** `main.ts` and `migrate-main.ts` read the
+  environment and the files and write to the console. Everything else takes its `log`, `clock`,
+  `migrations` and `retarget` injected, through `StartDeps` and `ApplierOptions`.
+- **The package exports.** `.` gives the service and its start (no MCP, pg or mqtt module at run time).
+  `./mcp`, `./bus` and `./pg` give the adapters. `test/exports.test.ts` checks both.
+- **The mutation is a frozen record of flags.** `start.ts` builds `Mutant` once (`mutantOf`), and
+  modules read `mutant.<flag>`, the reach lint's sites. Production runs on `Mutant.none`.
+- **The classes stay whole (ruled 2026-10-11).** `Home`, `Dispatcher` and `Applier` keep their
+  methods. Only their free helpers and tool lists moved, as pure moves, to the modules beside them:
+  `model/home-helpers.ts`, `dispatch/dispatch-helpers.ts`, `tools.ts` and `applier-helpers.ts`.
+  `configure.ts`'s kinds moved to `config/kinds/*.ts`. Splitting a class's methods across files
+  would need free functions over exposed state, prototype augmentation or a class chain, and none of
+  those is a pure move.
 
 ## Build, test and grade
 
@@ -238,7 +260,8 @@ GALATEA_OWNER_CREDENTIAL=change-me-owner-credential GALATEA_MCP_PORT=18443 node 
 9. `configure` with `{ "op": "upsert", "kind": "load", "value": { "device": "demo-bridge:heater",
    "load": "heating" } }`: the heater's `onoff.turn_on` is now `confirm`. Then `{ "op": "upsert",
    "kind": "tier", "value": { "device": "demo-bridge:gate", "action": "cover.close", "tier":
-   "reversible" } }`: `invalid_request`, "configure only raises a tier", and `revision` stays.
+   "reversible" } }`: `invalid_request`, "the floor is confirm", and `revision` stays: no tier goes
+   below the table's.
 10. `configure` with `{ "op": "upsert", "kind": "fresh_s", "value": { "device": "demo-bridge:lamp",
     "fresh_s": 20 } }`: `state` gives the lamp `fresh_s` 20 and `fresh_basis` `configured`, and
     `events` from a cursor kept before it a `freshness` event.
@@ -866,3 +889,74 @@ a device id it never had is `failed(unknown_device)`; it refuses a wrapped one-a
 named device, `presser`, loses its onoff actions to a press in click mode and gets them back in switch
 mode. `reinterview` publishes a status with no reading, which the applier reads as neither removal nor
 death.
+
+### What applier 0.16 adds
+
+**The owner's tiers (HS35).** Each action has a floor, the *Default tiers* table with its class, flag,
+load and a plugin's `requested_tier` (`floorTier`), and a default, the floor or, for an extension
+action, the higher of `confirm` and the floor (`defaultTier`). `configure` sets any tier at or above
+the floor and deletes the owner's value, for a standard action as for an extension one, so an owner
+who raised a lamp's `turn_on` can bring it back down. A tier below the floor is `invalid_request`,
+nothing changed, never clamped. Every tier a change set sets is judged once the whole set is applied
+(`judgeTiers`), against the floor it leaves: a socket turned to `lighting` with its `turn_on` at
+`reversible` is taken in either order; turned to `heating` with `reversible`, refused. A change of
+load or `infrastructure` moves the tier with the floor and never writes the owner's value. A plugin's
+`requestedTier` and `toolHash` are read from `devices`: a replacement whose manifest requests less
+keeps the tier the action had, stored as the owner's value, which the owner may delete; one whose tool
+or schema changed drops a tier the owner set below the default (GA-DESC-11, now built and graded).
+Upgrading to 0.16 changes the fingerprint of every plugin action whose bridge already sends
+`requestedTier` or `toolHash`, once: a plugin tier the owner lowered falls back, to be set again, and
+the first `devices` document may read as a declaration change. Earlier builds were drafts, so no
+compatibility code carries the old fingerprints over.
+GA-ADOPT-3 judges an adopted device's tier before the adopting set whether or not it was adopted before.
+A plugin device's `host` is read too: a standard action on it takes the higher of its own row and its
+host's `infrastructure` and `computer` rows, and an extension action on a device an `infrastructure`
+computer hosts has the floor `no_voice`. A computer's `infrastructure` is the owner's flag, set either
+way, else its bridge's `proposedInfrastructure`. Tiers are derived each time, so a change of the
+host's flag re-derives the devices it hosts in the same change set (GA-DESC-13).
+
+**A key's first value** (GA-EVT-1, the maintainer's ruling of 2026-10-11). A key's first value, the
+applier holding none for it before, is announced with cause `device`, and so takes no lease, where no
+hand can be told. The retain flag no longer decides: each value's arrival is observed (`Arrival`):
+- `load`: the bridge not heard live since the applier connected or lost its broker, and the reading
+  stamped no later than when listening began, allowing `SKEW_MS`: the statuses delivered on
+  subscribing after a start or a reconnection, and no later press;
+- `snapshot`: while a snapshot is awaited (the one a new instance's first live status asks for, a seq
+  gap's, or the bus's on a reconnection), or the bridge found dead after it was live by its will or
+  its `offline` status, so a new instance's statuses that come before its own `status`; silence ends
+  no instance, so a running bridge that went quiet still reports `live`;
+- `route`: the values a `configure` route move announces, and a moved device's values in the new
+  bridge's answer to the `snapshot` the move asks of it (the maintainer's ruling on R16-4);
+- `live`: anything else.
+
+A first value in any but `live`, or on a device not adopted, is `device`; one live on an adopted device
+is `external`, a person's first press included. An apply's correlation still wins. One rule,
+`firstValue`, decides it wherever a value is announced. "Held" means on any route: a route move keeps
+the id's last values, even when the old bridge is no longer registered; and a value whose announce
+failed was never said. A route's rows are placed under the configuration the change set leaves, so a
+device routed and adopted in one set is adopted as its values over the new route are said.
+
+The phases end on the bridge's liveness as GA-BUS-8 judges it, which reads a status's retain flag as
+the binding says; no value is judged by its own flag. `describe` gives `standard_version` `0.16`.
+
+**How much of GA-DESC-11 is graded.** The harness grades, over one plugin device with a standard and an
+extension action:
+- a replacement whose manifest requests less keeps both tiers, as the owner's value;
+- the owner deleting the extension action's kept tier;
+- a replacement whose tool hash changed dropping the owner's lowering and keeping a raise;
+- a restart over which the version's tool hash changes, the lowering dropped once the subject is back
+  (the hash kept across the restart);
+- a replacement whose argument schema changed, the tool the same, dropping the lowering.
+
+Unit tests only: a changed `requested_tier` alone, and the delete of a standard action's kept tier
+(GA-DESC-14 grades that delete). Not graded or built: an owner's `idempotent: true` falling back on a
+new tool hash (GA-DESC-15).
+
+Fifteen mutations, all in `subject.json`: `keeps-an-owner-raise`, `keeps-an-owner-raise-on-a-set`,
+`lowers-a-heater-below-the-table` (GA-DESC-14), `keeps-a-table-tier-over-a-new-load` (GA-DESC-13),
+`keeps-a-manifest-kept-tier`, `forgets-a-tool-hash`, `lowers-by-a-new-manifest` and
+`keeps-a-lowered-tier` (GA-DESC-11), `extension-under-the-box`, `sleeps-the-box-through-its-player`
+and `sleeps-the-proposed-broker-host` (GA-DESC-3), and `externalises-a-first-value`,
+`externalises-a-snapshot-value`, `externalises-a-rerouted-value` and `devices-a-live-press` (GA-EVT-1);
+`externalises-a-first-value` left `proposed-rows.json`, and its clause `first-value-is-device` is now
+part of GA-EVT-1's check.

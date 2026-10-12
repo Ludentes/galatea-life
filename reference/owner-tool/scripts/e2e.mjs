@@ -7,14 +7,19 @@
 // from GALATEA_APPLIER_CA). It registers the bridge (the steward is registered by the test, as the
 // installation's galatea-register-steward does); pairs a device through `galatea join`, the simulated
 // bridge claiming Provision and a device joined through its `join` control; adopts it with a name and
-// a room before the home has a notice channel (the steward refuses, after the applier's change: exit
-// 1 and the line to run again); adopts the simulated notify device without a name and defines the
-// home with it as the channel; runs the printed line again; defines a brain's credential; reads
-// `status` and `devices`; interrupts a `galatea join` (Ctrl-C closes its window); removes the paired
-// device. Then plan C's confirmations: the simulated lamp adopted with `onoff.turn_on` raised to
-// confirm; `galatea do ... --yes` (acked, the lamp on) while `galatea events --follow` shows the
-// outcome and Ctrl-C ends it; a `do` left open, listed by `galatea asks`, applied by `galatea answer
-// ... yes`; a `no` whose step is skipped, nothing sent; `galatea history` reading it back. Run under `galatea-with-postgres` (GALATEA_TEST_PG_URL). Exits 0 when every step holds;
+// a room before the home has a notice channel (steward 0.11 takes it and says no notify channel is
+// set; `status` shows the notices held); adopts the simulated notify device without a name and
+// defines the home with it as the channel (`status` then shows none held); defines a brain's
+// credential; reads `status` and `devices`; interrupts a `galatea join` (Ctrl-C closes its window);
+// removes the paired device. Then plan C's confirmations: the simulated lamp adopted with
+// `onoff.turn_on` raised to confirm; `galatea do ... --yes` (acked, the lamp on) while `galatea events
+// --follow` shows the outcome and Ctrl-C ends it; a `do` left open, listed by `galatea asks` with what
+// it asks, applied by `galatea answer ... yes`; a `no` whose step is skipped, nothing sent; a `do
+// --yes` whose command the lamp rejects (answered and applied, then failed: exit 1, failed under
+// way); `galatea history` reading it back. Then `galatea scenario`: two scenarios defined (the lamp on, a delay, the lamp
+// off), listed; one run with --yes, its turn_off planned skip(already) and judged again at dispatch, read back with
+// `scenario status`; the longer one left open, started by `galatea answer`, and stopped with `scenario stop` before its
+// turn_off is sent. Run under `galatea-with-postgres` (GALATEA_TEST_PG_URL). Exits 0 when every step holds;
 // prints no credential, key or database URL.
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -252,12 +257,13 @@ try {
     closed.code === 0 && joinEnd.code === 0 && new RegExp(`window closed on \\S+ after 60 s; 1 joined:\\n  ${NEW}  described`).test(joinEnd.out),
     `${shown(closed)}; join ${shown(joinEnd)}`);
 
-  // Adopted with a name and a room before the home has a notice channel: the applier takes the adoption,
-  // the steward (0.10) refuses every define until a channel is set: exit 1, and the line to run again.
+  // Adopted with a name and a room before the home has a notice channel: steward 0.11 takes the define and
+  // answers no_notify_channel (GA-NOTE-1), which the tool says; its describe counts the notices held.
   const early = await g("adopt", NEW, "--class", "light", "--name", "Лампа у окна", "--room", "kitchen");
-  const rerun = /run again: (galatea adopt .*)$/m.exec(early.err)?.[1];
-  step(6, "galatea adopt with a name and a room, refused by the steward after the applier's change: 1, and the line to run again",
-    early.code === 1 && /adopted sim-bridge:newlamp as light/.test(early.out) && /notice_channels/.test(early.err) && rerun !== undefined, shown(early));
+  const heldBefore = await g("status");
+  step(6, "galatea adopt with a name and a room before any notice channel: named, saying no notify channel is set; status shows the notices held",
+    early.code === 0 && /adopted sim-bridge:newlamp as light/.test(early.out) && new RegExp(`named ${NEW} «Лампа у окна» in kitchen \\(a new room\\)`).test(early.out)
+      && /no notify channel: notices are held/.test(early.out) && /^  notices held: \d+ \(no notify channel/m.test(heldBefore.out), `${shown(early)}; ${shown(heldBefore)}`);
 
   const adopted = await g("adopt", CHANNEL, "--class", "channel");
   step(7, "galatea adopt of the notify device, without a name", adopted.code === 0, shown(adopted));
@@ -275,9 +281,9 @@ try {
   step(8, "galatea define of the home with the channel as its notice channel", dry.code === 0 && defined.code === 0 && /revision \d+/.test(defined.out),
     `${shown(dry)}; ${shown(defined)}`);
 
-  const again = await g(...words(rerun).slice(1));
-  step(9, "the printed adopt line run again: the adoption changes nothing, the device is named in a new room",
-    again.code === 0 && /it was adopted already/.test(again.out) && new RegExp(`named ${NEW} «Лампа у окна» in kitchen \\(a new room\\)`).test(again.out), shown(again));
+  const heldAfter = await g("status");
+  step(9, "with the channel set, the define says nothing of a missing channel and status shows no notices held",
+    !/no notify channel/.test(defined.out) && heldAfter.code === 0 && !/notices held/.test(heldAfter.out), `${shown(defined)}; ${shown(heldAfter)}`);
 
   const cred = await g("credential", "brain_agent", "--kind", "brain", "--confirm-on", "owner-app");
   step(10, "galatea credential of a brain, its secret from its file", cred.code === 0, shown(cred));
@@ -361,9 +367,10 @@ try {
   const answerLine = /^  (galatea answer \S+ s1 yes)$/m.exec(open.out)?.[1];
   const planId = answerLine?.split(" ")[2];
   const listed = await g("asks");
-  step(18, "galatea do without --yes leaves the plan open with its answer line; galatea asks lists it",
-    off.code === 0 && open.code === 0 && answerLine !== undefined && await lampIs(false)
-      && new RegExp(`plan ${planId}  asked on owner-app at .* waiting: s1`).test(listed.out) && listed.out.includes(answerLine), `${shown(open)}; ${shown(listed)}`);
+  step(18, "galatea do without --yes leaves the plan open with its answer line; galatea asks lists it with what it asks (the ask event's steps)",
+    off.code === 0 && open.code === 0 && answerLine !== undefined && await lampIs(false) && listed.code === 0
+      && new RegExp(`plan ${planId}  asked on owner-app at .* waiting: s1`).test(listed.out) && listed.out.includes(answerLine)
+      && listed.out.includes(`  s1  ${LAMP}  onoff.turn_on  {}  tier confirm  (confirm_tier)`), `${shown(open)}; ${shown(listed)}`);
 
   const answered = await g(...words(answerLine).slice(1));
   const emptied = await g("asks");
@@ -381,6 +388,13 @@ try {
     off2.code === 0 && declined.code === 0 && /declined: s1/.test(declined.out) && new RegExp(`s1  ${LAMP}  skipped \\(not_confirmed\\)`).test(declined.out) && bridge.commands.length === sentBefore && await lampIs(false)
       && /no ask waits on owner-app/.test(afterNo.out), `${shown(declined)}; commands ${sentBefore} -> ${bridge.commands.length}`);
 
+  // A real refusal under way: the lamp's bridge rejects the next command, after the tool answered and applied (exit 1).
+  await bridge.control({ requestId: randomUUID(), op: "commandResult", device: "lamp", result: "rejected", afterMs: 0, detail: "the lamp refused" });
+  const rejected = await g("do", LAMP, "onoff.turn_on", "--yes");
+  step(21, "galatea do --yes whose command the lamp rejects: answered yes, applied, the step failed: 1, failed under way; the lamp still off",
+    rejected.code === 1 && /answered yes: s1/.test(rejected.out) && /applied: apply /.test(rejected.out)
+      && new RegExp(`s1  ${LAMP}  failed`).test(rejected.out) && await lampIs(false), shown(rejected));
+
   // A toggle on an open-loop IR TV: the steward asks toggle_only, a question --yes must not answer (review I1).
   const TV = "sim-bridge:tv";
   const tvAdopted = await g("adopt", TV, "--class", "tv");
@@ -389,7 +403,7 @@ try {
   const tvLine = /^  (galatea answer \S+ s1) yes$/m.exec(toggle.out)?.[1];
   const tvAsks = await g("asks");
   const tvNo = tvLine ? await g(...words(tvLine).slice(1), "no") : { code: -1, out: "", err: "no answer line" };
-  step(21, "galatea do --yes on a toggling TV: ask (toggle_only) printed, not answered, left open with its line; nothing sent; a no then closes it",
+  step(22, "galatea do --yes on a toggling TV: ask (toggle_only) printed, not answered, left open with its line; nothing sent; a no then closes it",
     tvAdopted.code === 0 && toggle.code === 0 && /ask \(toggle_only\)/.test(toggle.out) && /not answered: s1 \(toggle_only\)/.test(toggle.out)
       && tvLine !== undefined && tvAsks.out.includes(`${tvLine} yes`) && tvNo.code === 0 && bridge.commands.length === tvSentBefore,
     `${shown(toggle)}; ${shown(tvNo)}; commands ${tvSentBefore} -> ${bridge.commands.length}`);
@@ -397,20 +411,64 @@ try {
   const lampHistory = await g("history", LAMP, "--from", "10m");
   const allHistory = await g("history", "--from", "10m", "--json");
   const kinds = allHistory.code === 0 ? allHistory.out.trim().split("\n").map((l) => JSON.parse(l)) : [];
-  step(22, "galatea history shows the lamp's outcomes, and the asks and answers behind them",
+  step(23, "galatea history shows the lamp's outcomes, and the asks and answers behind them",
     lampHistory.code === 0 && new RegExp(`outcome  .*target=${LAMP} .*outcome=acked`).test(lampHistory.out)
       && kinds.some((e) => e.type === "ask" && e.endpoint === "owner-app") && kinds.some((e) => e.type === "answer" && e.answers?.s1 === "no"),
     `${lampHistory.out.trim().split("\n").length} lines for the lamp; ${kinds.length} events in all`);
   const finalStatus = await g("status");
-  step(23, "galatea status: no ask open", finalStatus.code === 0 && /open asks on owner-app: 0/.test(finalStatus.out), shown(finalStatus));
+  step(24, "galatea status: no ask open", finalStatus.code === 0 && /open asks on owner-app: 0/.test(finalStatus.out), shown(finalStatus));
+
+  // Scenarios (galatea scenario): defined with galatea define, listed, run with --yes and read back; a longer one
+  // started through galatea answer, stopped while it runs. The lamp is off here (step 21's command was rejected).
+  const scenarios = join(install.dir, "scenarios.json");
+  const scenario = (id, delay) => ({ op: "upsert", kind: "scenario", value: { id, name: `Сценарий ${id}`, mode: "single", owned: [LAMP],
+    steps: [{ target: LAMP, action: "onoff.turn_on", args: {} }, { delay }, { target: LAMP, action: "onoff.turn_off", args: {} }] } });
+  writeFileSync(scenarios, JSON.stringify([scenario("evening", 1), scenario("long", 5)]));
+  const scDefined = await g("define", scenarios);
+  const scList = await g("scenario", "list");
+  step(25, "galatea define of two scenarios; galatea scenario list shows each with its name, mode and steps",
+    scDefined.code === 0 && scList.code === 0 && /^evening  «Сценарий evening»  single  3 steps$/m.test(scList.out) && /^long  «Сценарий long»  single  3 steps$/m.test(scList.out),
+    `${shown(scDefined)}; ${shown(scList)}`);
+
+  // turn_off is planned skip(already), the lamp being off; the run judges it again at dispatch (GA-SCN-7), after turn_on.
+  const scRun = await g("scenario", "run", "evening", "--yes");
+  const scRunId = /^started: run (\S+)$/m.exec(scRun.out)?.[1];
+  step(26, "galatea scenario run --yes: the plan printed, the tier's ask answered, the run started, each step's outcome, ended done; the lamp off again",
+    scRun.code === 0 && new RegExp(`s1  ${LAMP}  onoff\\.turn_on  \\{\\}  tier confirm  ask \\(confirm_tier\\)`).test(scRun.out) && /answered yes: s1/.test(scRun.out)
+      && new RegExp(`^  s2  ${LAMP}  onoff\\.turn_off  \\{\\}  tier reversible  skip \\(already\\)$`, "m").test(scRun.out)
+      && scRunId !== undefined && new RegExp(`^  s1  ${LAMP}  acked$`, "m").test(scRun.out) && new RegExp(`^  s2  ${LAMP}  acked$`, "m").test(scRun.out)
+      && new RegExp(`^run ${scRunId} ended \\(done\\)$`, "m").test(scRun.out) && await lampIs(false), shown(scRun));
+
+  const scStatus = await g("scenario", "status", scRunId ?? "none");
+  step(27, "galatea scenario status of the run: ended done, nothing failed", scStatus.code === 0 && scStatus.out.trim() === `run ${scRunId} ended (done)`, shown(scStatus));
+
+  // The longer one left open, answered with the line it printed, which starts the run and follows it; stopped meanwhile.
+  const longOpen = await g("scenario", "run", "long");
+  const longLine = /^  (galatea answer \S+ s1 yes)$/m.exec(longOpen.out)?.[1];
+  const longFollow = longLine ? galateaLive(install.dir, urls, ...words(longLine).slice(1)) : undefined;
+  const longId = longFollow ? (await longFollow.said(/^started: run (\S+)$/m))[1] : undefined;
+  if (longFollow) await longFollow.said(new RegExp(`^  s1  ${LAMP}  acked$`, "m"));
+  const sentBeforeStop = bridge.commands.length;
+  const scStop = await g("scenario", "stop", longId ?? "none");
+  const longEnd = longFollow ? await longFollow.ended : { code: -1, out: "", err: "no answer line" };
+  // Past the 5 s delay and a margin: a stop that did nothing would have sent the turn_off by now.
+  await new Promise((r) => setTimeout(r, 8_000));
+  const stoppedStatus = await g("scenario", "status", longId ?? "none");
+  step(28, "galatea scenario run without --yes leaves the plan open; galatea answer starts the run; galatea scenario stop ends it stopped, its turn_off not sent past its delay; scenario status reads it, 0",
+    longOpen.code === 0 && longLine !== undefined && scStop.code === 0 && scStop.out.trim() === `stopped: run ${longId} ended (stopped)`
+      && longEnd.code === 1 && new RegExp(`^run ${longId} ended \\(stopped\\)$`, "m").test(longEnd.out) && /not completed/.test(longEnd.err)
+      && stoppedStatus.code === 0 && /ended \(stopped\)/.test(stoppedStatus.out) && await lampIs(true) && bridge.commands.length === sentBeforeStop,
+    `${shown(longOpen)}; answer ${shown(longEnd)}; ${shown(scStop)}; ${shown(stoppedStatus)}`);
 
   const refusedHttp = await g("define", home, "--steward", "http://192.0.2.1:18444/mcp");
   const refused = await g("adopt", "sim-bridge:nothing", "--class", "light");
-  step(24, "refusals end 2: plain http off loopback, a device the applier does not describe", refusedHttp.code === 2 && refused.code === 2,
-    `${shown(refusedHttp)}; ${shown(refused)}`);
-  step(25, "no secret printed by any command", !failed);
-  console.log("The owner tool's plans A, B and C end to end, over TLS: registered, paired, adopted and named, defined, interrupted, removed; "
-    + "confirmed with --yes and by answer, declined, followed and read back.");
+  const unknownRun = await g("scenario", "status", "no-such-run");
+  step(29, "refusals end 2: plain http off loopback, a device the applier does not describe, a run the steward does not hold",
+    refusedHttp.code === 2 && refused.code === 2 && unknownRun.code === 2 && /unknown_run/.test(unknownRun.err),
+    `${shown(refusedHttp)}; ${shown(refused)}; ${shown(unknownRun)}`);
+  step(30, "no secret printed by any command", !failed);
+  console.log("The owner tool's plans A, B and C and its scenarios end to end, over TLS: registered, paired, adopted and named, defined, interrupted, removed; "
+    + "confirmed with --yes and by answer, declined, followed and read back; scenarios listed, run, read back and stopped.");
 } catch (err) {
   failed = true;
   console.error(err instanceof Error ? err.message : String(err));

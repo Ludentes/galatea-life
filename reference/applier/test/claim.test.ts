@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Applier } from "../src/applier.js";
 import { plainOffLoopback } from "../src/bus/broker-url.js";
 import { Store } from "../src/core/store.js";
-import { memoryDb } from "./db.js";
+import { memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 import { body, DEVICES, home, OWNER, pulse, rule, status } from "./safe-home.js";
 
@@ -29,7 +29,7 @@ describe("the Safe claim", () => {
     expect(plainOffLoopback("mqtt://[::1]:1883")).toBe(false);
     expect(plainOffLoopback("mqtts://box.example:8883")).toBe(false);
     const clock = new FakeClock();
-    const store = await Store.open(await memoryDb(), clock, (err) => { throw err; });
+    const store = await Store.open(await memoryDb(), clock, (err) => { throw err; }, { migrations });
     const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "x", levels: ["Act", "Safe"], plainOffLoopback: true });
     await a.start();
     const r = await a.call(a.caller(OWNER), "configure", { changes: [{ op: "upsert", kind: "box", value: true }], expected_revision: 0, dry_run: false });

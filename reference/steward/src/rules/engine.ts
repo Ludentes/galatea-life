@@ -17,10 +17,10 @@ type Body = Record<string, unknown>;
  */
 export const FIRING_BLOCK = 1000;
 /**
- * How old an edge missed in a gap may be and still fire once the gap is read (ruled by the
- * maintainer, 2026-10-04: replayed, bounded in age): the schedules' 5-minute grace, the one bound the steward keeps
- * for work missed while it was not looking (its schedules after a restart). Older edges are lost, as the
- * standard has every edge in a gap.
+ * How old a state edge missed in a gap may be and still fire once the gap is read: the
+ * `edge_replay_s` the steward states in `describe` (GA-RULE-1, at most 300 s), the schedules'
+ * 5-minute grace, the one bound the steward keeps for work missed while it was not looking. Older
+ * edges are lost, as the standard has every edge in a gap the steward does not replay.
  */
 export const EDGE_REPLAY_MS = 300_000;
 /** A rule's timer waits at most this long, and is set again when it fires: a far exception never overflows a timer. */
@@ -74,6 +74,12 @@ export interface EngineOptions {
   clean(): boolean;
   /** A rule was deleted: what else is kept of it is forgotten. */
   forget?(rule: string): void;
+  /**
+   * Whether the steward's history holds a `rule_fired` of `rule` logged after its record of an applier
+   * event at or after `applierMs`, the edge's time by the applier's clock: an edge it fired is not
+   * replayed (GA-RULE-1). The applier's time is compared only with the applier's (the code review, CR3).
+   */
+  firedSince?(rule: string, applierMs: number): boolean;
   mutation?: Mutation;
 }
 
@@ -102,8 +108,13 @@ export class RuleEngine {
   private loaded = false;
   /** The rules held back past one unwritten block, looked at again once the store takes their reservation. */
   private readonly waiting = new Set<string>();
-  /** The edge rules whose edge a gap held within `EDGE_REPLAY_MS`, fired once the gap is read (`fireOwed`). */
-  private readonly owed = new Set<string>();
+  /**
+   * The rules on a state whose edge a gap held within `EDGE_REPLAY_MS`, fired once the gap is read
+   * (`fireOwed`): the latest edge's time, and, for `replays-on-old-conditions`, its conditions then.
+   */
+  private readonly owed = new Map<string, { applierMs?: number; then: boolean }>();
+  /** The rules this life loaded at its start: a held duration of theirs starts afresh (GA-RULE-1). */
+  private readonly atStart = new Set<string>();
 
   constructor(private readonly o: EngineOptions) {}
 
@@ -134,6 +145,7 @@ export class RuleEngine {
     for (const r of this.o.rules()) {
       this.logic.set(r.id, logicOf(r));
       this.active.set(r.id, r.active);
+      this.atStart.add(r.id);
     }
     this.loaded = true;
   }
@@ -265,54 +277,77 @@ export class RuleEngine {
   }
 
   /**
-   * A step: one of the applier's events, missed in a gap, which happened at `atMs`, played over the
-   * mirror: an edge rule it is an edge of (its `event` trigger matching, or a change into its `state`
-   * trigger's reading on a live device) is owed a firing when the edge is within `EDGE_REPLAY_MS`,
-   * and its edge is lost otherwise. A `state` trigger's reading before the gap is the last this life
-   * saw; after a restart none was seen, and since an applier's `state` event reports a change, the
-   * reading before it counts as not holding.
+   * A step: one of the applier's events, missed in a gap, which happened at `atMs` by the steward's
+   * clock (its `applierMs` by the applier's, for `firedSince`; the code review, CR2), played over the
+   * mirror: a change into a `state` trigger's reading on a live device is an edge, owed a firing when
+   * it is within `EDGE_REPLAY_MS` and outside the rule's exceptions (GA-RULE-1). Only a state edge is
+   * replayed: an `event` trigger, an occurrence or a liveness, is lost in a gap, as a time trigger is.
+   * A `state` trigger's reading before the gap is the last this life saw; after a restart none was
+   * seen, and since an applier's `state` event reports a change, the reading before it counts as not
+   * holding.
    */
-  replayEdge(e: Body, atMs: number): void {
+  replayEdge(e: Body, atMs: number, applierMs?: number): void {
     if (this.stopped || !this.loaded || typeof e.target !== "string") return;
     const v = this.o.view();
-    const recent = atMs >= v.now - EDGE_REPLAY_MS;
+    const recent = this.o.mutation === "replays-past-its-bound" || atMs >= v.now - EDGE_REPLAY_MS;
     for (const r of this.o.rules()) {
       const t = r.trigger;
-      if (!r.active || !t) continue;
-      let edge = false;
-      if ("event" in t && t.event.target === e.target && t.event.type === e.type) {
-        edge = e.type === "liveness" ? t.event.new === undefined || t.event.new === e.new
-          : (t.event.key === undefined || t.event.key === e.key) && (t.event.value === undefined || canonical(t.event.value) === canonical(e.value));
-      } else if ("state" in t && t.state.target === e.target && e.type === "state" && v.device(e.target)?.live === true) {
-        const l = this.liveOf(r.id);
-        const now = readingHolds(t.state, v);
-        edge = now && l.edge !== true;
-        l.edge = now;
-      }
-      if (edge && recent) this.owed.add(r.id);
+      if (!r.active || !t || !("state" in t) || t.state.target !== e.target || e.type !== "state" || v.device(e.target)?.live !== true) continue;
+      const l = this.liveOf(r.id);
+      const now = readingHolds(t.state, v);
+      const edge = now && l.edge !== true;
+      l.edge = now;
+      const excepted = r.exceptions.some((x) => Date.parse(x.from) <= atMs && atMs < Date.parse(x.until));
+      if (edge && recent && !excepted) this.owed.set(r.id, { ...(applierMs !== undefined ? { applierMs } : {}), then: conditionsHold(r.conditions, { ...v, now: atMs }) });
     }
   }
 
   /**
-   * A step, once a gap is read and the state taken: each rule owed an edge fires once, if its
-   * conditions hold now and it is outside an exception, as any edge (the design, *Recovery*).
+   * A step, once a gap is read and the state taken: each rule owed an edge fires once, if its reading
+   * still holds, its conditions hold now, it is outside an exception, and the steward's history has no
+   * `rule_fired` of it since the edge (GA-RULE-1). Each rule fires once for the edges a gap held, its
+   * latest.
    */
   fireOwed(): void {
-    const owed = [...this.owed].sort();
+    const owed = [...this.owed].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     this.owed.clear();
-    for (const id of owed) {
+    const v = this.o.view();
+    for (const [id, { applierMs, then }] of owed) {
       const r = this.o.rules().find((x) => x.id === id);
-      if (r) this.edge(r);
+      const t = r?.trigger;
+      if (!r || !r.active || !t || !("state" in t)) continue;
+      if (v.device(t.state.target)?.live !== true || !readingHolds(t.state, v)) continue;
+      if (this.o.mutation !== "replays-a-fired-edge" && applierMs !== undefined && this.o.firedSince?.(id, applierMs)) continue;
+      if (this.o.mutation === "replays-on-old-conditions") {
+        if (then && this.o.ready() && !this.excepted(r, v.now)) this.launch(r);
+        continue;
+      }
+      this.edge(r);
     }
   }
 
-  /** A step: a lease on `target` ended: a level-triggered rule naming it counts as becoming true again (GA-LEASE-4). */
-  leaseEnded(target: string): void {
+  /**
+   * A step: a lease on `target` ended, having refused an action of each of `refused`: each of those
+   * that is level-triggered counts as becoming true again, and fires, outside its exceptions, if it
+   * holds (GA-LEASE-4). A rule it refused nothing of is not looked at.
+   */
+  leaseEnded(target: string, refused: string[]): void {
     for (const r of this.o.rules()) {
-      if (!isLevel(r) || !this.o.names(r).includes(target)) continue;
+      const named = this.o.mutation === "re-fires-at-every-lease-end" ? this.o.names(r).includes(target) : refused.includes(r.id);
+      if (!isLevel(r) || !named) continue;
       this.setFired(r.id, false);
+      if (this.o.mutation === "lease-end-fires-in-an-exception" && r.active && this.o.ready() && this.excepted(r, this.o.view().now)) {
+        this.setFired(r.id, true);
+        this.launch(r);
+        continue;
+      }
       this.look(r, {});
     }
+  }
+
+  /** A step at start: the rules a standing lease refused have not fired, so the start's evaluation tries them again (GA-RULE-1). */
+  refusedAtStart(ids: string[]): void {
+    for (const id of ids) if (this.kept.has(id)) this.setFired(id, false);
   }
 
   private liveOf(id: string): Live {
@@ -354,6 +389,11 @@ export class RuleEngine {
       l.seen = true;
       const k = this.kept.get(r.id);
       if (isLevel(r) && k?.fired && k.firedAt !== undefined && this.lapsed(r, k.firedAt, now, v)) this.setFired(r.id, false);
+      // A time trigger is never replayed: its minute in a gap is lost, as a schedule's past its grace (GA-RULE-1).
+      if (this.o.mutation === "replays-a-time-trigger" && this.atStart.has(r.id) && r.trigger && "time" in r.trigger) {
+        const last = nextTime(r.trigger.time.at, r.trigger.time.days, now - EDGE_REPLAY_MS, v.tz);
+        if (last !== undefined && last <= now) this.edge(r);
+      }
     }
     l.excepted = excepted;
     const t = r.trigger;
@@ -367,7 +407,8 @@ export class RuleEngine {
       if (t && "held" in t) {
         const reading = readingHolds(t.held, v);
         if (!reading) l.heldSince = undefined;
-        else l.heldSince ??= now;
+        // After a restart a duration holds afresh: the steward did not see it hold while it was down (GA-RULE-1).
+        else l.heldSince ??= this.o.mutation === "fires-before-the-duration" && this.atStart.delete(r.id) ? now - t.held.for_s * 1000 : now;
         holds &&= l.heldSince !== undefined && now - l.heldSince >= t.held.for_s * 1000;
         unsettled = conditions && (reading || v.device(t.held.target)?.live !== true);
       }

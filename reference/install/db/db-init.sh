@@ -14,7 +14,8 @@ fail() { echo "db-init: $*" >&2; exit 1; }
 
 [ -f "$INSTANCES" ] || fail "no instances file"
 # One name per line; `#` starts a comment.
-names=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$INSTANCES" | grep -v '^$' || true)
+# A watcher (`watch`, `watch-<n>`) is the broker's alone: no role, no schema.
+names=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$INSTANCES" | grep -v '^$' | grep -Ev '^watch(-.*)?$' || true)
 
 # Check every name before changing anything.
 for n in $names; do

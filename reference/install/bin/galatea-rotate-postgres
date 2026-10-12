@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# A new password for the Postgres superuser (the install-core design, *Credentials*).
+# POSTGRES_PASSWORD_FILE counts only at initdb; after that the role's password is the database's, so
+# replacing the file alone would lock db-init and the backups out. This writes a new password to
+# secrets/db/postgres.next; sets it through psql on the container's local socket, which the image
+# trusts, from that file (`\set`), so the value is on no command line; moves postgres.next over
+# postgres; and runs `docker compose up -d`. A run that finds postgres.next sets that password first,
+# so one stopped between the ALTER ROLE and the move is mended by running it again.
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+[ $# -eq 0 ] || die "usage: galatea-rotate-postgres"
+
+db=$(resolve "${GALATEA_SECRETS:-./secrets}")/db
+[ -s "$db/postgres" ] || die "no $db/postgres (run bin/galatea-prepare)"
+[ -n "$(docker compose ps -q postgres 2>/dev/null)" ] || die "the postgres service is not running (docker compose up -d)"
+next="$db/postgres.next"
+if [ -s "$next" ]; then
+  echo "galatea-rotate-postgres: setting the password waiting in $next"
+else
+  (umask 077 && head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | head -c 32 >"$next.partial" && mv "$next.partial" "$next")
+fi
+printf '%s\n' '\set pw `cat /run/db-secrets/postgres.next`' 'ALTER ROLE postgres PASSWORD :'"'pw'"';' |
+  docker compose exec -T postgres psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres -f - ||
+  die "the password was not changed; $next is kept for the next run"
+mv "$next" "$db/postgres"
+echo "galatea-rotate-postgres: the superuser's password is new"
+compose_up

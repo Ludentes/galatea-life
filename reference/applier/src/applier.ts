@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { validate, type ApplierPlan } from "@ludentes/galatea-life-schemas";
-import type { Clock } from "@ludentes/galatea-life-test-clock";
-import { copyConfig, emptyConfig, loadConfig, modelKey, saveConfig, type Bridge, type Config, type Level } from "./config/config.js";
+import type { Clock } from "./core/clock.js";
+import { copyConfig, emptyConfig, loadConfig, modelKey, saveConfig, type Config, type Level } from "./config/config.js";
 import { brokerAdmins, claimsOf, declarationFault, dropTiers, fallenTiers, IGNORE_KINDS, loadIn, planChanges, type Change } from "./config/configure.js";
 import { RequestError, StoreUnavailable } from "./core/errors.js";
 import { hashSecret, OWNER_CREDENTIAL_MIN_LENGTH, sameSecret } from "./core/secret.js";
-import { canonical, storable } from "./core/canonical.js";
+import { storable } from "./core/canonical.js";
 import { EventLog, SEQ_LIFE_GAP } from "./core/events.js";
 import { Notices } from "./core/notices.js";
 import { SerialQueue } from "./core/queue.js";
@@ -14,11 +14,12 @@ import { distinct, planSteps, type Gate, type Requested, type Step } from "./gat
 import { sets } from "./gate/actions.js";
 import { Dispatcher, type Claim } from "./dispatch/dispatcher.js";
 import { forgetAssumed } from "./dispatch/records.js";
-import type { Puback } from "./bus/client.js";
+import type { BusPort } from "./bus/port.js";
+import { quiet, type Log } from "./core/log.js";
 import { Home, type HeldDevice, type HeldTransport } from "./model/home.js";
 import { forgetDevices, forgetTransports, placeDevices, repointDevices, saveDevices, saveTransports } from "./model/rows.js";
-import type { DeviceInfo, Replacement, Routed } from "./config/configure.js";
-import type { Mutation } from "./mutations.js";
+import type { DeviceInfo } from "./config/configure.js";
+import { Mutant } from "./mutations.js";
 import { SafetyRules, saveSeen } from "./safety/engine.js";
 import { LoadCaps } from "./safety/caps.js";
 import { Witnesses } from "./safety/witnesses.js";
@@ -27,46 +28,14 @@ import { actuated, devicesOf, type SafetyRule } from "./safety/language.js";
 import { Provisioner } from "./provision/provisioner.js";
 import { Finder } from "./provision/finder.js";
 import { Discovery, type Listed } from "./provision/discovery.js";
-import type { GateDevice } from "./gate/plan.js";
+import type { ApplierService, Caller, ToolResult } from "./service.js";
+import { OWNER_TOOLS, CLIENT_TOOLS } from "./tools.js";
+import { STANDARD_VERSION, PLAN_EXPIRY_MS, MAX_PLANS_PER_CLIENT, PRUNE_EVERY_MS, OTHER_ADMINS_SAID, COMMAND_NAMESPACE, TICK_MS, asDevice, disabledKey, idempotencyBody, modelEvents } from "./applier-helpers.js";
+export { STANDARD_VERSION, PLAN_EXPIRY_MS, MAX_PLANS_PER_CLIENT, idempotencyBody } from "./applier-helpers.js";
+export { TOOLS } from "./tools.js";
 
-export const STANDARD_VERSION = "0.15";
-
-export type Caller = { kind: "owner" } | { kind: "client"; id: string } | { kind: "anonymous" };
-export type ToolResult = { ok: true; body: Record<string, unknown> } | { ok: false; error: string; message: string; data?: Record<string, unknown> };
-
-export const TOOLS: { name: string; readOnly: boolean }[] = [
-  { name: "describe", readOnly: true }, { name: "state", readOnly: true }, { name: "plan", readOnly: true },
-  { name: "apply", readOnly: false }, { name: "outcome", readOnly: true }, { name: "events", readOnly: true },
-  { name: "history", readOnly: true }, { name: "configure", readOnly: false }, { name: "provision", readOnly: false },
-  { name: "candidates", readOnly: true },
-];
-
-/** What the owner's configuration credential may call (applier, *Clients and tokens*). */
-const OWNER_TOOLS = new Set(["describe", "state", "events", "history", "configure", "provision", "candidates"]);
-const CLIENT_TOOLS = new Set(["describe", "state", "plan", "apply", "outcome", "events", "history"]);
-/**
- * A plan expires this long after it is made, on the applier's clock (applier, *Planning changes
- * nothing*); it is held as long again, so applying it says `plan_expired` rather than `unknown_plan`.
- */
-export const PLAN_EXPIRY_MS = 60_000;
-/** The most plans one client may have held at once; past it, its oldest is dropped (`unknown_plan`). */
-export const MAX_PLANS_PER_CLIENT = 64;
-const PRUNE_EVERY_MS = 60_000;
-/** The meta key set once the devices adopted before this build said a second door have been judged (GA-ADOPT-3). */
-const OTHER_ADMINS_SAID = "other_admins_said";
-/** The meta key of the install's namespace for derived command and run ids (the maintainer's ruling 2). */
-const COMMAND_NAMESPACE = "command_namespace";
-/** How often liveness is judged again: well inside GA-STATE-2's and GA-STATE-5's 1 s. */
-const TICK_MS = 500;
-
-/** What the applier asks of its MQTT client; `Bus` in `bus/client.ts`. */
-export interface BusPort {
-  follow(bridges: Map<string, Bridge>): void;
-  snapshot(bridge: Bridge): Promise<Puback>;
-  /** A request other than a snapshot (slice 5a's provisioning): its body carries its `requestId` and `issuedAt`. */
-  request(bridge: Bridge, op: string, body: Record<string, unknown>): Promise<Puback>;
-  command(bridge: Bridge, device: string, body: Record<string, unknown>, expiryS: number): Promise<Puback>;
-}
+export type { ApplierService, Caller, Tool, ToolResult } from "./service.js";
+export type { BusPort, Puback } from "./bus/port.js";
 
 export interface ApplierOptions {
   store: Store;
@@ -74,26 +43,22 @@ export interface ApplierOptions {
   ownerCredential: string;
   applierId: string;
   runId?: string;
-  mutation?: Mutation;
+  /** The mutation under the harness, as flags (`mutantOf`); `Mutant.none` by default. */
+  mutant?: Mutant;
   /** The levels this build can claim; it claims Safe only while the owner's `box` is set and no bridge declares an `ungoverned` path (GA-DESC-6). */
   levels?: Level[];
   /** Its own broker connection is plain TCP to a host off loopback: `box: true` is refused (GA-DESC-6). */
   plainOffLoopback?: boolean;
   retarget?: (source: string) => Promise<void>;
   bus?: BusPort;
+  /** Where the applier logs what no caller is told (default: nowhere); the entry point gives stderr. */
+  log?: Log;
 }
 
-type Args = Record<string, any>;
+export type Args = Record<string, any>;
 
-/** `plans-on-a-candidate`'s device: any action, reversible, on a live open device. */
-function asDevice(): GateDevice {
-  const decl = { tier: "reversible" as const, stateless: false, toggles: false };
-  const actions = { get: () => decl, has: () => true } as unknown as ReadonlyMap<string, typeof decl>;
-  return { actions, adopted: true, liveness: "live", feedback: "open", duplicateRoute: false, values: new Map() };
-}
-
-export class Applier {
-  readonly mutation?: Mutation;
+export class Applier implements ApplierService {
+  readonly mutant: Mutant;
   /** The owner's changes, one at a time, each until its commit (the storage design). */
   private readonly owners = new SerialQueue();
   private readonly log: EventLog;
@@ -135,17 +100,20 @@ export class Applier {
   readonly finder: Finder;
   /** The install's namespace for derived command and run ids (the maintainer's ruling 2), once `load` read it. */
   private commandNamespace?: string;
+  /** The applier's log (`ApplierOptions.log`). */
+  private readonly say: Log;
 
   constructor(private readonly o: ApplierOptions) {
     if (o.ownerCredential.length < OWNER_CREDENTIAL_MIN_LENGTH) {
       throw new Error(`the owner's credential is shorter than ${OWNER_CREDENTIAL_MIN_LENGTH} characters`);
     }
-    this.mutation = o.mutation;
+    this.mutant = o.mutant ?? Mutant.none;
+    this.say = o.log ?? quiet;
     this.levels = o.levels ?? ["Act"];
     this.config.safe = this.levels.includes("Safe");
-    this.log = new EventLog(o.store, o.clock, o.mutation);
+    this.log = new EventLog(o.store, o.clock, this.mutant);
     this.revision = new RisingMeta(o.store, "revision", () => this.rev);
-    this.notices = new Notices(o.store, o.clock, o.mutation);
+    this.notices = new Notices(o.store, o.clock, this.mutant);
     // A full disk can last days: the owner hears of it once each time the backlog reaches its cap.
     o.store.onFull = () => void this.notices.raise({ cause: "store", text: "The applier's store has been unreachable so long "
       + "that its writes are dropped: bridges' facts and events are lost until it returns, so history has a gap for this "
@@ -159,7 +127,7 @@ export class Applier {
       // A snapshot request the broker refused is a fault of the bridge's, raised once (GA-BUS-9).
       snapshot: (bridge) => void o.bus?.snapshot(bridge).then((p) => {
         if (p.kind === "ok" || p.kind === "refused") this.home.published(bridge.id, "request", p.kind === "refused" ? p.code : undefined);
-      }).catch((err: unknown) => console.error(`applier bug: a snapshot request threw: ${String(err)}`)),
+      }).catch((err: unknown) => this.say(`applier bug: a snapshot request threw: ${String(err)}`)),
       ack: (bridge, device, ack) => this.dispatcher.ack(bridge, device, ack),
       reading: (target, key, value, old, basis, changed) => this.dispatcher.reading(target, key, value, old, basis, changed),
       bridgeDead: (bridge, planned) => {
@@ -200,7 +168,7 @@ export class Applier {
           await tx.query("INSERT INTO undescribed_announced (bridge, bridge_device, name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
             [bridge, device, name]);
         }
-      }).catch((err: unknown) => console.error(`applier: an announced undescribed name is not written yet: ${String(err)}`)),
+      }).catch((err: unknown) => this.say(`applier: an announced undescribed name is not written yet: ${String(err)}`)),
       // Facts, written behind and droppable (the maintainer's ruling K5): the bridge's retained documents give them again.
       connectionsChanged: (bridge, rows) => void this.o.store.write(async (tx) => {
         await tx.query("DELETE FROM connections WHERE bridge = $1", [bridge]);
@@ -215,24 +183,24 @@ export class Applier {
       clearNotice: (key) => this.notices.clear(key),
       withdrawNotice: (key) => this.notices.withdraw(key),
       standingNotices: (prefix) => this.notices.standingKeys(prefix),
-      log: (line) => console.error(line),
-    }, o.mutation);
+      log: this.say,
+    }, this.mutant);
     this.provisioner = new Provisioner({
-      store: o.store, clock: o.clock, mutation: o.mutation, home: this.home,
+      store: o.store, clock: o.clock, mutant: this.mutant, home: this.home,
       ...(o.bus ? { request: (b, op, body) => o.bus!.request(b, op, body) } : {}),
       published: (bridge, code) => this.home.published(bridge, "request", code),
       fault: (bridge, what) => {
-        console.error(`bridge ${bridge}: ${what}`);
+        this.say(`bridge ${bridge}: ${what}`);
         void this.log.append("bridge_fault", { bridge, what });
       },
       emit: (type, body) => void this.log.append(type, body),
       notice: (n) => void this.notices.raise(n),
-      log: (line) => console.error(line),
+      log: this.say,
       listed: () => this.listed(),
     });
-    this.finder = new Finder({ clock: o.clock, log: (line) => console.error(line), mutation: o.mutation });
+    this.finder = new Finder({ clock: o.clock, log: this.say, mutant: this.mutant });
     this.dispatcher = new Dispatcher({
-      store: o.store, clock: o.clock, mutation: o.mutation, gate: (client) => this.gate(client),
+      store: o.store, clock: o.clock, mutant: this.mutant, log: this.say, gate: (client) => this.gate(client),
       namespace: () => {
         if (this.commandNamespace === undefined) throw new Error("applier bug: a command id derived before load read the namespace");
         return this.commandNamespace;
@@ -254,7 +222,7 @@ export class Applier {
         this.witnesses.dispatched(applyId, run, stepId, target, action, args, dispatchedMs),
     });
     this.safety = new SafetyRules({
-      store: o.store, mutation: o.mutation, clock: o.clock,
+      store: o.store, mutant: this.mutant, clock: o.clock,
       liveness: (device) => this.home.gateDevice(device)?.liveness,
       planned: (device) => this.home.deathPlanned(device),
       bound: (device) => this.home.boundOf(device),
@@ -280,7 +248,7 @@ export class Applier {
       emit: (type, body) => void this.log.append(type, body),
     });
     this.caps = new LoadCaps({
-      store: o.store, clock: o.clock, mutation: o.mutation,
+      store: o.store, clock: o.clock, mutant: this.mutant,
       socket: (device) => {
         const d = this.home.devices.get(device);
         return d && this.config.adoptions.get(device)?.class === "socket" ? { open: this.home.feedbackOf(d) === "open" } : undefined;
@@ -301,7 +269,7 @@ export class Applier {
     this.witnesses = new Witnesses({
       clock: o.clock,
       store: o.store,
-      mutation: o.mutation,
+      mutant: this.mutant,
       // A witness a declaration change disabled judges nothing (GA-SAFE-14).
       witness: (device, action) => {
         const w = this.config.declarations.get(device)?.witnesses?.[action];
@@ -333,26 +301,28 @@ export class Applier {
       ns = fresh;
     }
     this.commandNamespace = ns;
-    this.config = { ...await loadConfig(this.o.store, { forgetsIgnores: this.mutation === "forgets-an-ignore" }), safe: this.levels.includes("Safe") };
+    this.config = { ...await loadConfig(this.o.store, { forgetsIgnores: this.mutant.forgetsAnIgnore }), safe: this.levels.includes("Safe") };
+    // `forgets-a-tool-hash`: the declarations each tier was set on are not kept across a restart (GA-PERSIST-1).
+    if (this.mutant.forgetsAToolHash) for (const d of this.config.declarations.values()) delete d.tier_basis;
     // The owner's credential rotated to one a stored client holds: that client would be taken for the owner.
     const owner = hashSecret(this.o.ownerCredential);
     const holder = [...this.config.clients.values()].find((c) => sameSecret(c.credential_sha256, owner));
     if (holder) throw new Error(`the owner's credential is the one client ${holder.id} holds: set another, or remove the client first`);
     // `forgets-a-retired-identifier`: the identifiers a replacement retired are not read back.
-    if (this.mutation === "forgets-a-retired-identifier") this.config.previous = new Map();
+    if (this.mutant.forgetsARetiredIdentifier) this.config.previous = new Map();
     const devices = await this.o.store.query<{ id: string; bridge: string; bridge_device: string; doc: HeldDevice["doc"];
       folded_into: string | null }>("SELECT id, bridge, bridge_device, doc, folded_into FROM devices ORDER BY id");
     const transports = await this.o.store.query<HeldTransport>(
       "SELECT id, bridge, bridge_transport, kind FROM transports ORDER BY id");
     this.home.load(devices.rows.map(({ folded_into, ...d }) => (folded_into === null ? d : { ...d, into: folded_into })), transports.rows);
     // `forgets-connections`: a dead bridge's connections are not read back, so its devices' candidates show.
-    if (this.mutation !== "forgets-connections") {
+    if (!this.mutant.forgetsConnections) {
       const conns = await this.o.store.query<{ bridge: string; kind: string; entity: string; keys: string[] }>(
         "SELECT bridge, kind, entity, keys FROM connections ORDER BY bridge, kind, entity");
       this.home.loadConnections(conns.rows);
     }
     // `forgets-announced-names`: the undescribed names announced before the restart are not read back.
-    if (this.mutation !== "forgets-announced-names") {
+    if (!this.mutant.forgetsAnnouncedNames) {
       const names = await this.o.store.query<{ bridge: string; bridge_device: string; name: string }>(
         "SELECT bridge, bridge_device, name FROM undescribed_announced ORDER BY bridge, bridge_device, name");
       this.home.loadAnnounced(names.rows);
@@ -452,7 +422,7 @@ export class Applier {
     }
     for (const c of this.config.clients.values()) {
       if (sameSecret(c.credential_sha256, hash)) {
-        if (this.mutation === "session-outlives-revocation") this.remembered.set(bearer, c.id);
+        if (this.mutant.sessionOutlivesRevocation) this.remembered.set(bearer, c.id);
         return { kind: "client", id: c.id };
       }
     }
@@ -468,8 +438,8 @@ export class Applier {
   async call(caller: Caller, tool: string, args: unknown): Promise<ToolResult> {
     try {
       // `provisions-for-anyone`: a client may call provision; `shows-candidates-to-a-client`, candidates.
-      const anyone = caller.kind === "client" && ((tool === "provision" && this.mutation === "provisions-for-anyone")
-        || (tool === "candidates" && this.mutation === "shows-candidates-to-a-client"));
+      const anyone = caller.kind === "client" && ((tool === "provision" && this.mutant.provisionsForAnyone)
+        || (tool === "candidates" && this.mutant.showsCandidatesToAClient));
       const allowed = anyone || (caller.kind === "owner" ? OWNER_TOOLS.has(tool) : caller.kind === "client" && CLIENT_TOOLS.has(tool));
       if (!allowed) throw new RequestError("not_permitted", `not permitted to call ${tool}`);
       const errors = validate(`applier/${tool}.request.json`, args);
@@ -500,7 +470,7 @@ export class Applier {
   /** What the finder last said, and the candidates it listed (applier, *Discovery*, GA-DISC-2, GA-DISC-5). */
   private candidates(): Record<string, unknown> {
     const v = this.finder.view();
-    return { finder: v.finder, finder_sources: this.mutation === "hides-the-finders-sources" ? [] : v.sources,
+    return { finder: v.finder, finder_sources: this.mutant.hidesTheFindersSources ? [] : v.sources,
       finder_faults: v.faults, candidates: this.listed(), ignored_keys: [...this.config.ignored_keys].sort() };
   }
 
@@ -515,7 +485,7 @@ export class Applier {
       return { id, alive: f?.alive ?? false, levels: f?.levels ?? [], ...(f?.bridge_type !== undefined ? { bridge_type: f.bridge_type } : {}) };
     });
     // `lists-a-held-candidate`: only live bridges' connections hide a candidate.
-    const holders = this.mutation === "lists-a-held-candidate" ? bridges.filter((b) => b.alive) : bridges;
+    const holders = this.mutant.listsAHeldCandidate ? bridges.filter((b) => b.alive) : bridges;
     const held = new Set(holders.flatMap((b) => (conns.get(b.id) ?? []).flatMap((c) => c.keys)));
     return Discovery.list(this.finder.view(), held, this.config.ignored_keys, bridges);
   }
@@ -557,13 +527,13 @@ export class Applier {
     const device = (id: string) => {
       const d = this.home.gateDevice(id);
       // `plans-on-a-candidate`: a step naming a listed candidate's id is planned as if it were a device.
-      if (!d && this.mutation === "plans-on-a-candidate" && Discovery.listed(this.listed(), id)) return asDevice();
+      if (!d && this.mutant.plansOnACandidate && Discovery.listed(this.listed(), id)) return asDevice();
       const l = this.safety.latches;
       return d && { ...d, guarded: this.safety.guarded(id), latched: (action: string, args: Record<string, unknown>) => l.latched(id, action, args),
         raised: (action: string, args: Record<string, unknown>) => l.raises(id, action, args) };
     };
     return { device, client, key: this.config.clients.get(client)?.token_key,
-      now: this.o.clock.now(), used: (issuer, tokenId) => this.dispatcher.isUsed(issuer, tokenId), mutation: this.mutation };
+      now: this.o.clock.now(), used: (issuer, tokenId) => this.dispatcher.isUsed(issuer, tokenId), mutant: this.mutant };
   }
 
   /**
@@ -582,7 +552,7 @@ export class Applier {
     const plan: ApplierPlan = { plan_id: randomUUID(), expires_at: new Date(now + PLAN_EXPIRY_MS).toISOString(), revision: this.rev,
       client, request: a as ApplierPlan["request"], steps: planSteps(a.actions as Requested[], this.gate(client)) };
     this.plans.set(plan.plan_id, { plan, expiresMs: now + PLAN_EXPIRY_MS });
-    if (this.mutation === "plans-with-side-effect") this.log.append("model", { revision: this.rev });
+    if (this.mutant.plansWithSideEffect) this.log.append("model", { revision: this.rev });
     return plan as unknown as Record<string, unknown>;
   }
 
@@ -677,7 +647,8 @@ export class Applier {
    * runs this again after each commit) and the write is safe to run twice.
    */
   private dropFallenTiers(ids: Iterable<string>): void {
-    const fallen = [...ids].map((id) => ({ id, actions: fallenTiers(this.config, id, (action) => this.home.fingerprint(id, action)) }))
+    const fallen = [...ids].map((id) => ({ id, actions: fallenTiers(this.config, id, (action) => this.home.fingerprint(id, action), (action) => this.home.requestedTier(id, action),
+      { seen: this.home.seen, mutant: this.mutant }) }))
       .filter((x) => x.actions.length > 0);
     if (!fallen.length) return;
     const draft = copyConfig(this.config);
@@ -694,7 +665,7 @@ export class Applier {
   private commitDerived(draft: Config, what: string): void {
     this.config = draft;
     void this.owners.run(() => this.o.store.write((tx) => saveConfig(tx, this.config)))
-      .catch((err: unknown) => console.error(`applier: ${what} is not written yet: ${String(err)}`));
+      .catch((err: unknown) => this.say(`applier: ${what} is not written yet: ${String(err)}`));
   }
 
   /**
@@ -708,7 +679,7 @@ export class Applier {
    * memory only: a restart seeds it again.
    */
   private brokerCheck(silent = false, set?: { rules: SafetyRule[]; planned: ReadonlyMap<string, DeviceInfo> }): void {
-    const labels = (infos: ReadonlyMap<string, DeviceInfo>) => new Map(brokerAdmins(this.config, infos, this.o.mutation)
+    const labels = (infos: ReadonlyMap<string, DeviceInfo>) => new Map(brokerAdmins(this.config, infos, this.mutant)
       .map((b) => [b.computer, new Set(b.admins === "unknown" ? ["unknown"] : b.admins.map((x) => x.label))]));
     const now = labels(this.home.infos());
     const freshOver = (seen: ReadonlyMap<string, Set<string>>) => [...now].flatMap(([computer, ls]) => {
@@ -747,7 +718,7 @@ export class Applier {
     const infos = this.home.infos();
     // `keeps-a-rule-on-a-re-taught-code` keeps a rule whose action is now a toggle, and only that: a key
     // taken away still disables it (GA-SAFE-14), so the mutation breaks its own row alone.
-    const toggles = this.mutation === "toggles-by-safety-rule" || this.mutation === "keeps-a-rule-on-a-re-taught-code";
+    const toggles = this.mutant.togglesBySafetyRule || this.mutant.keepsARuleOnAReTaughtCode;
     const hit = [...this.config.rules.values()].filter((r) => !this.config.disabled.has(r.id) && devicesOf(r).some((d) => ids.includes(d)))
       .map((r) => ({ r, fault: declarationFault(r, infos, { toggles }) })).filter((x): x is { r: typeof x.r; fault: string } => x.fault !== undefined);
     if (!hit.length) return;
@@ -824,7 +795,7 @@ export class Applier {
       const revision = this.rev;
       const changes = a.changes as Change[];
       // GA-CFG-2: a set of nothing but ignores needs no expected_revision and is never stale (applier, *Discovery*).
-      const ignoresOnly = changes.length > 0 && changes.every((c) => IGNORE_KINDS.has(c.kind)) && this.mutation !== "checks-revision-for-ignores";
+      const ignoresOnly = changes.length > 0 && changes.every((c) => IGNORE_KINDS.has(c.kind)) && !this.mutant.checksRevisionForIgnores;
       if (!ignoresOnly) {
         if (a.expected_revision === undefined) throw new RequestError("invalid_request", "expected_revision is required unless the set holds only ignores");
         if (a.expected_revision !== revision) throw new RequestError("stale_revision", `expected_revision ${a.expected_revision}, current ${revision}`);
@@ -832,7 +803,7 @@ export class Applier {
       const planned = this.home.infos();
       const { draft, diff, forgotten, replaced, routed, unrouted, cleared } = planChanges(this.config, a.changes as Change[],
         { levels: this.levels, underHarness: !!this.o.runId, ownerCredential: this.o.ownerCredential, ownIdentity: this.o.applierId,
-          devices: planned, mutation: this.mutation, ungoverned: this.home.ungoverned().length > 0,
+          devices: planned, mutant: this.mutant, ungoverned: this.home.ungoverned().length > 0,
           plainOffLoopback: this.o.plainOffLoopback, latches: new Set(this.safety.latches.list().map((l) => l.rule_id)),
           listed: () => this.listed() });
       if (a.dry_run) return { diff: diff.length ? diff.join("\n") : "no change" };
@@ -921,7 +892,7 @@ export class Applier {
         this.o.bus?.follow(draft.bridges);
       }
       // `ignore-moves-the-revision`: a change of the ignores taken as a model change.
-      const ignoresMoved = this.mutation === "ignore-moves-the-revision"
+      const ignoresMoved = this.mutant.ignoreMovesTheRevision
         && JSON.stringify([...before.ignored_keys].sort()) !== JSON.stringify([...draft.ignored_keys].sort());
       if (!changed && !ignoresMoved) return { revision: this.rev };
       if (!changed) return { revision: this.bumpRevision([]) };
@@ -953,7 +924,7 @@ export class Applier {
   private async history(a: Args): Promise<Record<string, unknown>> {
     if (this.o.store.down) throw new StoreUnavailable("the store is unreachable");
     // An occurrence of a key personal now is hidden too, whatever it was when it happened (GA-EVT-5).
-    const hidden = (e: { type: string; target?: unknown; key?: unknown }) => this.mutation !== "history-keeps-a-personal-occurrence"
+    const hidden = (e: { type: string; target?: unknown; key?: unknown }) => !this.mutant.historyKeepsAPersonalOccurrence
       && e.type === "occurrence" && typeof e.target === "string" && typeof e.key === "string" && this.home.personalNow(e.target, e.key);
     return { events: await within(this.o.clock, GATE_MS, this.log.history(Date.parse(a.from), Date.parse(a.to), a.targets, hidden)) };
   }
@@ -984,71 +955,4 @@ export class Applier {
       this.schedulePrune();
     }, PRUNE_EVERY_MS);
   }
-}
-
-
-/** The key a `rule_disabled` notice stands under, until the owner sets the rule again or deletes it. */
-const disabledKey = (rule: string) => `rule_disabled:${rule}`;
-
-/**
- * An apply's body as GA-APPLY-4 compares it: its RFC 8785 form without the key and without the
- * actions' tokens, so a retry carrying freshly issued tokens is the same body.
- */
-export function idempotencyBody(a: Args): string {
-  const { idempotency_key: _, ...rest } = a;
-  if (Array.isArray(rest.request?.actions)) {
-    rest.request = { ...rest.request, actions: rest.request.actions.map(({ token: _t, ...x }: Args) => x) };
-  }
-  return canonical(rest);
-}
-
-/**
- * The `model` events of an owner's change set, one per device it changed (applier, *Events and
- * history*): an adoption or a new class `{ device, class }`, an adoption deleted `{ device, adopted:
- * false }`, a device forgotten `{ device, forgotten: true }`, a replacement `{ device, class, replaces }`
- * (the new hardware's id before it took the old one), and any other change to a device's
- * declarations `{ device }`; one bare event when it changed no device.
- */
-function modelEvents(before: Config, after: Config, o: { forgotten: string[]; replaced: Replacement[]; kept: string[];
-  routed: Routed[]; placed: HeldDevice[]; unrouted: string[] }, more = false): Record<string, unknown>[] {
-  const { forgotten, replaced, kept } = o;
-  const named = new Set(forgotten);
-  // A device its bridge listed again while its forget committed stays, unadopted: not forgotten.
-  const events: Record<string, unknown>[] = forgotten.map((device) => kept.includes(device) ? { device, adopted: false } : { device, forgotten: true });
-  for (const r of replaced) {
-    events.push({ device: r.device, class: after.adoptions.get(r.replaces)?.class ?? null, replaces: r.replaces });
-    named.add(r.device).add(r.replaces);
-  }
-  for (const [device, x] of after.adoptions) {
-    if (before.adoptions.get(device)?.class === x.class) continue;
-    events.push({ device, class: x.class });
-    named.add(device);
-  }
-  for (const device of before.adoptions.keys()) {
-    if (after.adoptions.has(device) || named.has(device)) continue;
-    events.push({ device, adopted: false });
-    named.add(device);
-  }
-  // A route: its device now names the route's copy, and each copy folded into it leaves `describe` (GA-BUS-11).
-  for (const r of o.routed) {
-    if (named.has(r.device)) continue;
-    events.push({ device: r.device });
-    named.add(r.device);
-  }
-  // A route deleted: its device is the one device of its copies still, but no longer routed.
-  for (const device of o.unrouted) {
-    if (named.has(device)) continue;
-    events.push({ device });
-    named.add(device);
-  }
-  for (const d of o.placed) {
-    if (named.has(d.id) || d.into === undefined) continue;
-    events.push({ device: d.id, folded_into: d.into });
-    named.add(d.id);
-  }
-  for (const device of new Set([...before.declarations.keys(), ...after.declarations.keys()])) {
-    if (named.has(device) || canonical(before.declarations.get(device)) === canonical(after.declarations.get(device))) continue;
-    events.push({ device });
-  }
-  return events.length || more ? events : [{}];
 }

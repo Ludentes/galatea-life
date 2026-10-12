@@ -48,32 +48,90 @@ export function planDefine(house: House, changes: Change[], ctx: DefineContext):
     if (LATER.has(c.kind)) throw invalid(`${at}: ${c.kind} is not built yet in this steward`);
     if (!KINDS.has(c.kind)) throw invalid(`${at}: no kind ${c.kind}`);
     if (!storable(c.value)) throw invalid(`${at}: a string holds U+0000 or a lone surrogate`);
-    // An exception is removed by naming it whole: its rule, from and until; its schedule, date, action and time.
-    const schema = c.op === "delete" && !EXCEPTIONS.has(c.kind) ? "steward/define.delete.json" : `steward/define.${c.kind}.json`;
-    const errors = validate(schema, c.value ?? {});
+    // A delete names its item by its key alone (GA-DEF-14); an upsert is checked against its kind's shape (GA-DEF-13).
+    const schema = c.op === "delete" ? "steward/define.delete.json" : `steward/define.${c.kind}.json`;
+    const errors = validate(schema, c.value ?? {})
+      .filter((e) => !(ctx.mutation === "takes-a-short-secret" && c.kind === "credential" && /secret/.test(e)));
     if (errors.length) throw invalid(`${at}: ${errors.join("; ")}`);
-    if (c.op === "upsert") checkCreatedWith(c.kind, c.value as Args, at);
-    apply(draft, c.op, c.kind, c.value as Args, at, ctx);
+    const v = c.value as Args;
+    if (c.op === "upsert" && !existsIn(draft, c.kind, v)) checkCreatedWith(c.kind, v, at);
+    apply(draft, c.op, c.kind, v, at, ctx);
   });
   check(draft, ctx);
+  checkChannels(house.home, draft.home, changes.some((c) => c.kind === "home" && (c.value as Args | undefined)?.notice_channels !== undefined), ctx);
   checkGone(house, draft, ctx);
   if (ctx.brain) markBrain(house, draft);
   return { draft, diff: diffOf(house, draft) };
 }
 
+/** Whether the item an upsert's value names exists: the upsert updates it, rather than creating it (GA-DEF-14). */
+function existsIn(h: House, kind: string, v: Args): boolean {
+  switch (kind) {
+    case "voice": return h.endpoints.get(v.endpoint)?.voice != null;
+    case "rule_exception": return h.rules.get(v.rule)?.exceptions.some((y) => Date.parse(y.from) === Date.parse(v.from) && Date.parse(y.until) === Date.parse(v.until)) ?? false;
+    case "schedule_exception": return h.schedules.get(v.schedule)?.exceptions.some((y) => y.date === v.date) ?? false;
+    case "home": return true;
+    default: {
+      const table = TABLES.find(([k]) => k === kind)?.[1];
+      return table ? table(h).has(v.id) : false;
+    }
+  }
+}
+
+/**
+ * `item` with the fields `v` names merged over it (GA-DEF-14): a field `v` leaves out keeps its value,
+ * a list `v` names is replaced whole, and a field `v` gives as null returns to `defaults`' value, or
+ * is dropped when it has none (absent being its default). A field of `none` takes null as its value,
+ * "none" (an endpoint's room, person and served_by; a voice record's zone and output; a group's room).
+ */
+function merged<T extends object>(item: T | undefined, v: Args, defaults: Args = {}, none: string[] = []): T {
+  const out: Args = { ...(item ?? {}) };
+  for (const [k, x] of Object.entries(v)) {
+    if (x !== null || none.includes(k)) out[k] = x;
+    else if (k in defaults) out[k] = structuredClone(defaults[k]);
+    else delete out[k];
+  }
+  return out as T;
+}
+
+/**
+ * Whether an owner's upsert redefines its item whole (GA-DEF-7, *Authored work*): it names every field
+ * the merged item holds that is not at its default, so nothing a brain wrote survives it; then the
+ * item's `brain_authored` mark is cleared. Ruled: under the merge, "redefines whole" is read this way.
+ */
+function whole(item: Args, v: Args, fields: string[], defaults: Args = {}): boolean {
+  return fields.every((f) => f in v || item[f] === undefined || (f in defaults && canonical(item[f]) === canonical(defaults[f])));
+}
+
+/** The content fields of what carries a `brain_authored` mark, and their defaults. */
+const RULE_FIELDS = ["name", "trigger", "conditions", "actions", "active"];
+const SCENARIO_FIELDS = ["name", "mode", "steps", "owned", "respect_occupancy"];
+const SCHEDULE_FIELDS = ["scenario", "time", "days"];
+const RULE_DEFAULTS = { active: true, exceptions: [] };
+const SCENARIO_DEFAULTS = { owned: [], respect_occupancy: false };
+const SCHEDULE_DEFAULTS = { exceptions: [] };
+
 function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ctx: DefineContext): void {
   const del = op === "delete";
+  const owners = !ctx.brain;
   if (kind === "voice") {
     if (v.endpoint === undefined) throw invalid(`${at}: a voice record is named by its endpoint`);
     const id: string = v.endpoint;
     const e = h.endpoints.get(id);
     if (!e) throw invalid(`${at}: no endpoint ${id}`);
-    if (del && !e.voice) throw invalid(`${at}: endpoint ${id} has no voice record`);
+    if (del) {
+      if (!e.voice && ctx.mutation !== "deletes-the-missing") throw invalid(`${at}: endpoint ${id} has no voice record`);
+      e.voice = null;
+      return;
+    }
     const { endpoint: _e, ...record } = v;
-    e.voice = del ? null : (record as VoiceRecord);
+    e.voice = merged<VoiceRecord>(e.voice ?? undefined, record, {}, ["zone", "output"]);
     return;
   }
+  if (del && kind === "rule_exception" && (v.rule === undefined || v.from === undefined)) throw invalid(`${at}: a rule_exception is deleted by its rule, from and until`);
+  if (del && kind === "schedule_exception" && (v.schedule === undefined || v.date === undefined)) throw invalid(`${at}: a schedule_exception is deleted by its schedule and date`);
   if (del && v.id === undefined && !EXCEPTIONS.has(kind)) throw invalid(`${at}: a ${kind} is deleted by its id`);
+  const gone = (found: boolean) => need(found || ctx.mutation === "deletes-the-missing", at, v.id);
   switch (kind) {
     case "home": {
       if (del) throw invalid(`${at}: the home's settings are set, never deleted`);
@@ -89,46 +147,62 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       }
       return;
     }
-    case "room": return void (del ? need(h.rooms.delete(v.id), at, v.id) : h.rooms.set(v.id, { id: v.id, name: v.name }));
+    case "room": return void (del ? gone(h.rooms.delete(v.id)) : h.rooms.set(v.id, merged(h.rooms.get(v.id), v)));
     case "target": {
-      if (del) return void need(h.targets.delete(v.id), at, v.id);
+      if (del) return void gone(h.targets.delete(v.id));
+      if (v.account_persons !== undefined) throw invalid(`${at}: account_persons is not built yet in this steward (GA-DEF-11, slice 8)`);
       named(ctx, v.id, at, v.room != null ? "room" : undefined);
-      // An upsert replaces the overlay whole: a field left out is the applier's label, no alias, no room.
-      const t: TargetOverlay = { id: v.id, ...(v.name !== undefined ? { name: v.name } : {}),
-        ...(v.aliases !== undefined ? { aliases: v.aliases } : {}), ...(v.room !== undefined ? { room: v.room } : {}) };
+      // The overlay merges: a field left out keeps its value, null returns it to the applier's label, no aliases, no room.
+      const was = ctx.mutation === "renames-away-the-room" ? { id: v.id } : h.targets.get(v.id);
+      const t = merged<TargetOverlay>(was, v);
+      // The owner naming the device's room sets it again: a brain's mark on it goes (GA-DEF-7).
+      if (owners && "room" in v) delete t.room_brain_authored;
+      if (t.room === undefined) delete t.room_brain_authored;
       h.targets.set(v.id, t);
       return;
     }
     case "group": {
-      if (del) return void need(h.groups.delete(v.id), at, v.id);
+      if (del) return void gone(h.groups.delete(v.id));
       if (ctx.device(v.id)) throw invalid(`${at}: group ${v.id}: the applier has a device of that id`);
-      const members = [...(v.members as string[])].sort(byCodePoint);
-      for (const m of members) named(ctx, m, at, "group");
-      const g: Group = { id: v.id, name: v.name, aliases: v.aliases ?? [], room: v.room, members, aggregate: v.aggregate };
+      const g = merged<Group>(h.groups.get(v.id), v, { aliases: [] }, ["room"]);
+      g.aliases ??= [];
+      g.members = [...g.members].sort(byCodePoint);
+      if (v.members !== undefined) for (const m of g.members) named(ctx, m, at, "group");
+      // The owner naming the members sets them again: the marks of those that joined through a brain go (GA-DEF-7).
+      if (owners && "members" in v) delete g.brain_joined;
       h.groups.set(v.id, g);
       return;
     }
-    case "person": return void (del ? need(h.persons.delete(v.id), at, v.id) : h.persons.set(v.id, { id: v.id, name: v.name, role: v.role }));
+    case "person": return void (del ? gone(h.persons.delete(v.id)) : h.persons.set(v.id, merged(h.persons.get(v.id), v)));
     case "endpoint": {
-      if (del) return void need(h.endpoints.delete(v.id), at, v.id);
+      if (del) return void gone(h.endpoints.delete(v.id));
       // An endpoint's voice record is its own kind: an upsert keeps the one it has.
-      const e: Endpoint = { id: v.id, name: v.name, type: v.type, room: v.room, person: v.person, served_by: v.served_by,
-        ...(v.max_role !== undefined ? { max_role: v.max_role } : {}),
-        ...(v.confirm_on !== undefined && v.confirm_on !== "same" ? { confirm_on: v.confirm_on } : {}),
-        voice: h.endpoints.get(v.id)?.voice ?? null };
+      const was = h.endpoints.get(v.id);
+      const base = was && ctx.mutation === "drops-confirm-on" ? (({ confirm_on: _c, ...rest }) => rest)(was) : was;
+      const e = merged<Endpoint>(base as Endpoint | undefined, v, {}, ["room", "person", "served_by"]);
+      if (e.confirm_on === "same") delete e.confirm_on;
+      e.voice = was?.voice ?? null;
       h.endpoints.set(v.id, e);
       return;
     }
     case "rule": {
-      if (del) return void need(h.rules.delete(v.id), at, v.id);
-      const r = { ...v, active: v.active ?? true, exceptions: sortedExceptions(v.exceptions ?? []) } as Rule;
+      if (del) return void gone(h.rules.delete(v.id));
+      const was = h.rules.get(v.id);
+      const r = merged<Rule>(was, v, RULE_DEFAULTS);
+      r.active ??= true;
+      r.exceptions = sortedExceptions(r.exceptions ?? []);
+      if (r.trigger === undefined && r.conditions === undefined) throw invalid(`${at}: a rule keeps a trigger or conditions (GA-DEF-14)`);
+      if (owners && was && whole(r as unknown as Args, v, RULE_FIELDS, RULE_DEFAULTS)) delete r.brain_authored;
       checkRule(h, r, at, ctx);
       h.rules.set(r.id, r);
       return;
     }
     case "scenario": {
-      if (del) return void need(h.scenarios.delete(v.id), at, v.id);
-      const sc: Scenario = { ...v, owned: v.owned ?? [], respect_occupancy: v.respect_occupancy ?? false } as Scenario;
+      if (del) return void gone(h.scenarios.delete(v.id));
+      const sc = merged<Scenario>(h.scenarios.get(v.id), v, SCENARIO_DEFAULTS);
+      sc.owned ??= [];
+      sc.respect_occupancy ??= false;
+      if (owners && h.scenarios.has(v.id) && whole(sc as unknown as Args, v, SCENARIO_FIELDS, SCENARIO_DEFAULTS)) delete sc.brain_authored;
       checkScenario(h, sc, at, ctx);
       h.scenarios.set(sc.id, sc);
       return;
@@ -140,7 +214,7 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       checkException(x, at);
       const same = (y: { from: string; until: string }) => Date.parse(y.from) === Date.parse(x.from) && Date.parse(y.until) === Date.parse(x.until);
       if (del) {
-        if (!r.exceptions.some(same)) throw invalid(`${at}: rule ${r.id} has no such exception`);
+        if (!r.exceptions.some(same) && ctx.mutation !== "deletes-the-missing") throw invalid(`${at}: rule ${r.id} has no such exception`);
         r.exceptions = r.exceptions.filter((y) => !same(y));
       } else if (!r.exceptions.some(same)) {
         if (r.exceptions.length >= MAX_EXCEPTIONS) throw invalid(`${at}: rule ${r.id} has ${MAX_EXCEPTIONS} exceptions; upsert it without the ended ones`);
@@ -149,14 +223,16 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       return;
     }
     case "schedule": {
-      if (del) return void need(h.schedules.delete(v.id), at, v.id);
-      const exceptions = (v.exceptions ?? []) as ScheduleException[];
+      if (del) return void gone(h.schedules.delete(v.id));
+      const was = h.schedules.get(v.id);
+      const sc = merged<Schedule>(was, v, SCHEDULE_DEFAULTS);
+      const exceptions = (sc.exceptions ?? []) as ScheduleException[];
       for (const x of exceptions) checkDate(x.date, at);
       const dates = exceptions.map((x) => x.date).sort();
       const twice = dates.find((d, i) => dates[i + 1] === d);
       if (twice) throw invalid(`${at}: two exceptions on ${twice}: one exception skips or moves a date's run (GA-SCHED-1)`);
-      const sc: Schedule = { id: v.id, scenario: v.scenario, time: v.time, ...(v.days !== undefined ? { days: v.days } : {}),
-        exceptions: [...exceptions].sort((a, b) => byCodePoint(a.date, b.date)) };
+      sc.exceptions = [...exceptions].sort((a, b) => byCodePoint(a.date, b.date));
+      if (owners && was && whole(sc as unknown as Args, v, SCHEDULE_FIELDS)) delete sc.brain_authored;
       h.schedules.set(sc.id, sc);
       return;
     }
@@ -164,14 +240,13 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       const sc = h.schedules.get(v.schedule);
       if (!sc) throw invalid(`${at}: no schedule ${v.schedule}`);
       checkDate(v.date, at);
-      const x: ScheduleException = { date: v.date, action: v.action, ...(v.time !== undefined ? { time: v.time } : {}) };
       if (del) {
-        // Named whole, its mark aside: a move a brain made is removed by naming the move.
-        const same = ({ brain_authored: _b, ...y }: ScheduleException) => canonical(y) === canonical(x);
-        if (!sc.exceptions.some(same)) throw invalid(`${at}: schedule ${sc.id} has no such exception`);
-        sc.exceptions = sc.exceptions.filter((y) => !same(y));
+        // Removed by its key, its schedule and date (GA-DEF-14).
+        if (!sc.exceptions.some((y) => y.date === v.date) && ctx.mutation !== "deletes-the-missing") throw invalid(`${at}: schedule ${sc.id} has no exception on ${v.date}`);
+        sc.exceptions = sc.exceptions.filter((y) => y.date !== v.date);
         return;
       }
+      const x: ScheduleException = { date: v.date, action: v.action, ...(v.time !== undefined ? { time: v.time } : {}) };
       // One exception per date: an upsert replaces the date's.
       const others = sc.exceptions.filter((y) => y.date !== x.date);
       if (others.length >= MAX_EXCEPTIONS) throw invalid(`${at}: schedule ${sc.id} has ${MAX_EXCEPTIONS} exceptions; upsert it without the ended ones`);
@@ -179,9 +254,10 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       return;
     }
     case "credential": {
-      if (del) return void need(h.credentials.delete(v.id), at, v.id);
-      const c: Credential = { id: v.id, kind: v.kind, secret_sha256: digest(v.secret),
-        ...(v.endpoint !== undefined ? { endpoint: v.endpoint } : {}), ...(v.confirm_on !== undefined ? { confirm_on: v.confirm_on } : {}) };
+      if (del) return void gone(h.credentials.delete(v.id));
+      const { secret, ...rest } = v;
+      const c = merged<Credential>(h.credentials.get(v.id), rest);
+      if (secret !== undefined) c.secret_sha256 = digest(secret);
       h.credentials.set(v.id, c);
       return;
     }
@@ -201,10 +277,8 @@ const CREATED_WITH: Record<string, string[]> = {
 };
 
 /**
- * An upsert gives its kind's created-with fields (GA-DEF-14), and a rule a trigger or conditions, not
- * both null. Ruled: the build still replaces an item whole on an upsert (the merge GA-DEF-14 asks for is
- * not built yet), so an upsert of an item that exists must give them too, refused rather than leaving the
- * item without them; once the merge is built, this applies to an upsert that creates an item only.
+ * An upsert that creates an item gives its kind's created-with fields (GA-DEF-14), and a rule a trigger
+ * or conditions, not both null; an upsert of an item that exists merges, and needs none of them.
  */
 function checkCreatedWith(kind: string, v: Args, at: string): void {
   const missing = (CREATED_WITH[kind] ?? []).filter((f) => v[f] === undefined);
@@ -417,26 +491,50 @@ function check(h: House, ctx: DefineContext): void {
       }
     }
   }
-  checkChannels(h.home, ctx);
   checkReferences(h);
 }
 
 /**
- * `notice_channels` names targets with `notify` or `media.announce`, adopted, and at least one with
- * `notify`, or `define` refuses (GA-DEF-8, GA-NOTE-1, GA-DEF-9). Read literally, so a fresh steward's
- * first change set must name one (the design, *Standards problems found*).
+ * `notice_channels` (GA-DEF-8): empty until the owner first sets it, and change sets are taken while it
+ * is so; once set (non-empty before this change set: once set it is never empty again, so no flag is
+ * kept), a change set that leaves it empty is refused. A change set that sets the list has each entry
+ * checked: a device the applier describes, adopted, offering `notify` or `media.announce`; a list of
+ * announcing channels alone is taken. Only the entries a change set sets are checked, so a channel that
+ * later leaves adoption refuses nothing else (it is noticed instead, GA-NOTE-4).
  */
-function checkChannels(home: HomeSettings, ctx: DefineContext): void {
-  let notify = false;
-  for (const id of home.notice_channels) {
+function checkChannels(before: HomeSettings, after: HomeSettings, sets: boolean, ctx: DefineContext): void {
+  if (!after.notice_channels.length) {
+    if (before.notice_channels.length) throw invalid("notice_channels cannot be left empty once set (GA-DEF-8)");
+    if (ctx.mutation === "refuses-the-first-define") throw invalid("notice_channels names no notify channel (GA-DEF-8, GA-NOTE-1)");
+    return;
+  }
+  if (!sets) return;
+  for (const id of after.notice_channels) {
     const d = ctx.device(id);
     if (!d) throw invalid(`notice channel ${id} is no device the applier describes`);
-    if (!d.adopted) throw invalid(`notice channel ${id} is not adopted (GA-DEF-9)`);
-    const speaks = d.actions.includes("media.announce");
-    if (d.actions.includes("notify.notify")) notify = true;
-    else if (!speaks) throw invalid(`notice channel ${id} has neither notify nor media.announce`);
+    if (!d.adopted) throw invalid(`notice channel ${id} is not adopted (GA-DEF-8, GA-DEF-9)`);
+    const offers = d.actions.includes("notify.notify") || d.actions.includes("media.announce");
+    if (!offers && ctx.mutation !== "takes-a-silent-channel") throw invalid(`notice channel ${id} has neither notify nor media.announce (GA-DEF-8)`);
   }
-  if (!notify) throw invalid("notice_channels names no notify channel (GA-DEF-8, GA-NOTE-1)");
+  if (ctx.mutation === "refuses-an-announcing-channel" && !hasNotifyChannel(after, ctx)) {
+    throw invalid("notice_channels names no notify channel (GA-DEF-8, GA-NOTE-1)");
+  }
+}
+
+/** Whether `notice_channels` has an adopted channel offering `notify` (GA-NOTE-1): without one, notices are held. */
+export function hasNotifyChannel(home: HomeSettings, ctx: Pick<DefineContext, "device">): boolean {
+  return notifyChannels(home, ctx).length > 0;
+}
+
+/**
+ * The channels of `notice_channels` that carry a notice now, in code-point order: adopted, with
+ * `notify.notify` among their actions. One predicate for holding and for sending (the code review, CR5).
+ */
+export function notifyChannels(home: HomeSettings, ctx: Pick<DefineContext, "device">): string[] {
+  return [...home.notice_channels].sort().filter((id) => {
+    const d = ctx.device(id);
+    return d !== undefined && d.adopted && d.actions.includes("notify.notify");
+  });
 }
 
 /** A readable diff of the model, one line per object added, removed or changed; a secret is never shown. */

@@ -4,9 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StoreError } from "../src/core/db.js";
 import { OutcomeUnknown, StoreUnavailable } from "../src/core/errors.js";
 import { Store } from "../src/core/store.js";
-import { bearerOf, isLoopback, publicMessage, serveMcp } from "../src/mcp/server.js";
+import { bearerOf, isLoopback, publicMessage, serveMcp, toolList } from "../src/mcp/server.js";
 import type { Mutation } from "../src/mutations.js";
-import { Steward } from "../src/steward.js";
+import { Steward, TOOLS } from "../src/steward.js";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { schemaRoot } from "@ludentes/galatea-life-schemas";
 import { memoryDb } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 import { SECRETS } from "./house.js";
@@ -68,6 +72,56 @@ describe("the MCP binding", () => {
     const r = await call("describe");
     expect(r.isError).toBe(true);
     expect(r.structuredContent).toMatchObject({ error: "not_permitted" });
+  });
+
+  it("publishes each operation's request schema, so a model sees parameter names and types", async () => {
+    const { url } = await serve();
+    const { client } = await connect(url, SECRETS.owner);
+    const { tools } = await client.listTools();
+    const plan = tools.find((t) => t.name === "plan")!;
+    const props = plan.inputSchema.properties as Record<string, { type?: string }>;
+    expect(plan.inputSchema.type).toBe("object");
+    expect(props.actions!.type).toBe("array");
+    expect(props.endpoint!.type).toBe("string");
+    expect(plan.inputSchema.required).toEqual(expect.arrayContaining(["endpoint", "actions"]));
+    expect(JSON.stringify(tools)).not.toContain("$ref");
+    const descriptions = new Set<string>();
+    for (const t of tools) {
+      expect(t.inputSchema.type, t.name).toBe("object");
+      expect(t.description, t.name).toBeTruthy();
+      expect(t.description, t.name).not.toMatch(/^The steward's \w+ \(standard/);
+      expect(t.description!.length, t.name).toBeGreaterThan(20);
+      descriptions.add(t.description!);
+    }
+    expect(descriptions.size).toBe(tools.length);
+  });
+
+  it("each listed schema is valid 2020-12 on its own, passes the schemas' valid examples and fails their invalid ones", async () => {
+    const { url } = await serve();
+    const { client } = await connect(url, SECRETS.owner);
+    const { tools } = await client.listTools();
+    let checked = 0;
+    for (const t of tools) {
+      const ajv = new Ajv2020({ strict: false, validateFormats: false });
+      expect(ajv.validateSchema(t.inputSchema), t.name).toBe(true);
+      const check = ajv.compile(t.inputSchema);
+      for (const kind of ["valid", "invalid"] as const) {
+        const dir = join(schemaRoot, "examples", kind, "steward", `${t.name}.request`);
+        let files: string[] = [];
+        try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { /* no examples for this operation */ }
+        for (const f of files) {
+          expect(check(JSON.parse(readFileSync(join(dir, f), "utf8"))), `${kind} ${t.name}/${f}`).toBe(kind === "valid");
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(10);
+  });
+
+  it("refuses to build its tool list when an operation has no request schema", () => {
+    expect(() => toolList([...TOOLS, { name: "no_such_operation", readOnly: true, summary: "a test operation with no schema" }]))
+      .toThrow(/no request schema/);
+    expect(toolList(TOOLS)).toHaveLength(17);
   });
 
   it("answers a define refused while the store is down with -32603 and pending false, never a result", async () => {

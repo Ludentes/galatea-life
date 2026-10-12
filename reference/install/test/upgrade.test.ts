@@ -10,7 +10,7 @@ describe("galatea-db-upgrade", () => {
   const pw = (role: string) => readFileSync(join(s.secrets, role), "utf8");
 
   beforeAll(async () => {
-    s = await Stack.create(["applier"], { PG_MAJOR: "17" });
+    s = await Stack.create(["applier", "steward"], { PG_MAJOR: "17" });
     await s.up();
     await s.must(s.sql("applier", pw("applier"), "CREATE TABLE t (x int); INSERT INTO t VALUES (7)"));
     // The 17 image declares /var/lib/postgresql/data a volume of its own, so its

@@ -3,7 +3,7 @@
 // GALATEA_DATABASE_URL up to date and exits. The harness runs it once per run into a template database
 // that each test's database is cloned from, so the migrate at the steward's start (`Store.open`) finds
 // nothing to do. Like main.ts, it is an entry point: only it reads the environment. It is unrelated to
-// the installation's galatea-db-prepare. The password may come from GALATEA_DATABASE_PASSWORD_FILE, as
+// the installation's galatea-prepare. The password may come from GALATEA_DATABASE_PASSWORD_FILE, as
 // for main.ts.
 import { connectPg, maskUrls } from "./core/db.js";
 import { migrate } from "./core/migrate.js";

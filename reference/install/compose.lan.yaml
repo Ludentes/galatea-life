@@ -1,0 +1,9 @@
+# Reach from the LAN (the install-core design, *How the owner and a brain reach the steward*): the
+# broker alone, for a bridge on another box, on the box's LAN address and never 0.0.0.0. Use it by
+# adding it to COMPOSE_FILE in .env (COMPOSE_FILE=compose.yaml:compose.lan.yaml), after setting
+# GALATEA_LAN_ADDRESS, adding the name or address the bridge connects to to GALATEA_TLS_NAMES, and
+# running bin/galatea-certs. Docker writes its own iptables rules, so a host firewall such as ufw
+# does not filter this port. The applier and the steward stay on the host's loopback.
+services:
+  broker:
+    ports: ["${GALATEA_LAN_ADDRESS:?set GALATEA_LAN_ADDRESS in .env to the box's LAN address}:8883:8883"]

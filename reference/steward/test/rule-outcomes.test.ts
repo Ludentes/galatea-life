@@ -92,12 +92,12 @@ describe("what a rule's outcome does: retries (GA-RULE-7)", () => {
     expect(after("failed", "not_locked", true, 0, "retries-a-shutdown")).toBe("hold");
   });
 
-  it("spaces tries a minute apart, or the ack_within_s when longer: never sooner than it, never later than 300 s", () => {
+  it("spaces tries a minute apart, or the ack_within_s when longer: never sooner than it, never later than 300 s, or its ack_within_s plus 60 s when that is longer than 300 s (GA-RULE-7)", () => {
     expect(RETRY_SPACING_MS).toBe(60_000);
-    for (const ack of [1, 10, 60, 299, 300, 600]) {
+    for (const ack of [1, 10, 60, 299, 300, 301, 400, 600]) {
       const ms = retrySpacingMs(ack);
       expect(ms).toBeGreaterThanOrEqual(ack * 1000);
-      expect(ms).toBeLessThanOrEqual(Math.max(300, ack) * 1000);
+      expect(ms).toBeLessThanOrEqual((ack > 300 ? ack + 60 : 300) * 1000);
     }
     expect(retrySpacingMs(10, "retries-hours-later")).toBe(3_600_000);
     expect(retrySpacingMs(10, "retries-a-shutdown")).toBe(10_000);
@@ -573,6 +573,100 @@ describe("what a rule's outcome does: a room not known (the maintainer, 2026-10-
     // Told once, not three times folded into one waiting notice.
     expect(own.mock.calls.filter((c) => c[1] === "rule_failed")).toHaveLength(1);
     own.mockRestore();
+  });
+});
+
+describe("what a rule's outcome does: coalesced only while the room stays unknown (GA-RULE-8: steward 0.11)", () => {
+  const LIGHT = { id: "light", name: "Свет", conditions: LIMIT.conditions, actions: [{ target: LAMP, action: "onoff.turn_on", args: {}, respect_occupancy: true }] };
+  const told = (own: { mock: { calls: unknown[][] } }) => own.mock.calls.filter((c) => c[1] === "rule_failed").length;
+
+  it("notices a skipped(occupancy_unknown) again once the room was known in between; not under never-notices-again", async () => {
+    for (const [mutation, want] of [[undefined, 2], ["never-notices-again", 1]] as const) {
+      const own = vi.spyOn(NoticePump.prototype, "own");
+      const s = await ruled([LIGHT], { mutation });
+      await s.define([up("room", { id: "attic", name: "Чердак" }), up("target", { id: LAMP, room: "attic" }), up("target", { id: MOTION, room: "attic" })]);
+      const hold = Number((await s.ok(SECRETS.owner, "describe")).home.occupancy_hold_s) * 1000;
+      const again = async () => {
+        await s.change(LAPTOP, "session.liza", "locked");
+        await s.change(LAPTOP, "session.liza", "active");
+        await s.settle();
+      };
+      await again();
+      await again();
+      expect(told(own)).toBe(1);
+      // Motion: the room is occupied, known; then quiet past the hold, unknown again.
+      await s.change(MOTION, "motion", true);
+      await s.change(MOTION, "motion", false);
+      s.clock.advance(hold + 1_000);
+      await again();
+      expect(told(own), String(mutation)).toBe(want);
+      own.mockRestore();
+    }
+  });
+
+  it("notices it again once the room was known in a gap, its sensor's events recovered (the code review, CR8)", async () => {
+    const own = vi.spyOn(NoticePump.prototype, "own");
+    const s = await ruled([LIGHT]);
+    await s.define([up("room", { id: "attic", name: "Чердак" }), up("target", { id: LAMP, room: "attic" }), up("target", { id: MOTION, room: "attic" })]);
+    const hold = Number((await s.ok(SECRETS.owner, "describe")).home.occupancy_hold_s) * 1000;
+    const again = async () => {
+      await s.change(LAPTOP, "session.liza", "locked");
+      await s.change(LAPTOP, "session.liza", "active");
+      await s.settle();
+    };
+    await again();
+    expect(told(own)).toBe(1);
+    // Motion in a gap: the applier forgets the events, and the steward recovers them from its history.
+    const at = new Date(s.clock.now()).toISOString();
+    s.applier.emitUnseen({ type: "state", target: MOTION, key: "motion", value: true, basis_time: at, time: at, cause: "device" });
+    s.applier.emitUnseen({ type: "state", target: MOTION, key: "motion", value: false, basis_time: at, time: at, cause: "device" });
+    const missed = (await s.port.history({ from: new Date(0).toISOString(), to: at })).events;
+    // The state after the gap: the laptop as the last change left it.
+    const now = (values: Body) => ({ liveness: "live", values: Object.entries(values).map(([key, value]) => ({ key, value, basis_time: at })) });
+    const state = { targets: { [LAMP]: now({ on: false }), [MOTION]: now({ motion: false }), [LAPTOP]: now({ "session.liza": "active" }) },
+      transports: [], latches: [] };
+    s.steward.recover(missed, state, String(missed.at(-1)!.seq));
+    await s.settle();
+    s.clock.advance(hold + 1_000);
+    await again();
+    expect(told(own)).toBe(2);
+    own.mockRestore();
+  });
+
+  it("does not let a state or describe read stand for the room becoming known (a guard for the code review, CR8)", async () => {
+    const own = vi.spyOn(NoticePump.prototype, "own");
+    const s = await ruled([LIGHT]);
+    await s.define([up("room", { id: "attic", name: "Чердак" }), up("target", { id: LAMP, room: "attic" }), up("target", { id: MOTION, room: "attic" })]);
+    const again = async () => {
+      await s.change(LAPTOP, "session.liza", "locked");
+      await s.change(LAPTOP, "session.liza", "active");
+      await s.settle();
+    };
+    await again();
+    for (let i = 0; i < 3; i++) {
+      await s.ok(SECRETS.owner, "state");
+      await s.ok(SECRETS.owner, "describe");
+      await again();
+    }
+    expect(told(own)).toBe(1);
+    own.mockRestore();
+  });
+
+  it("notices a failed(not_locked) each night; coalesces the second under coalesces-a-failed-lock", async () => {
+    for (const [mutation, want] of [[undefined, 2], ["coalesces-a-failed-lock", 1]] as const) {
+      const own = vi.spyOn(NoticePump.prototype, "own");
+      const { change, keys, ends, walk } = await ruled([LIMIT], { mutation });
+      for (const n of [0, 1]) {
+        await change(LAPTOP, "session.liza", "active");
+        await keys(Array.from({ length: n + 1 }, (_, i) => `rule:limit:${i}`));
+        await walk(1_000);
+        await ends(`rule:limit:${n}`, LAPTOP, "failed", "not_locked");
+        await walk(25_000);
+        await change(LAPTOP, "session.liza", "locked");
+      }
+      expect(told(own), String(mutation)).toBe(want);
+      own.mockRestore();
+    }
   });
 });
 

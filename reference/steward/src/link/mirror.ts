@@ -225,6 +225,15 @@ export class Mirror {
     return typeof s === "number" ? s : 10;
   }
 
+  /**
+   * The longest `ack_within_s` `target` declares for any action: a safety rule's actuation names a
+   * key and a value, not an action, so its bound is the device's longest (GA-LEASE-6).
+   */
+  longestAckS(target: string): number {
+    const actions = Array.isArray(this.devices.get(target)?.actions) ? this.devices.get(target)!.actions as Body[] : [];
+    return Math.max(10, ...actions.map((a) => (typeof a.ack_within_s === "number" ? a.ack_within_s : 0)));
+  }
+
   /** An action's tier as the applier last described it, for a step it could not plan. */
   tierOf(target: string, action: string): "reversible" | "confirm" | "no_voice" {
     const a = (Array.isArray(this.devices.get(target)?.actions) ? this.devices.get(target)!.actions as Body[] : []).find((x) => x.action === action);

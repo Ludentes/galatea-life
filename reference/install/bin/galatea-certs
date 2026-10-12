@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# The installation's certificate authority and its servers' certificates (the install-core design,
+# *TLS inside the stack*):
+#   galatea-certs            makes the CA once, and issues each server's certificate (the applier,
+#                            the steward, the broker) where it is missing, has 60 days or fewer left,
+#                            carries other names than GALATEA_TLS_NAMES asks, or was not signed by the
+#                            current CA; then restarts each running service whose certificate it issued
+#   galatea-certs --check    prints each certificate's days left; changes nothing
+#   galatea-certs --new-ca   a new CA and every certificate again; restarts every running service
+#                            that trusts the CA. Every client given the old tls/ca.pem needs the new one
+# openssl runs in a one-off container of certs/Dockerfile, as your account, with no network. Keys
+# land in secrets/ca/ and secrets/tls/ (0600, in 0700 directories), certificates in tls/ (0644).
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+mode=issue
+case "${1:-}" in
+  "") ;;
+  --check) mode=check ;;
+  --new-ca) mode=new-ca ;;
+  *) die "usage: galatea-certs [--check | --new-ca]" ;;
+esac
+[ $# -le 1 ] || die "usage: galatea-certs [--check | --new-ca]"
+
+secrets=$(resolve "${GALATEA_SECRETS:-./secrets}")
+tls=$(resolve "${GALATEA_TLS:-./tls}")
+mkdir -p "$secrets/ca" "$secrets/tls" "$tls"
+chmod 700 "$secrets" "$secrets/ca" "$secrets/tls"
+chmod 755 "$tls"
+
+docker build -q -t galatea-certs:local "$here/certs" >/dev/null
+out=$(docker run --rm --network none --user "$(id -u):$(id -g)" -e GALATEA_TLS_NAMES="${GALATEA_TLS_NAMES:-}" \
+  -v "$secrets/ca:/ca" -v "$secrets/tls:/keys" -v "$tls:/tls" galatea-certs:local "$mode") || {
+  rc=$?
+  printf '%s\n' "${out:-}"
+  exit "$rc"
+}
+printf '%s\n' "$out"
+[ "$mode" != check ] || exit 0
+
+# A server reads its certificate only at its start; a new CA reaches every client only at its start.
+running() { [ -n "$(docker compose ps -q "$1" 2>/dev/null)" ]; }
+# The broker first, then its clients and the steward's applier, then the steward: each client comes
+# back to a server that already holds the new certificate.
+if [ "$mode" = new-ca ]; then
+  restart="broker applier steward zigbee-bridge"
+else
+  restart=$(printf '%s\n' "$out" | awk '$1 == "issued" { print $2 }')
+fi
+for s in $restart; do
+  if running "$s"; then
+    docker compose restart "$s" >/dev/null
+    echo "galatea-certs: restarted $s"
+  fi
+done

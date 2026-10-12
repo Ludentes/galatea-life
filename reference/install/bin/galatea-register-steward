@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Registers the steward at the applier (the install-core design, *Credentials*), the one way to do it:
+#   galatea-register-steward            configures the steward's client from secrets/mcp/steward-at-applier
+#                                       and steward-token-key; a second run changes nothing
+#   galatea-register-steward --rotate   a new pair: written to *.next, configured, and only then moved
+#                                       over the old files, and the steward restarted
+# A run that finds *.next files (a rotation that stopped part way) configures them first. A failed
+# configure leaves the steward working on its old pair. The steward's calls are refused for the
+# seconds between the configure and its restart: rotate while nothing is waiting for a person's yes.
+# register/register-steward.mjs runs in a one-off container of the steward's image on the stack's
+# network, the four files bound read-only; no value is printed or on a command line.
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+rotate=0
+case "${1:-}" in
+  "") ;;
+  --rotate) rotate=1 ;;
+  *) die "usage: galatea-register-steward [--rotate]" ;;
+esac
+
+secrets=$(resolve "${GALATEA_SECRETS:-./secrets}")
+tls=$(resolve "${GALATEA_TLS:-./tls}")
+mcp="$secrets/mcp"
+for f in "$mcp/applier-owner" "$mcp/steward-at-applier" "$mcp/steward-token-key" "$tls/ca.pem"; do
+  [ -s "$f" ] || die "no $f (run bin/galatea-prepare, with applier and steward in instances)"
+done
+id=$(docker compose ps -q applier 2>/dev/null || true)
+[ -n "$id" ] || die "the applier's service is not running (docker compose up -d)"
+network=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$id" | awk '{ print $1 }')
+
+secret() {
+  (umask 077 && head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | head -c 32 >"$1.partial" && mv "$1.partial" "$1")
+}
+# Configures the pair in these two files; its output is the diff, never a value.
+configure() {
+  docker run --rm --network "$network" --user "$(id -u):$(id -g)" --entrypoint node \
+    -v "$here/register/register-steward.mjs:/app/register-steward.mjs:ro" \
+    -v "$mcp/applier-owner:/run/register/owner:ro" \
+    -v "$1:/run/register/credential:ro" \
+    -v "$2:/run/register/token-key:ro" \
+    -v "$tls/ca.pem:/run/register/ca.pem:ro" \
+    galatea-steward:local /app/register-steward.mjs
+}
+
+next_cred="$mcp/steward-at-applier.next"
+next_key="$mcp/steward-token-key.next"
+if [ "$rotate" -eq 1 ] && [ ! -e "$next_cred" ] && [ ! -e "$next_key" ]; then
+  secret "$next_cred"
+  secret "$next_key"
+fi
+if [ -s "$next_cred" ] && [ -s "$next_key" ]; then
+  configure "$next_cred" "$next_key" || die "the new pair was not configured; the steward keeps its old pair, and the next run tries the new one again"
+  mv "$next_cred" "$mcp/steward-at-applier"
+  mv "$next_key" "$mcp/steward-token-key"
+  echo "galatea-register-steward: the new pair is in place"
+  if [ -n "$(docker compose ps -q steward 2>/dev/null)" ]; then
+    docker compose restart steward >/dev/null
+    echo "galatea-register-steward: restarted the steward"
+  fi
+  exit 0
+fi
+[ ! -e "$next_cred" ] && [ ! -e "$next_key" ] || die "one of $next_cred and $next_key is there without the other: remove both, then run --rotate again"
+configure "$mcp/steward-at-applier" "$mcp/steward-token-key"

@@ -67,5 +67,5 @@ docker compose exec -T postgres sh -c '
 
 # The database-level grants, and the schemas of instances added since the dump.
 docker compose run --rm db-init
-docker compose up -d
+compose_up
 echo "galatea-restore: restored $(basename "$dump")"

@@ -4,14 +4,14 @@ import { migrate } from "../src/core/migrate.js";
 import { getMeta, raiseMeta, RisingMeta, setMeta, Store, within } from "../src/core/store.js";
 import { FIRST_RETRY_MS } from "../src/core/writer.js";
 import { CLEAN_STOP } from "../src/core/events.js";
-import { memoryDb } from "./db.js";
+import { blankDb, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
-async function open() {
+async function open(log?: (line: string) => void) {
   const clock = new FakeClock();
   const db = await memoryDb();
   const faults: unknown[] = [];
-  const store = await Store.open(db, clock, (err) => faults.push(err));
+  const store = await Store.open(db, clock, (err) => faults.push(err), { migrations, ...(log ? { log } : {}) });
   return { clock, db, faults, store };
 }
 
@@ -24,11 +24,21 @@ describe("Store", () => {
       "0011_safety.sql", "0012_rule_disabled.sql", "0013_latches.sql", "0014_load_caps.sql", "0015_restarts.sql", "0016_provisioning.sql",
       "0017_discovery.sql", "0018_undescribed.sql", "0019_hashed_secrets.sql"]);
     await store.write((tx) => setMeta(tx, "revision", "3"));
-    expect(await migrate(db)).toEqual([]);
+    expect(await migrate(db, migrations)).toEqual([]);
     expect(await getMeta(store, "revision")).toBe("3");
     const grants = await db.query<{ table_name: string }>(
       "SELECT table_name FROM information_schema.role_table_grants WHERE grantee = 'reader'");
     expect(grants.rows.map((r) => r.table_name)).toEqual(["history_v"]);
+  });
+
+  it("migrates from the files it is handed, in the order of their names, and not at all when told not to", async () => {
+    const db = await blankDb();
+    const reversed = [...migrations].reverse();
+    expect(await migrate(db, reversed)).toEqual(migrations.map((m) => m.name));
+    const untouched = await blankDb();
+    await Store.open(untouched, new FakeClock(), (err) => { throw err; }, { migrate: false });
+    expect((await untouched.query<{ n: string }>("SELECT count(*)::text AS n FROM pg_tables WHERE tablename = 'migrations'")).rows)
+      .toEqual([{ n: "0" }]);
   });
 
   it("commits write sets in the order given", async () => {
@@ -125,9 +135,9 @@ describe("Store", () => {
   });
 
   it("logs once when the store goes away, and once when it is back, with no URL", async () => {
-    const said = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const { clock, db, store } = await open();
+    const said = vi.fn<(line: string) => void>();
+    {
+      const { clock, db, store } = await open(said);
       db.trouble.down = true;
       const w = store.write((tx) => setMeta(tx, "k", "a"));
       await vi.waitFor(() => expect(store.down).toBe(true));
@@ -140,8 +150,6 @@ describe("Store", () => {
       await vi.waitFor(() => { clock.advance(5000); expect(store.backlog).toBe(0); });
       await w;
       expect(said.mock.calls.map((c) => String(c[0]))).toEqual(["store unreachable, retrying: the store is unreachable", "store back"]);
-    } finally {
-      said.mockRestore();
     }
   });
 
@@ -179,7 +187,7 @@ describe("RisingMeta", () => {
       if (held) await held;
       return r;
     }) };
-    const store = await Store.open(gated, clock, (err) => { throw err; });
+    const store = await Store.open(gated, clock, (err) => { throw err; }, { migrations });
     let value = 1;
     const meta = new RisingMeta(store, "counter", () => value);
     hold();
@@ -196,7 +204,7 @@ describe("RisingMeta", () => {
     await store.close();
     // A write that lands after a higher one never lowers it.
     const again = await memoryDb();
-    const s2 = await Store.open(again, clock, (err) => { throw err; });
+    const s2 = await Store.open(again, clock, (err) => { throw err; }, { migrations });
     await s2.write((tx) => raiseMeta(tx, "counter", 5));
     await s2.write((tx) => raiseMeta(tx, "counter", 4));
     expect(await getMeta(s2, "counter")).toBe("5");
@@ -218,7 +226,7 @@ describe("RisingMeta", () => {
       written.push(...seen);
       return r;
     }) };
-    const store = await Store.open(gated, clock, (err) => { throw err; });
+    const store = await Store.open(gated, clock, (err) => { throw err; }, { migrations });
     let value = 1;
     const meta = new RisingMeta(store, "counter", () => value);
     held = new Promise<void>((r) => { release = r; });

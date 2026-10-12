@@ -1,16 +1,16 @@
 import { hashSecret } from "../core/secret.js";
 import { randomUUID } from "node:crypto";
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import type { Bridge } from "../config/config.js";
 import { canonical, storable } from "../core/canonical.js";
 import { RequestError, StoreUnavailable } from "../core/errors.js";
 import { KEY_HELD_MS, Keys, type KeyClaim } from "../core/keys.js";
 import { GATE_MS, within, type Store } from "../core/store.js";
-import type { Puback } from "../bus/client.js";
+import type { Puback } from "../bus/port.js";
 import { cut, MAX_REASON, type BridgeEvent } from "../bus/wire.js";
 import type { NoticeAsk } from "../model/home.js";
 import { deviceId } from "../model/home.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import { opFor, type HomeView } from "./ops.js";
 import type { Listed } from "./discovery.js";
 import { loadRequests, pruneRequests, saveRequest, saveResult, type ProvisionResult } from "./records.js";
@@ -31,7 +31,7 @@ const DEVICE_ACTS = new Set(["joined", "left", "blocked_rejoin"]);
 export interface ProvisionerOptions {
   store: Store;
   clock: Clock;
-  mutation?: Mutation;
+  mutant: Mutant;
   home: HomeView;
   /** Publishes a request to a bridge; absent, every request is `unreachable`. */
   request?: (bridge: Bridge, op: string, body: Record<string, unknown>) => Promise<Puback>;
@@ -88,7 +88,7 @@ export class Provisioner {
       this.held.set(r.request_id, { bridge: r.bridge, result: r.result, created_ms: r.created_ms });
       if (!r.ended) this.unended.push({ request_id: r.request_id, bridge: r.bridge });
       // `forgets-a-provision-key`: the records are read back, the keys not.
-      if (r.key !== undefined && r.body !== undefined && this.o.mutation !== "forgets-a-provision-key") {
+      if (r.key !== undefined && r.body !== undefined && !this.o.mutant.forgetsAProvisionKey) {
         this.keys.hold("owner", r.key, r.body, r.request_id, r.created_ms);
       }
     }
@@ -102,7 +102,7 @@ export class Provisioner {
   resume(): void {
     const unended = this.unended;
     this.unended = [];
-    if (this.o.mutation === "forgets-a-connect") return;
+    if (this.o.mutant.forgetsAConnect) return;
     for (const u of unended) {
       this.open.set(u.request_id, { bridge: u.bridge });
       this.lose(u.request_id);
@@ -145,7 +145,7 @@ export class Provisioner {
     // Kept only to compare a repeat of its key with: its SHA-256 does that, and keeps no setup code (the whole-applier review's M6).
     const body = hashSecret(canonical(rest));
     // `provisions-twice`: the key is not honoured; every repeat is a new request.
-    const keyed = typeof key === "string" && this.o.mutation !== "provisions-twice";
+    const keyed = typeof key === "string" && !this.o.mutant.provisionsTwice;
     let claim: KeyClaim<string> | undefined;
     if (keyed) {
       // The key first, before any check of the model (the spec review's I1); a request still running waits, within the gate.
@@ -162,7 +162,7 @@ export class Provisioner {
       }
     }
     try {
-      const { op, bridge, wire } = opFor(rest, this.o.home, this.o.listed, this.o.mutation);
+      const { op, bridge, wire } = opFor(rest, this.o.home, this.o.listed, this.o.mutant);
       // `opFor` resolved to a registered bridge, so its facts are there.
       const facts = this.o.home.bridgeFacts(bridge)!;
       if (!facts.levels.includes("Provision")) throw new RequestError("not_claimed", `bridge ${bridge}'s status does not claim Provision`);
@@ -229,7 +229,7 @@ export class Provisioner {
   /** A `connect` published: it ends at a reply other than `accepted`, its bridge's event, 70 s, or its bridge's death. */
   private opened(requestId: string, bridge: string): void {
     // `never-ends-a-connect`: no timer; only the bridge's own event ends it.
-    const timer = this.o.mutation === "never-ends-a-connect" ? undefined
+    const timer = this.o.mutant.neverEndsAConnect ? undefined
       : this.o.clock.setTimeout(() => this.lose(requestId), CONNECT_LOST_MS);
     this.open.set(requestId, { bridge, ...(timer !== undefined ? { timer } : {}) });
   }
@@ -262,7 +262,7 @@ export class Provisioner {
    * cause is that request; `event-without-request-id` leaves it out, the cause then the bridge.
    */
   private connectBody(bridge: string, what: string, requestId: string, extra: Record<string, unknown>): Record<string, unknown> {
-    if (this.o.mutation === "event-without-request-id") return { bridge, what, ...extra, cause: "bridge" };
+    if (this.o.mutant.eventWithoutRequestId) return { bridge, what, ...extra, cause: "bridge" };
     return { bridge, what, ...extra, request_id: requestId, cause: { provision: requestId } };
   }
 
@@ -376,7 +376,7 @@ export class Provisioner {
       void this.o.store.write((tx) => saveResult(tx, next));
     }
     // `hides-new-devices`: a closed window is no notice.
-    if (e.type === "window_closed" && this.o.mutation !== "hides-new-devices") {
+    if (e.type === "window_closed" && !this.o.mutant.hidesNewDevices) {
       const named = devices ?? [];
       const where = transport ?? bridge;
       this.o.notice({ cause: "window_closed", bridge, ...(transport !== undefined ? { transport } : {}), devices: named,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { EventLog, EVENT_RETENTION_MS, HISTORY_RETENTION_MS, SEQ_LIFE_GAP } from "../src/core/events.js";
 import { Store } from "../src/core/store.js";
-import { lasting, memoryDb } from "./db.js";
+import { lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 async function db2meta(db: { query<R>(sql: string): Promise<{ rows: R[] }> }): Promise<Record<string, string>> {
@@ -12,7 +12,7 @@ async function db2meta(db: { query<R>(sql: string): Promise<{ rows: R[] }> }): P
 async function setup() {
   const clock = new FakeClock();
   const db = lasting(await memoryDb());
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   const log = new EventLog(store, clock);
   await log.load();
   return { clock, db, store, log };
@@ -62,7 +62,7 @@ describe("EventLog", () => {
     const c = log.cursor();
     const kept = log.append("model", { revision: 1 });
     await store.close();
-    const again = new EventLog(await Store.open(db, clock, (err) => { throw err; }), clock);
+    const again = new EventLog(await Store.open(db, clock, (err) => { throw err; }, { migrations }), clock);
     await again.load();
     expect(again.lastStopClean).toBe(true);
     expect(Number(again.cursor())).toBe(kept.seq + SEQ_LIFE_GAP);
@@ -81,7 +81,7 @@ describe("EventLog", () => {
     db.trouble.down = true;
     const lost = log.append("model", { revision: 2 });
     db.trouble.down = false;
-    const again = new EventLog(await Store.open(db, clock, (err) => { throw err; }), clock);
+    const again = new EventLog(await Store.open(db, clock, (err) => { throw err; }, { migrations }), clock);
     await again.load();
     expect(again.lastStopClean).toBe(false);
     for (const cursor of [c, String(kept.seq), String(lost.seq)]) {
@@ -98,10 +98,10 @@ describe("EventLog", () => {
   it("clears the clean-stop marker at start, so a second unclean stop is not taken as clean", async () => {
     const { clock, db, store } = await setup();
     await store.close();
-    const second = new EventLog(await Store.open(db, clock, (err) => { throw err; }), clock);
+    const second = new EventLog(await Store.open(db, clock, (err) => { throw err; }, { migrations }), clock);
     await second.load();
     const c = second.cursor();
-    const third = new EventLog(await Store.open(db, clock, (err) => { throw err; }), clock);
+    const third = new EventLog(await Store.open(db, clock, (err) => { throw err; }, { migrations }), clock);
     await third.load();
     expect(third.lastStopClean).toBe(false);
     expect(() => third.read(c)).toThrow(expect.objectContaining({ code: "cursor_expired" }));
@@ -209,7 +209,7 @@ describe("EventLog", () => {
     class Fractional extends FakeClock { now(): number { return super.now() + 0.4375; } }
     const clock = new Fractional();
     const faults: unknown[] = [];
-    const store = await Store.open(await memoryDb(), clock, (err) => { faults.push(err); });
+    const store = await Store.open(await memoryDb(), clock, (err) => { faults.push(err); }, { migrations });
     const log = new EventLog(store, clock);
     await log.load();
     const e = log.append("model", { revision: 1 });

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { Applier, type BusPort, type ToolResult } from "../src/applier.js";
-import type { Puback } from "../src/bus/client.js";
+import type { Puback } from "../src/bus/port.js";
 import { StoreUnavailable } from "../src/core/errors.js";
 import { GATE_MS, Store } from "../src/core/store.js";
-import type { Mutation } from "../src/mutations.js";
-import { lasting, memoryDb } from "./db.js";
+import { type Mutation, mutantOf } from "../src/mutations.js";
+import { lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 const OWNER = "owner-credential";
@@ -17,11 +17,11 @@ async function make(opts: { mutation?: Mutation; db?: Awaited<ReturnType<typeof 
   // The harness's clock gives fractions of a millisecond: every time the store keeps must be whole.
   clock.advance(0.5);
   const db = opts.db ?? await memoryDb();
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   const t = { sent: [] as [string, string, Record<string, any>][], puback: { kind: "ok" } as Puback };
   const bus: BusPort = { follow: () => undefined, snapshot: async () => ({ kind: "ok" }), command: async () => ({ kind: "ok" }),
     request: async (b, op, req) => { t.sent.push([b.id, op, req]); return t.puback; } };
-  const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1", mutation: opts.mutation, bus });
+  const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1", mutant: mutantOf(opts.mutation), bus });
   await a.start();
   const owner = a.caller(OWNER);
   const { revision } = body(await a.call(owner, "describe", {}));

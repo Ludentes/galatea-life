@@ -1,8 +1,8 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "./clock.js";
 import { wellFormed } from "./canonical.js";
 import { RequestError } from "./errors.js";
 import { getMeta, RisingMeta, setMeta, type Store } from "./store.js";
-import type { Mutation } from "../mutations.js";
+import { Mutant } from "../mutations.js";
 
 export const EVENT_RETENTION_MS = 3_600_000;
 export const HISTORY_RETENTION_MS = 7 * 24 * 3_600_000;
@@ -54,7 +54,7 @@ export class EventLog {
   private trimmedThrough = 0;
   private readonly waiters = new Set<() => void>();
 
-  constructor(private readonly store: Store, private readonly clock: Clock, private readonly mutation?: Mutation) {
+  constructor(private readonly store: Store, private readonly clock: Clock, private readonly mutant: Mutant = Mutant.none) {
     this.lastSeq = new RisingMeta(store, "last_seq", () => this.last);
   }
 
@@ -72,7 +72,7 @@ export class EventLog {
     const since = this.now() - EVENT_RETENTION_MS;
     const last = Number((await getMeta(this.store, "last_seq")) ?? "0");
     // `skips-lost-events`: every cursor of the last life reads on, whatever its stop.
-    const clean = this.mutation === "skips-lost-events" || (await getMeta(this.store, CLEAN_STOP)) !== undefined;
+    const clean = this.mutant.skipsLostEvents || (await getMeta(this.store, CLEAN_STOP)) !== undefined;
     const pruned = Number((await getMeta(this.store, "pruned_through")) ?? "0");
     const aged = await this.store.query<{ n: number | string | null }>("SELECT max(seq) AS n FROM events WHERE time_ms <= $1", [since]);
     const rows = await this.store.query<Row>("SELECT seq, time_ms, type, body FROM events WHERE time_ms > $1 ORDER BY seq", [since]);

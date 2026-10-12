@@ -27,11 +27,11 @@ export type Facts = {
  * says it is gone; an open device is live otherwise; a closed one is stale past its bound plus the
  * slack, with no known bound, or on a fast clock. Never judged from when a message arrived.
  */
-export function liveness(f: Facts, now: number, o: { liveBeforeKnown?: boolean } = {}): Liveness {
+export function liveness(f: Facts, now: number, o: { liveWhileUnknown?: boolean } = {}): Liveness {
   if (!f.bridgeAlive || f.gone || f.transport === "down" || f.transport === undefined) return "dead";
   if (f.feedback === "open") return "live";
   if (f.fastClock) return "stale";
-  if (f.freshS === null) return o.liveBeforeKnown ? "live" : "stale";
+  if (f.freshS === null) return o.liveWhileUnknown ? "live" : "stale";
   if (f.lastCheckIn === null) return "stale";
   return now - f.lastCheckIn > (f.freshS + FRESH_SLACK_S) * 1000 ? "stale" : "live";
 }

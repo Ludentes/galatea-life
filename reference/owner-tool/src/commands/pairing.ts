@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type Ctx, type Exit, need, Usage } from "../context.js";
 import { Lost, type Body } from "../link.js";
 import { EventFeed, MAX_WAIT_S, waitForTarget } from "../poll.js";
-import { jsonLine, shellQuote } from "../print.js";
+import { jsonLine, noChannelLines, shellQuote } from "../print.js";
 import { sendAtRevision } from "../revision.js";
 import { vocabulary } from "../vocabulary.js";
 import type { Applier, Change, Steward } from "../servers.js";
@@ -39,7 +39,8 @@ const ID = /^[A-Za-z0-9._:/-]{1,128}$/;
  * *Pairing*). Step 1, the applier's `configure` of the `adopt` change and any `tier` changes, at the
  * revision it read, `stale_revision` retried twice. With a name and a room: step 2, the steward's
  * `describe { since_revision, wait_s }` until it shows the device adopted (30 s); step 3, the
- * steward's `define` of the room if it is new and the target with its name and room. A device the
+ * steward's `define` of the room if it is new and the target with its name and room, and nothing else
+ * (an upsert merges, GA-DEF-14: what `describe` shows of the target is never sent back). A device the
  * applier does not describe, a bad class, tier or room, and a steward not reached are refused before
  * anything is sent. A failure after step 1 leaves the device adopted and unnamed: it ends 1 and
  * prints the line to run again (adopting it again with the same class changes nothing).
@@ -85,14 +86,16 @@ export async function adopt(ctx: Ctx, device: string | undefined, cls: string | 
     const seen = await waitForTarget(named.steward, ctx.now, { until: ctx.now() + ADOPTED_WITHIN_S * 1000,
       found: (m) => (m.targets ?? []).find((t: Body) => t.id === device && t.adopted === true) as Body | undefined });
     if (!seen.value) throw new NotSeen(`the steward does not show ${device} adopted after ${ADOPTED_WITHIN_S} s`);
-    const aliases: string[] = Array.isArray(seen.value.aliases) ? seen.value.aliases : [];
     const changes: Change[] = [
       ...(named.room.isNew ? [{ op: "upsert" as const, kind: "room", value: { id: named.room.id, name: named.room.id } }] : []),
-      { op: "upsert", kind: "target", value: { id: device, name: named.name, room: named.room.id, ...(aliases.length ? { aliases } : {}) } },
+      { op: "upsert", kind: "target", value: { id: device, name: named.name, room: named.room.id } },
     ];
     const defined = await sendAtRevision(ctx, "steward", "define", changes, { dryRun: false });
-    ctx.say.out(ctx.json ? jsonLine(defined)
-      : `named ${device} «${named.name}» in ${named.room.id}${named.room.isNew ? " (a new room)" : ""}, revision ${defined.revision}`);
+    if (ctx.json) ctx.say.out(jsonLine(defined));
+    else {
+      ctx.say.out(`named ${device} «${named.name}» in ${named.room.id}${named.room.isNew ? " (a new room)" : ""}, revision ${defined.revision}`);
+      for (const l of noChannelLines(defined)) ctx.say.out(l);
+    }
     return 0;
   } catch (err) {
     if (err instanceof NotSeen) ctx.say.err(`galatea adopt: ${err.message}`);

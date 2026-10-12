@@ -4,8 +4,8 @@ import { StoreUnavailable } from "../src/core/errors.js";
 import { GATE_MS, Store } from "../src/core/store.js";
 import { SEQ_LIFE_GAP } from "../src/core/events.js";
 import { proofOf } from "../src/gate/token.js";
-import type { Mutation } from "../src/mutations.js";
-import { lasting, memoryDb } from "./db.js";
+import { type Mutation, mutantOf } from "../src/mutations.js";
+import { lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 const OWNER = "owner-credential";
@@ -26,9 +26,9 @@ async function make(opts: { mutation?: Mutation; runId?: string; db?: Awaited<Re
   const clock = new FakeClock();
   const retargeted: string[] = [];
   const db = opts.db ?? await memoryDb();
-  const store = await Store.open(db, clock, (err) => { throw err; }, { backlogCap: opts.backlogCap });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations, backlogCap: opts.backlogCap });
   const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: opts.runId ?? "run-1",
-    mutation: opts.mutation, retarget: async (s) => { retargeted.push(s); }, bus: opts.bus });
+    mutant: mutantOf(opts.mutation), retarget: async (s) => { retargeted.push(s); }, bus: opts.bus });
   await a.start();
   const owner = a.caller(OWNER);
   const configure = async (changes: unknown[], extra: Record<string, unknown> = {}) => {
@@ -44,7 +44,7 @@ describe("Applier", () => {
   it("describes an empty model with the run id, and answers unchanged for the current revision", async () => {
     const { a, owner } = await make();
     const d = body(await a.call(owner, "describe", {}));
-    expect(d).toMatchObject({ applier_id: "demo-applier", standard_version: "0.15", levels: ["Act"], revision: 0,
+    expect(d).toMatchObject({ applier_id: "demo-applier", standard_version: "0.16", levels: ["Act"], revision: 0,
       devices: [], clients: [], test_run_id: "run-1" });
     expect(body(await a.call(owner, "describe", { since_revision: 0 }))).toEqual({ revision: 0, unchanged: true });
   });
@@ -360,8 +360,10 @@ describe("Applier", () => {
         actions: [{ action: "onoff.turn_on", tier: "confirm" }] });
       expect(body(await a.call(owner, "events", { cursor })).events.filter((e: any) => e.type === "model")).toMatchObject([
         { revision: r.revision - 1, device: "hall:lamp", class: "light" }, { revision: r.revision, device: "hall:lamp" }]);
+      // The owner brings their own raise back down to the floor (HS35, GA-DESC-14).
       expect(await configure([{ op: "upsert", kind: "tier", value: { device: "hall:lamp", action: "onoff.turn_on", tier: "reversible" } }]))
-        .toMatchObject({ ok: false, error: "invalid_request" });
+        .toMatchObject({ ok: true });
+      expect(body(await a.call(owner, "describe", {})).devices[0].actions).toMatchObject([{ action: "onoff.turn_on", tier: "reversible" }]);
     });
 
     it("forgets a device once its bridge no longer lists it: gone from describe and the store, and unadopted if it returns (GA-ADOPT-1)", async () => {

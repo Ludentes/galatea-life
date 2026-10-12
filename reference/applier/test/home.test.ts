@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { fingerprintOf, Home, MAX_UNLISTED, type HeldDevice, type HeldTransport, type NoticeAsk } from "../src/model/home.js";
+import { firstValue, fingerprintOf, Home, MAX_UNLISTED, type HeldDevice, type HeldTransport, type NoticeAsk } from "../src/model/home.js";
 import type { Declarations } from "../src/model/declarations.js";
 import type { DeviceDoc } from "../src/bus/wire.js";
-import type { Mutation } from "../src/mutations.js";
+import { type Mutation, mutantOf } from "../src/mutations.js";
 import { FakeClock } from "./fake-clock.js";
 
 const B = { id: "hall", identity: "hall-bridge" };
@@ -54,7 +54,7 @@ function setup(mutation?: Mutation, standing: string[] = []) {
     provisioning: (b, e) => void provisioning.push([b, e]),
     connectionsChanged: (b, rows) => void connsChanged.push([b, rows]),
     announced: (b, device, names) => void announced.push([b, device, names]),
-  }, mutation);
+  }, mutantOf(mutation));
   home.follow(new Map([[B.id, B]]));
   /** The owner's adoptions and declarations, as a committed configure gives them. */
   const own = (adoptions: [string, string | null][], declarations: [string, Declarations][] = []) =>
@@ -220,10 +220,10 @@ describe("Home", () => {
 
   const PORCH = { id: "porch", identity: "porch-bridge" };
   /** A home with a second bridge, porch, and what porch sends. */
-  function twoBridges() {
-    const s = setup();
+  function twoBridges(mutation?: Mutation) {
+    const s = setup(mutation);
     s.home.follow(new Map([[B.id, B], [PORCH.id, PORCH]]));
-    const porch = (path: string, body: unknown) => s.home.message(PORCH.identity, path, Buffer.from(JSON.stringify(body)), false);
+    const porch = (path: string, body: unknown, retained = false) => s.home.message(PORCH.identity, path, Buffer.from(JSON.stringify(body)), retained);
     const copy = (extra: Record<string, unknown> = {}) => porch("devices", { devices: [entry("0x01", { stableIdentifier: "test:lamp", ...extra })] });
     const owner = (adoptions: [string, string][] = [], routes: [string, string][] = []) => ({ adoptions: new Map(adoptions.map(([id, c]) =>
       [id, { class: c }])), declarations: new Map(), routes: new Map(routes) });
@@ -309,6 +309,109 @@ describe("Home", () => {
     expect(after.filter((e) => e.type === "state")).toMatchObject([{ body: { target: "hall:lamp", key: "on", value: true } }]);
     // Live on the hall bridge, dead on the porch bridge, which was never heard: one liveness event, live to dead.
     expect(after.filter((e) => e.type === "liveness").map((e) => e.body)).toEqual([{ target: "hall:lamp", old: "live", new: "dead" }]);
+  });
+
+  it("says a key the old route never held as the device's word, one it held otherwise as external, when a route moves the id", () => {
+    const { home, send, copy, owner, porch, events, status } = twoBridges();
+    send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["power"] })] }, true);
+    copy({ capabilities: ["onoff", "sensor"], sensorKeys: ["power"] });
+    home.listening(B.id);
+    send("status", status());
+    send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(0) });
+    porch("devices/0x01/status", { deviceId: "0x01", on: true, power: 3, timestamp: wire(0) });
+    const mark = events.length;
+    const r = { stable_identifier: "test:lamp", device: "hall:lamp", bridge: "porch" };
+    home.setOwner(owner([], [["test:lamp", "porch"]]), { forgotten: [], replaced: [], routed: [r] }, home.routeRows(r));
+    expect(events.slice(mark).filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause]))
+      .toEqual([["on", true, "external"], ["power", 3, "device"]]);
+  });
+
+  it("says a key first reported over a new route as the device's word when the same set adopts it; live over it after, external (GA-EVT-1)", () => {
+    for (const mutation of [undefined, "externalises-a-rerouted-value"] as const) {
+      const { home, send, copy, owner, porch, events, status, clock } = twoBridges(mutation);
+      send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["power"] })] }, true);
+      copy({ capabilities: ["onoff", "sensor"], sensorKeys: ["power"] });
+      for (const [b, at] of [[B, send], [PORCH, porch]] as const) {
+        home.listening(b.id);
+        at("status", status({ bridgeId: b.identity }));
+        at("reply", { requestId: "s-1", op: "snapshot", status: "ok", data: {} });
+      }
+      send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(0) });
+      porch("devices/0x01/status", { deviceId: "0x01", on: false, power: 3, timestamp: wire(0) });
+      const mark = events.length;
+      const r = { stable_identifier: "test:lamp", device: "hall:lamp", bridge: "porch" };
+      const rows = home.routeRows(r);
+      home.setOwner(owner([["hall:lamp", "light"]], [["test:lamp", "porch"]]), { forgotten: [], replaced: [], routed: [r] }, rows);
+      clock.advance(1000);
+      porch("devices/0x01/status", { deviceId: "0x01", power: 4, timestamp: wire(clock.now()) });
+      expect([mutation, events.slice(mark).filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause])])
+        .toEqual([mutation, [["power", 3, mutation ? "external" : "device"], ["power", 4, "external"]]]);
+    }
+  });
+
+  it("asks the new bridge for a snapshot on a route move: a key first reported in its answer is over the new route, device; after the answer, external (R16-4)", () => {
+    for (const mutation of [undefined, "externalises-a-rerouted-value"] as const) {
+      const { home, send, copy, owner, porch, events, status, clock, snapshots } = twoBridges(mutation);
+      const keys = { capabilities: ["onoff", "sensor"], sensorKeys: ["power", "energy", "voltage"] };
+      send("devices", { devices: [entry("lamp", keys)] }, true);
+      copy(keys);
+      for (const [b, at] of [[B, send], [PORCH, porch]] as const) {
+        home.listening(b.id);
+        at("status", status({ bridgeId: b.identity }));
+        at("reply", { requestId: "s-1", op: "snapshot", status: "ok", data: {} });
+      }
+      send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(0) });
+      porch("devices/0x01/status", { deviceId: "0x01", on: false, timestamp: wire(0) });
+      const r = { stable_identifier: "test:lamp", device: "hall:lamp", bridge: "porch" };
+      const asked = snapshots.length;
+      home.setOwner(owner([["hall:lamp", "light"]], [["test:lamp", "porch"]]), { forgotten: [], replaced: [], routed: [r] }, home.routeRows(r));
+      expect(snapshots.slice(asked)).toEqual([PORCH.id]);
+      const mark = events.length;
+      clock.advance(1000);
+      // In the move's snapshot answer: a key the new bridge first reports.
+      porch("devices/0x01/status", { deviceId: "0x01", energy: 7, timestamp: wire(clock.now()) });
+      porch("reply", { requestId: "s-2", op: "snapshot", status: "ok", data: {} });
+      clock.advance(1000);
+      // After the answer: a key first reported live is a hand.
+      porch("devices/0x01/status", { deviceId: "0x01", voltage: 230, timestamp: wire(clock.now()) });
+      expect([mutation, events.slice(mark).filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause])])
+        .toEqual([mutation, [["energy", 7, mutation ? "external" : "device"], ["voltage", 230, "external"]]]);
+    }
+  });
+
+  it("keeps a device's held keys across a route move whose old bridge is no longer registered: a key held otherwise is external (code review CR1)", () => {
+    const { home, send, copy, owner, porch, events, status } = twoBridges();
+    send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["power"] })] }, true);
+    copy({ capabilities: ["onoff", "sensor"], sensorKeys: ["power"] });
+    home.listening(B.id);
+    send("status", status());
+    send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(0) });
+    // The owner unregisters the old bridge: its view of the lamp is gone.
+    home.follow(new Map([[PORCH.id, PORCH]]));
+    porch("devices/0x01/status", { deviceId: "0x01", on: true, power: 3, timestamp: wire(0) }, true);
+    const mark = events.length;
+    const r = { stable_identifier: "test:lamp", device: "hall:lamp", bridge: "porch" };
+    home.setOwner(owner([], [["test:lamp", "porch"]]), { forgotten: [], replaced: [], routed: [r] }, home.routeRows(r));
+    expect(events.slice(mark).filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause]))
+      .toEqual([["on", true, "external"], ["power", 3, "device"]]);
+  });
+
+  it("keeps a device's last values across a route move whose old bridge is no longer registered: an equal value says nothing (code review CR1)", () => {
+    const { home, send, copy, owner, porch, events, status } = twoBridges();
+    send("devices", { devices: [entry("lamp")] }, true);
+    copy();
+    home.listening(B.id);
+    send("status", status());
+    send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(0) });
+    home.follow(new Map([[PORCH.id, PORCH]]));
+    porch("devices/0x01/status", { deviceId: "0x01", on: false, timestamp: wire(0) });
+    const mark = events.length;
+    const r = { stable_identifier: "test:lamp", device: "hall:lamp", bridge: "porch" };
+    home.setOwner(owner([], [["test:lamp", "porch"]]), { forgotten: [], replaced: [], routed: [r] }, home.routeRows(r));
+    expect(events.slice(mark).filter((e) => e.type === "state")).toEqual([]);
+    porch("devices/0x01/status", { deviceId: "0x01", on: true, timestamp: wire(1000) });
+    expect(events.slice(mark).filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause]))
+      .toEqual([["on", true, "external"]]);
   });
 
   it("folds a copy that arrived beside an adopted device into it once its adoption is deleted: one device again", () => {
@@ -473,6 +576,48 @@ describe("Home", () => {
     expect(notices.map((n) => n.devices)).toEqual([["hall:heater"]]);
   });
 
+  it("judges a device adopted in the same set that lowers its extension action, the tier before its adoption counting (GA-ADOPT-3)", () => {
+    const { home, send, notices, own } = setup();
+    const X = "org.galatea.test.box";
+    send("devices", { devices: [entry("box", { otherAdmins: [{ vendor: "demo", label: "cloud" }], actions: [{ action: `${X}.go`, idempotent: false, stateless: true, confirms: true }],
+      extensions: [{ capability: X, actions: [{ action: `${X}.go`, schema: { type: "object" } }], keys: [] }] })] });
+    const before = { adoptions: new Map(), declarations: new Map() };
+    own([["hall:box", "light"]], [["hall:box", { tiers: { [`${X}.go`]: "reversible" }, tier_basis: { [`${X}.go`]: home.fingerprint("hall:box", `${X}.go`)! } }]]);
+    home.adopted(["hall:box"]);
+    expect(notices).toEqual([]);
+    home.adopted(["hall:box"], before);
+    expect(notices.map((n) => n.devices)).toEqual([["hall:box"]]);
+  });
+
+  it("gives a plugin's action the floor its manifest requests, a standard action's and an extension action's (applier, *Default tiers*)", () => {
+    const { send, describe } = setup();
+    const X = "org.galatea.test.box";
+    send("devices", { devices: [entry("box", { capabilities: ["media"], actions: [
+      { action: "media.pause", idempotent: true, stateless: false, confirms: true, requestedTier: "no_voice", toolHash: "a".repeat(64) },
+      { action: `${X}.go`, idempotent: false, stateless: true, confirms: true, requestedTier: "reversible" },
+      { action: `${X}.stop`, idempotent: false, stateless: true, confirms: true, requestedTier: "no_voice" }],
+      extensions: [{ capability: X, actions: [{ action: `${X}.go`, schema: { type: "object" } }, { action: `${X}.stop`, schema: { type: "object" } }], keys: [] }] })] });
+    expect(describe("hall:box").actions.map((a: { action: string; tier: string }) => [a.action, a.tier]))
+      .toEqual([["media.pause", "no_voice"], [`${X}.go`, "confirm"], [`${X}.stop`, "no_voice"]]);
+  });
+
+  it("reads a hosted device's tiers through the computer its bridge names as host, its proposal standing for the owner's flag (applier, *Plugins' actions*)", () => {
+    const { send, describe, own } = setup();
+    const X = "org.galatea.test.box";
+    const pc = (extra: Record<string, unknown> = {}) => entry("pc", { capabilities: ["power"], proposedClass: "computer",
+      actions: [{ action: "power.sleep", idempotent: true, stateless: true, confirms: true }], ...extra });
+    const box = entry("box", { host: "pc", capabilities: ["media", "power"], actions: [
+      { action: "power.shutdown", idempotent: false, stateless: true, confirms: true, requestedTier: "reversible" },
+      { action: `${X}.go`, idempotent: false, stateless: true, confirms: true, requestedTier: "reversible" }],
+      extensions: [{ capability: X, actions: [{ action: `${X}.go`, schema: { type: "object" } }], keys: [] }] });
+    const tiers = (id: string) => describe(id).actions.map((a: { action: string; tier: string }) => [a.action, a.tier]);
+    send("devices", { devices: [pc({ proposedInfrastructure: true }), box] });
+    expect([tiers("hall:pc"), tiers("hall:box")]).toEqual([[["power.sleep", "no_voice"]], [["power.shutdown", "no_voice"], [`${X}.go`, "no_voice"]]]);
+    // The owner's flag, set false, outranks the proposal: the box's shutdown takes the computer row.
+    own([["hall:pc", "computer"], ["hall:box", null]], [["hall:pc", { infrastructure: false }]]);
+    expect([tiers("hall:pc"), tiers("hall:box")]).toEqual([[["power.sleep", "reversible"]], [["power.shutdown", "confirm"], [`${X}.go`, "confirm"]]]);
+  });
+
   it("counts an admin added against the last list known, across an unknown (GA-ADOPT-3)", () => {
     const { send, notices, own } = setup();
     const remote = [{ vendor: "demo", label: "remote" }];
@@ -582,8 +727,9 @@ describe("Home", () => {
     send("devices/lamp/status", report, true);
     send("devices/lamp/status", report);
     expect(lamp().values).toEqual([{ key: "on", value: true, basis_time: wire(at) }]);
+    // A first value, none held before, is the device's word (the plug rehearsal's F3).
     expect(events.filter((e) => e.type === "state").map((e) => e.body)).toEqual([
-      { target: "hall:lamp", key: "on", value: true, basis_time: wire(at), cause: "external" },
+      { target: "hall:lamp", key: "on", value: true, basis_time: wire(at), cause: "device" },
     ]);
   });
 
@@ -864,8 +1010,224 @@ describe("Home", () => {
     expect(events.filter((e) => e.type === "state")).toEqual([]);
     send("devices", { devices: [entry("lamp")] });
     expect(events.filter((e) => e.type === "state").map((e) => e.body)).toEqual([
-      { target: "hall:lamp", key: "on", value: true, basis_time: wire(clock.now()), cause: "external" },
+      { target: "hall:lamp", key: "on", value: true, basis_time: wire(clock.now()), cause: "device" },
     ]);
+  });
+
+  it("takes a key's first value, none held before, as the device's word, not a hand: cause device; its next change external (the plug rehearsal's F3)", () => {
+    const { clock, send, events, heard } = setup();
+    heard();
+    // A just-joined device's interview reads, or any retained status after the applier's restart: nothing known before.
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true }, true);
+    clock.advance(1000);
+    send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(clock.now()), available: true });
+    expect(events.filter((e) => e.type === "state").map((e) => [e.body.value, e.body.cause])).toEqual([[true, "device"], [false, "external"]]);
+  });
+
+  it("takes a key first reported live on an adopted device as a hand: external, as any change (the review's I1)", () => {
+    const { clock, send, events, heard, own } = setup();
+    heard();
+    own([["hall:lamp", "light"]]);
+    clock.advance(60_000);
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    expect(events.filter((e) => e.type === "state").map((e) => [e.body.value, e.body.cause])).toEqual([[true, "external"]]);
+  });
+
+  it("takes an adopted device's first value from a retained status, as after the applier's restart, as the device's word", () => {
+    const { clock, send, events, heard, own } = setup();
+    heard();
+    own([["hall:lamp", "light"]]);
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true }, true);
+    expect(events.filter((e) => e.type === "state").map((e) => [e.body.value, e.body.cause])).toEqual([[true, "device"]]);
+  });
+
+  it("gives values that arrived before their device was known the cause device when the document adds it, a later change external", () => {
+    const { clock, home, send, status, events } = setup();
+    home.listening(B.id);
+    send("status", status());
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    send("devices", { devices: [entry("lamp")] });
+    clock.advance(1000);
+    send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(clock.now()), available: true });
+    expect(events.filter((e) => e.type === "state").map((e) => [e.body.value, e.body.cause])).toEqual([[true, "device"], [false, "external"]]);
+  });
+
+  it("judges a key's first value by one rule at every call site: none held, and an observed arrival or not adopted (code review CR6)", () => {
+    for (const arrival of ["load", "snapshot", "route"] as const) {
+      expect(firstValue({ held: false, arrival, adopted: true })).toBe(true);
+      expect(firstValue({ held: false, arrival, adopted: false })).toBe(true);
+    }
+    expect(firstValue({ held: false, arrival: "live", adopted: false })).toBe(true);
+    expect(firstValue({ held: false, arrival: "live", adopted: true })).toBe(false);
+    for (const arrival of ["load", "snapshot", "route", "live"] as const) {
+      for (const adopted of [false, true]) expect(firstValue({ held: true, arrival, adopted })).toBe(false);
+    }
+  });
+
+  it("keeps how a value arrived while its device is not described: an adopted device's first value in the load is the device's word (code review CR2)", () => {
+    const { clock, home, send, status, events, own } = setup();
+    own([["hall:lamp", "light"]]);
+    home.listening(B.id);
+    // Before the bridge's first live status: the load after the applier's start, whatever the flag says.
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    send("status", status());
+    send("devices", { devices: [entry("lamp")] });
+    expect(events.filter((e) => e.type === "state").map((e) => [e.body.value, e.body.cause])).toEqual([[true, "device"]]);
+  });
+
+  it("takes a live status that came before an adopted device's description, its bridge's snapshot answered, as a hand: external (code review CR2)", () => {
+    const { clock, home, send, status, events, own } = setup();
+    own([["hall:lamp", "light"]]);
+    home.listening(B.id);
+    send("status", status());
+    send("reply", { requestId: "s-1", op: "snapshot", status: "ok", data: {} });
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true }, true);
+    send("devices", { devices: [entry("lamp")] }, true);
+    expect(events.filter((e) => e.type === "state").map((e) => [e.body.value, e.body.cause])).toEqual([[true, "external"]]);
+  });
+
+  /** A home with an adopted lamp sensing power, its bridge heard live and its snapshot answered: what comes now is live. */
+  function settled(mutation?: Mutation) {
+    const s = setup(mutation);
+    s.send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["power"] })] }, true);
+    s.own([["hall:lamp", "light"]]);
+    s.home.listening(B.id);
+    s.send("status", s.status());
+    s.send("reply", { requestId: "s-1", op: "snapshot", status: "ok", data: {} });
+    s.send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(s.clock.now()), available: true });
+    const mark = s.events.length;
+    const states = () => s.events.slice(mark).filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause]);
+    const power = (value: number, retained = false) =>
+      s.send("devices/lamp/status", { deviceId: "lamp", power: value, timestamp: wire(s.clock.now()), available: true }, retained);
+    return { ...s, states, power };
+  }
+
+  it("takes a key first reported live by a running bridge on an adopted device as a hand, retained flag or not: external (GA-EVT-1)", () => {
+    const { states, power } = settled();
+    power(3, true);
+    expect(states()).toEqual([["power", 3, "external"]]);
+    const press = settled("devices-a-live-press");
+    press.power(3);
+    expect(press.states()).toEqual([["power", 3, "device"]]);
+  });
+
+  it("takes a first value in the load after a reconnection as the device's word, until the bridge is heard live (GA-EVT-1)", () => {
+    const { home, states, power, send, status, clock } = settled();
+    home.lost();
+    home.listening(B.id);
+    power(3);
+    expect(states()).toEqual([["power", 3, "device"]]);
+    // Heard live again, the reconnection's snapshot answered: a first value is a hand again.
+    send("status", status());
+    send("reply", { requestId: "s-2", op: "snapshot", status: "ok", data: {} });
+    clock.advance(1000);
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    expect(states()).toEqual([["power", 3, "device"], ["on", true, "external"]]);
+  });
+
+  it("takes a first value in the reconnection's snapshot answer as the device's word, the bridge heard live before it (GA-EVT-1, GA-BUS-6)", () => {
+    const { home, states, power, send, status } = settled();
+    home.lost();
+    home.listening(B.id);
+    send("status", status());
+    power(3);
+    expect(states()).toEqual([["power", 3, "device"]]);
+    const snapshot = settled("externalises-a-snapshot-value");
+    snapshot.home.lost();
+    snapshot.home.listening(B.id);
+    snapshot.send("status", snapshot.status());
+    snapshot.power(3);
+    expect(snapshot.states()).toEqual([["power", 3, "external"]]);
+  });
+
+  it("takes a new instance's first statuses, before and in its snapshot's answer, as the device's word (GA-EVT-1)", () => {
+    for (const how of ["will", "graceful"] as const) {
+      const { states, power, send, status, clock, snapshots } = settled();
+      if (how === "will") send("lwt", { bridgeId: B.identity, instanceId: "11111111-1111-4111-8111-111111111111" });
+      if (how === "graceful") send("status", status({ state: "offline", graceful: true }));
+      // Before the new instance's status: found dead after it was live.
+      power(3);
+      const asked = snapshots.length;
+      send("status", status({ instanceId: "22222222-2222-4222-8222-222222222222" }));
+      expect(snapshots.length).toBe(asked + 1);
+      // Among its first statuses, before the answer.
+      send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+      send("reply", { requestId: "s-3", op: "snapshot", status: "ok", data: {} });
+      clock.advance(1000);
+      power(4);
+      expect([how, states()]).toEqual([how, [["power", 3, "device"], ["on", true, "external"], ["power", 4, "external"]]]);
+    }
+  });
+
+  it("takes a key first reported live by the same running instance, found dead by silence alone, as a hand: external (the review's R16-3)", () => {
+    const { home, states, power, send, status, clock, snapshots } = settled();
+    clock.advance(31_000);
+    home.tick();
+    const asked = snapshots.length;
+    // The same instance, still running: a person's first press, live; silence ended no instance.
+    power(3);
+    send("status", status());
+    clock.advance(1000);
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    expect([snapshots.length - asked, states()]).toEqual([0, [["power", 3, "external"], ["on", true, "external"]]]);
+  });
+
+  it("takes a reading stamped after listening began, the bridge not yet heard live, as no part of the load: external (the review's R16-2)", () => {
+    const s = setup();
+    s.send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["power"] })] }, true);
+    s.own([["hall:lamp", "light"]]);
+    s.home.listening(B.id);
+    s.send("status", s.status(), true);
+    s.send("devices/lamp/status", { deviceId: "lamp", on: false, timestamp: wire(s.clock.now()), available: true }, true);
+    s.clock.advance(6000);
+    // Live, not a delivery on subscribing: the bridge instance has run all along, its next heartbeat not yet due.
+    s.send("devices/lamp/status", { deviceId: "lamp", on: false, power: 3, timestamp: wire(s.clock.now()), available: true });
+    const states = s.events.filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause]);
+    expect(states).toEqual([["on", false, "device"], ["power", 3, "external"]]);
+  });
+
+  it("takes a value first reported live after the snapshot window passed as a hand: external (GA-EVT-1)", () => {
+    const { states, send, status, clock } = settled();
+    send("status", status({ instanceId: "22222222-2222-4222-8222-222222222222" }));
+    send("devices/lamp/status", { deviceId: "lamp", power: 3, timestamp: wire(clock.now()), available: true });
+    clock.advance(11_000);
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    expect(states()).toEqual([["power", 3, "device"], ["on", true, "external"]]);
+  });
+
+  /** A home whose state events throw while `boom()` is true, its lamp sensing power, and what it emitted. */
+  function failing() {
+    let boom = true;
+    const clock = new FakeClock();
+    const events: { type: string; body: Record<string, unknown> }[] = [];
+    const home = new Home(() => clock.now(), {
+      ...NO_NOTICES,
+      emit: (type, body) => { if (boom && type === "state") throw new Error("emit broke"); events.push({ type, body }); },
+      modelChanged: () => undefined, snapshot: () => undefined, log: () => undefined,
+    });
+    home.follow(new Map([[B.id, B]]));
+    const send = (path: string, body: unknown, retained = false) => home.message(B.identity, path, Buffer.from(JSON.stringify(body)), retained);
+    // Before the description: the value is dropped when its announce fails.
+    send("devices/lamp/status", { deviceId: "lamp", on: true, timestamp: wire(clock.now()), available: true });
+    send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["power"] })] });
+    // Live on the described device: its first announce fails too.
+    send("devices/lamp/status", { deviceId: "lamp", power: 3, timestamp: wire(clock.now()), available: true });
+    boom = false;
+    clock.advance(1000);
+    const states = () => events.filter((e) => e.type === "state").map((e) => [e.body.key, e.body.value, e.body.cause]);
+    return { clock, send, states };
+  }
+
+  it("takes a different value after a failed announce as a change, not a first value again (code review CR5)", () => {
+    const { clock, send, states } = failing();
+    send("devices/lamp/status", { deviceId: "lamp", on: false, power: 4, timestamp: wire(clock.now()), available: true }, true);
+    expect(states()).toEqual([["on", false, "external"], ["power", 4, "external"]]);
+  });
+
+  it("takes the same value again after a failed announce as still first: it was never said (code review CR5)", () => {
+    const { clock, send, states } = failing();
+    send("devices/lamp/status", { deviceId: "lamp", on: true, power: 3, timestamp: wire(clock.now()), available: true });
+    expect(states()).toEqual([["on", true, "device"], ["power", 3, "device"]]);
   });
 
   it("changes to stale by tick alone, and to dead after 30 s of silence", () => {

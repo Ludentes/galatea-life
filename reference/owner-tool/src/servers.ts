@@ -31,7 +31,8 @@ export interface Requested {
 /**
  * The steward, as the owner's app credential reaches it at endpoint `owner-app` (steward, *Clients,
  * endpoints and principals*): `describe` (with its wait), `state`, `history` and `define` in plan A;
- * `plan`, `answer`, `apply`, `outcome` and `events` in plan C. Every call that names an endpoint names
+ * `plan`, `answer`, `apply`, `outcome` and `events` in plan C; the four scenario operations for
+ * `galatea scenario`. Every call that names an endpoint names
  * `owner-app`, which the implementation adds.
  */
 export interface Steward {
@@ -49,6 +50,14 @@ export interface Steward {
   outcome(a: { apply_id: string }): Promise<Reply>;
   /** The events after `cursor`, waiting up to `wait_s` (0 to 30) for one; no cursor answers the current one and no events. */
   events(a: { cursor?: string; wait_s?: number }): Promise<Reply>;
+  /** A plan of a scenario's run at `owner-app` (steward, *Scenario runs*): one step per action step, nothing changed. */
+  scenarioPlan(a: { scenario: string }): Promise<Reply>;
+  /** Starts a run from a scenario's plan this credential made, under an idempotency key (GA-SCN-6). */
+  scenarioRun(a: { plan_id: string; idempotency_key: string }): Promise<Reply>;
+  /** A run's status: `running` or `ended` with its reason, `failed_steps` and `sent_steps` (GA-SCN-11). */
+  scenarioStatus(a: { run_id: string }): Promise<Reply>;
+  /** Stops a run, as asked at `owner-app` (GA-SCN-9); the answer is its status. */
+  scenarioStop(a: { run_id: string }): Promise<Reply>;
 }
 
 /** The owner's own endpoint at the steward, which every call of the tool names. */
@@ -101,5 +110,17 @@ export class McpSteward implements Steward {
   events(a: { cursor?: string; wait_s?: number }): Promise<Reply> {
     // The long-poll's own wait, and a margin for the answer to travel.
     return this.link.call("events", a, ((a.wait_s ?? 0) + 30) * 1000);
+  }
+  scenarioPlan(a: { scenario: string }): Promise<Reply> {
+    return this.link.call("scenario_plan", { scenario: a.scenario, endpoint: OWNER_APP });
+  }
+  scenarioRun(a: { plan_id: string; idempotency_key: string }): Promise<Reply> {
+    return this.link.call("scenario_run", a);
+  }
+  scenarioStatus(a: { run_id: string }): Promise<Reply> {
+    return this.link.call("scenario_status", a);
+  }
+  scenarioStop(a: { run_id: string }): Promise<Reply> {
+    return this.link.call("scenario_stop", { run_id: a.run_id, endpoint: OWNER_APP });
   }
 }

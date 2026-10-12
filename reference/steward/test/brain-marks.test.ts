@@ -85,8 +85,8 @@ describe("brain_authored marks (GA-DEF-7)", () => {
     expect(draft.schedules.get("eve")?.exceptions).toEqual([{ date: "2026-10-07", action: "move", time: "23:00", brain_authored: true },
       { date: "2026-10-08", action: "skip" }]);
     expect(draft.rules.get("dark")?.brain_authored).toBeUndefined();
-    // A move a brain made is removed by naming the move, its mark aside.
-    expect(by(draft, [del("schedule_exception", { schedule: "eve", date: "2026-10-07", action: "move", time: "23:00" })], false)
+    // A move a brain made is removed by its key, its schedule and date (GA-DEF-14).
+    expect(by(draft, [del("schedule_exception", { schedule: "eve", date: "2026-10-07" })], false)
       .draft.schedules.get("eve")?.exceptions).toEqual([{ date: "2026-10-08", action: "skip" }]);
     // The owner sets that date again: the move is the owner's.
     const owners = by(draft, [up("schedule_exception", { schedule: "eve", date: "2026-10-07", action: "move", time: "23:00" })], false).draft;

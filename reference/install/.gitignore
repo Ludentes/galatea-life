@@ -3,5 +3,7 @@
 .env
 instances
 secrets/
+tls/
 backups/
+backups-secrets/
 zigbee/

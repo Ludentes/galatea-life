@@ -39,6 +39,21 @@ export interface PumpOptions {
    * before it resolves.
    */
   send: (batch: Notice[], key: string) => Promise<void>;
+  /** Whether notices are held: no adopted channel offers `notify` (GA-NOTE-1). Held notices coalesce. */
+  holding?: () => boolean;
+}
+
+/**
+ * What held notices coalesce by (GA-NOTE-1): their source, their kind (an applier notice's `cause`, or
+ * the cause of the steward's own) and their target: the device or devices, and the rule, scenario,
+ * group or schedule they are of, each a field of the notice, never only its text. Ruled: a notice
+ * naming no target coalesces with its kind's others naming none.
+ */
+function heldKey(n: Notice): string {
+  const d = n.doc;
+  const device = d.target ?? (Array.isArray(d.devices) ? [...(d.devices as unknown[])].map(String).sort() : undefined) ?? null;
+  // The item a notice is about beside its device: two rules' notices on one device stay apart (the review, I1).
+  return JSON.stringify([n.source, d.cause ?? null, device, d.rule_id ?? d.rule ?? null, d.scenario ?? null, d.group ?? null, d.schedule ?? null]);
 }
 
 /**
@@ -62,6 +77,8 @@ export class NoticePump {
   private readonly byApplier = new Map<string, Map<string, string>>();
   private readonly saving = new Map<string, boolean>();
   private stopped = false;
+  /** A retry came while an attempt was out: the next is made as soon as it ends. */
+  private again = false;
 
   constructor(private readonly o: PumpOptions) {}
 
@@ -81,8 +98,39 @@ export class NoticePump {
     }
     for (const n of notices) {
       const id = String(n.notice_id ?? "");
-      if (id && !this.notices.has(id)) this.raise({ notice_id: id, source: "applier", doc: { ...n }, attempts: 0, delivered: false });
+      if (!id || this.notices.has(id)) continue;
+      const notice: Notice = { notice_id: id, source: "applier", doc: { ...n }, attempts: 0, delivered: false };
+      const kept = this.heldLike(notice);
+      if (!kept) {
+        this.raise(notice);
+        continue;
+      }
+      // Held and of a kind and target already held: the kept one takes its text, and it waits on the kept one's delivery.
+      this.foldInto(kept, notice.doc);
+      notice.doc = { ...notice.doc, folded_into: kept.notice_id };
+      this.notices.set(id, notice);
+      this.o.event({ notice_id: id, change: "raised", source: "applier", ...notice.doc });
+      this.save(id);
     }
+  }
+
+  /** While notices are held, the one held of `n`'s kind and target, if any (GA-NOTE-1). */
+  private heldLike(n: Notice): Notice | undefined {
+    if (!this.o.holding?.()) return undefined;
+    const key = heldKey(n);
+    return this.waiting().find((x) => x.notice_id !== n.notice_id && x.notice_id !== SUMMARY_ID && heldKey(x) === key);
+  }
+
+  /** `kept` takes the latest of its kind and target, `doc`, counting the ones it replaced (GA-NOTE-1). */
+  private foldInto(kept: Notice, doc: Body): void {
+    const count = Number(kept.doc.count ?? 1) + 1;
+    kept.doc = { ...doc, count, text: `${String(doc.text ?? "")} (${count} times)` };
+    this.save(kept.notice_id);
+  }
+
+  /** How many notices wait for delivery: `describe`'s `held_notices` while no channel offers `notify` (GA-NOTE-1). */
+  held(): number {
+    return this.waiting().length;
   }
 
   /** The ids `notice_taken` names on the next `events` call: every applier notice delivered and still listed. */
@@ -106,6 +154,11 @@ export class NoticePump {
       return;
     }
     if (subject !== undefined) extra = { ...extra, subject };
+    const held = this.heldLike({ notice_id: id, source: "steward", doc: { cause, ...extra, text }, attempts: 0, delivered: false });
+    if (held) {
+      this.foldInto(held, { cause, ...extra, text });
+      return;
+    }
     if (this.ownWaiting() >= OWN_PENDING_CAP) {
       this.fold();
       return;
@@ -167,7 +220,25 @@ export class NoticePump {
 
   /** The notices waiting for delivery, in id order. */
   private waiting(): Notice[] {
-    return this.all().filter((n) => !n.delivered);
+    return this.all().filter((n) => !n.delivered && n.doc.folded_into === undefined);
+  }
+
+  /** A step: notices may no longer be held (a notify channel set, or adopted again): every one waiting is tried at once. */
+  retry(): void {
+    if (this.trying) this.again = true;
+    else if (!this.stopped && this.waiting().length) this.arm(0);
+  }
+
+  /**
+   * A step: `id` is taken as delivered with no attempt, an applier's to be `notice_taken`, a steward's
+   * forgotten (the mutations loses-an-early-notice and forgets-an-unsent-notice).
+   */
+  lose(id: string): void {
+    const n = this.notices.get(id);
+    if (!n || n.delivered) return;
+    n.delivered = true;
+    if (n.source === "steward") this.forget(id);
+    else this.save(id);
   }
 
   private arm(ms: number): void {
@@ -178,9 +249,13 @@ export class NoticePump {
     }, ms);
   }
 
-  /** One attempt for every notice waiting, unless one is still out; the next is armed 60 s on. */
+  /**
+   * One attempt for every notice waiting, unless one is still out; the next is armed 60 s on. While
+   * notices are held none is made and none armed: `retry`, when a notify channel comes, tries at once
+   * (the code review, CR6).
+   */
   private async attempt(): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped || this.o.holding?.()) return;
     const batch = this.waiting();
     if (!batch.length) return;
     this.arm(NOTICE_RETRY_MS);
@@ -199,7 +274,9 @@ export class NoticePump {
       this.trying = false;
     }
     // A notice raised while the attempt was out is tried now.
-    if (!this.stopped && this.waiting().some((n) => n.attempts === 0)) this.arm(0);
+    const again = this.again;
+    this.again = false;
+    if (!this.stopped && (again || this.waiting().some((n) => n.attempts === 0)) && this.waiting().length) this.arm(0);
   }
 
   /** A step: an attempt's answer, each step's notice and whether it was delivered; the apply id kept for the attempt's later outcome events. */
@@ -222,6 +299,8 @@ export class NoticePump {
     this.o.event({ notice_id: id, change: "delivered", source: n.source });
     if (n.source === "steward") this.forget(id);
     else this.save(id);
+    // The notices it took in are delivered with it (GA-NOTE-1).
+    for (const x of [...this.notices.values()]) if (x.doc.folded_into === id) this.delivered(x.notice_id);
   }
 
   private forget(id: string): void {

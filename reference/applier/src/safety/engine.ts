@@ -1,9 +1,9 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import type { Store } from "../core/store.js";
 import type { Tx } from "../core/db.js";
 import type { HeldApply, Outcome } from "../dispatch/records.js";
 import { MAY_HAVE_ACTED } from "../dispatch/rules.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import type { Liveness } from "../state/liveness.js";
 import { actuated, devicesOf, evaluate, evaluate3, terms, type RuleAction, type SafetyRule } from "./language.js";
 import { Latches } from "./latches.js";
@@ -12,7 +12,7 @@ import { LivenessNotices } from "./liveness-notices.js";
 /** What the rules ask of the applier around them. */
 export interface SafetyPorts {
   store: Store;
-  mutation?: Mutation;
+  mutant: Mutant;
   /** The applier's clock: its time, and the re-sends' timers. */
   clock: Clock;
   /** A device's liveness as the applier judges it now; undefined when the model does not hold it. */
@@ -136,9 +136,9 @@ export class SafetyRules {
   private readonly watch: LivenessNotices;
 
   constructor(private readonly o: SafetyPorts) {
-    this.latches = new Latches({ store: o.store, now: () => o.clock.now(), mutation: o.mutation, reported: o.reported, assumed: o.assumed,
+    this.latches = new Latches({ store: o.store, now: () => o.clock.now(), mutant: o.mutant, reported: o.reported, assumed: o.assumed,
       liveness: o.liveness, emit: o.emit });
-    this.watch = new LivenessNotices({ clock: o.clock, store: o.store, mutation: o.mutation, liveness: o.liveness, planned: o.planned, bound: o.bound,
+    this.watch = new LivenessNotices({ clock: o.clock, store: o.store, mutant: o.mutant, liveness: o.liveness, planned: o.planned, bound: o.bound,
       notice: o.notice, withdraw: o.withdraw });
     this.watch.rules = (device) => this.touching(device);
   }
@@ -175,14 +175,14 @@ export class SafetyRules {
     await this.watch.load();
     const seen = await this.o.store.query<{ device: string; key: string; basis_ms: number | string }>("SELECT device, key, basis_ms FROM safety_seen");
     // `forgets-what-it-saw`: the seen bases are not read back.
-    if (this.o.mutation !== "forgets-what-it-saw") for (const r of seen.rows) this.seen.set(seenKey(r.device, r.key), Number(r.basis_ms));
+    if (!this.o.mutant.forgetsWhatItSaw) for (const r of seen.rows) this.seen.set(seenKey(r.device, r.key), Number(r.basis_ms));
     const state = await this.o.store.query<{ rule_id: string; trigger_true: boolean; apply_id: string | null; acts: KeptAct[] | null;
       wait_said: string | null }>("SELECT rule_id, trigger_true, apply_id, acts, wait_said FROM safety_state");
     for (const r of state.rows) {
       if (!this.rules.has(r.rule_id)) continue;
       this.triggered.set(r.rule_id, r.trigger_true);
       // `forgets-a-running-rule`: a run the last life left is not read back.
-      if (r.apply_id === null || this.o.mutation === "forgets-a-running-rule") continue;
+      if (r.apply_id === null || this.o.mutant.forgetsARunningRule) continue;
       this.left.push({ rule_id: r.rule_id, apply_id: r.apply_id, ...(r.acts ? { acts: r.acts } : {}),
         ...(r.wait_said !== null ? { wait_said: r.wait_said } : {}) });
     }
@@ -373,7 +373,7 @@ export class SafetyRules {
     // A firing's records (its seen basis, latch, run, waiting row and state) commit as one write set, or
     // none of them: a crash never keeps a latch whose run was lost (GA-SAFE-3). `loses-a-fired-run`
     // hands them one by one, as before slice 7b.
-    if (this.o.mutation === "loses-a-fired-run") this.judgeReport(device, readings);
+    if (this.o.mutant.losesAFiredRun) this.judgeReport(device, readings);
     else this.o.store.group(() => this.judgeReport(device, readings));
   }
 
@@ -403,8 +403,8 @@ export class SafetyRules {
 
   /** An open device's assumed state moved: a rule never reads it (GA-SAFE-11, GA-SAFE-7), but under its mutations. */
   assumedChanged(device: string, keys: string[]): void {
-    if (this.o.mutation === "fires-on-an-assumed-value") this.judge(device, keys);
-    if (this.o.mutation === "clears-a-latch-on-an-assumed-value") this.latches.check(this.rules, device);
+    if (this.o.mutant.firesOnAnAssumedValue) this.judge(device, keys);
+    if (this.o.mutant.clearsALatchOnAnAssumedValue) this.latches.check(this.rules, device);
   }
 
   /**
@@ -435,7 +435,7 @@ export class SafetyRules {
   /** What a rule reads: the reported value; an assumed one only under `fires-on-an-assumed-value`. */
   private readonly read = (device: string, key: string): unknown => {
     const v = this.o.reported(device, key);
-    return v === undefined && this.o.mutation === "fires-on-an-assumed-value" ? this.o.assumed(device, key) : v;
+    return v === undefined && this.o.mutant.firesOnAnAssumedValue ? this.o.assumed(device, key) : v;
   };
 
   private reads(device: string, key: string): boolean {
@@ -484,14 +484,14 @@ export class SafetyRules {
     else if (kind === "final") done(FINAL_WHY[o.reason ?? ""]);
     else if (kind === "nothing_ran") {
       // `gives-up-on-dead`: an actuation that did not run is final, and no waiting notice says it waits.
-      if (this.o.mutation === "gives-up-on-dead") done();
+      if (this.o.mutant.givesUpOnDead) done();
       else this.wait(r, i);
     } else if (kind === "may_have_run" && !decl && this.o.liveness(act.action.target) === "dead") {
       // Not described yet in this life (a start): judged on its return, its declaration known by then.
       act.unsure = true;
       this.wait(r, i);
     } else if (kind === "may_have_run") {
-      const idempotent = decl?.idempotent === true || this.o.mutation === "resends-what-may-have-run";
+      const idempotent = decl?.idempotent === true || this.o.mutant.resendsWhatMayHaveRun;
       if (!idempotent) done("not sent again: it may have run, and is not idempotent");
       else if (this.o.landed(act.action.target, act.action.action, act.action.args ?? {}, r.fired)) done();
       else this.wait(r, i);
@@ -555,7 +555,7 @@ export class SafetyRules {
         this.keepState(r.rule_id);
         this.settle(r);
       };
-      if (decl?.idempotent !== true && this.o.mutation !== "resends-what-may-have-run") return done("not sent again: it may have run, and is not idempotent");
+      if (decl?.idempotent !== true && !this.o.mutant.resendsWhatMayHaveRun) return done("not sent again: it may have run, and is not idempotent");
       if (this.o.landed(act.action.target, act.action.action, act.action.args ?? {}, r.fired)) return done();
     }
     act.attempt++;

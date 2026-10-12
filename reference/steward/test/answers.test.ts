@@ -45,14 +45,22 @@ describe("answer", () => {
     expect(await error(SECRETS.owner, "answer", { ...answer("yes"), endpoint: "owner-app" })).toBe("not_permitted");
   });
 
-  it("puts an unknown plan, a plan with no ask and a step not asked as invalid_request (GA-CONF-2)", async () => {
+  it("puts an unknown plan as unknown_plan (GA-PERSIST-2), a plan with no ask and a step not asked as invalid_request (GA-CONF-2)", async () => {
     const { ok, error } = await setup();
     const asked = await ok(SECRETS.olga, "plan", { endpoint: "olga-app", actions: [on(DIMMER), on(LAMP)] });
     const plain = await ok(SECRETS.olga, "plan", { endpoint: "olga-app", actions: [on(LAMP)] });
-    expect(await error(SECRETS.olga, "answer", { plan_id: "no-such-plan", endpoint: "olga-app", answers: { s1: "yes" } })).toBe("invalid_request");
+    expect(await error(SECRETS.olga, "answer", { plan_id: "no-such-plan", endpoint: "olga-app", answers: { s1: "yes" } })).toBe("unknown_plan");
     expect(await error(SECRETS.olga, "answer", { plan_id: plain.plan_id, endpoint: "olga-app", answers: { s1: "yes" } })).toBe("invalid_request");
     expect(await error(SECRETS.olga, "answer", { plan_id: asked.plan_id, endpoint: "olga-app", answers: { s2: "yes" } })).toBe("invalid_request");
     expect(await error(SECRETS.olga, "answer", { plan_id: asked.plan_id, endpoint: "olga-app", answers: { s1: "yes", s2: "yes" } })).toBe("invalid_request");
+  });
+
+  it("refuses a credential an endpoint not bound to it the same way whether or not the plan exists (the code review, CR10)", async () => {
+    const { ok, error } = await setup();
+    const asked = await ok(SECRETS.olga, "plan", { endpoint: "olga-app", actions: [on(DIMMER)] });
+    const probe = (plan_id: string) => error(SECRETS.panel, "answer", { plan_id, endpoint: "olga-app", answers: { s1: "yes" } });
+    expect(await probe(asked.plan_id)).toBe("not_permitted");
+    expect(await probe("no-such-plan")).toBe("not_permitted");
   });
 
   it("takes an unasked step's yes under answers-unasked-steps", async () => {
@@ -229,6 +237,25 @@ describe("answer", () => {
     const c = await setup({ db, clock, define: false, applierRevision: 2 });
     expect(await c.error(SECRETS.brain, "answer", { plan_id: plan.plan_id, endpoint: "kitchen-voice", speaker: "olga", answers: { s1: "no" },
       utterance: heardAt(clock, "kitchen-voice") })).toBe("stale_revision");
+  });
+
+  it("keeps a plan with an ask across a restart, and loses one with none, its apply and answer unknown_plan; loses both under forgets-an-asked-plan (GA-PERSIST-2)", async () => {
+    for (const mutation of [undefined, "forgets-an-asked-plan"] as const) {
+      const db = lasting(await memoryDb());
+      const clock = new FakeClock();
+      const a = await setup({ db, clock, mutation });
+      const asked = await a.ok(SECRETS.olga, "plan", { endpoint: "olga-app", actions: [on(DIMMER)] });
+      const plain = await a.ok(SECRETS.olga, "plan", { endpoint: "olga-app", actions: [on(LAMP)] });
+      await a.ok(SECRETS.olga, "answer", { plan_id: asked.plan_id, endpoint: "olga-app", answers: { s1: "yes" } });
+      await a.store.settled();
+      a.steward.stop();
+      await a.store.close();
+      const b = await setup({ db, clock, define: false, mutation });
+      const apply = (plan_id: string) => b.error(SECRETS.olga, "apply", { plan_id, idempotency_key: `k-${plan_id}` });
+      expect(await apply(plain.plan_id)).toBe("unknown_plan");
+      expect(await b.error(SECRETS.olga, "answer", { plan_id: plain.plan_id, endpoint: "olga-app", answers: { s1: "yes" } })).toBe("unknown_plan");
+      expect(await apply(asked.plan_id)).toBe(mutation ? "unknown_plan" : "ok");
+    }
   });
 
   it("moves the house at a start against another applier, even at the same revision", async () => {

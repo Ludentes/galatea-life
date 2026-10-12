@@ -168,3 +168,46 @@ describe("the lease table: a provisional lease lifted (the milestone review, B6)
     expect(ended).toEqual([LAMP]);
   });
 });
+
+describe("the lease table: a provisional lease's refused rules handed on (the code review, CR3, CR9)", () => {
+  const table = (ended: string[]) => new LeaseTable({ clock: new FakeClock(), store: { write: async () => undefined } as never,
+    event: () => undefined, ended: (t, rules) => { ended.push(`${t} ${rules.join(",")}`); } });
+  const person = { holder: { endpoint: "olga-app" }, precedence: "person" as const };
+  const safety = (sinceMs: number) => ({ target: LAMP, holder: { safety_rule: "night" }, precedence: "safety_rule" as const, sinceMs, expiresMs: null });
+
+  it("gives the rules a refused grant held off to the lease that holds the device then (CR3)", () => {
+    const ended: string[] = [];
+    const t = table(ended);
+    t.lay(LAMP, { apply: "a1", step: "s1", ...person });
+    t.refused(LAMP, "evening");
+    // A safety rule takes the device before the applier answers: the person's grant is refused.
+    expect(t.grant(safety(0))).toBe(true);
+    t.settle(LAMP, "a1", "s1", { sinceMs: 0, holdMs: 60_000 });
+    expect(t.of(LAMP)?.holder).toEqual({ safety_rule: "night" });
+    expect(t.of(LAMP)?.refused).toEqual(["evening"]);
+    expect(ended).toEqual([]);
+  });
+
+  it("gives the rules a lifted lease held off to the lease beneath it, not to an end at once (CR9)", () => {
+    const ended: string[] = [];
+    const t = table(ended);
+    expect(t.grant({ target: LAMP, ...person, sinceMs: 0, expiresMs: 600_000 })).toBe(true);
+    t.lay(LAMP, { apply: "a1", step: "s1", ...person });
+    t.refused(LAMP, "evening");
+    t.settle(LAMP, "a1", "s1", undefined);
+    expect(ended).toEqual([]);
+    expect(t.of(LAMP)?.refused).toEqual(["evening"]);
+  });
+
+  it("gives them to the provisional lease beneath it when there is one, which then re-evaluates when lifted (CR9)", () => {
+    const ended: string[] = [];
+    const t = table(ended);
+    t.lay(LAMP, { apply: "a1", step: "s1", ...person });
+    t.lay(LAMP, { apply: "a2", step: "s1", ...person });
+    t.refused(LAMP, "evening");
+    t.settle(LAMP, "a2", "s1", undefined);
+    expect(ended).toEqual([]);
+    t.settle(LAMP, "a1", "s1", undefined);
+    expect(ended).toEqual([`${LAMP} evening`]);
+  });
+});

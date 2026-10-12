@@ -1,5 +1,6 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "./clock.js";
 import { isFault, maskUrls, StoreError, type Db, type Tx } from "./db.js";
+import { quiet, type Log } from "./log.js";
 
 /** One step's writes. The writer may run it twice (see `Writer`), so it must be safe to. */
 export type WriteSet = (tx: Tx) => Promise<void>;
@@ -47,7 +48,7 @@ export class Writer {
     private readonly db: Db,
     private readonly clock: Clock,
     private readonly onFault: (err: unknown) => void,
-    private readonly log: (line: string) => void = (line) => console.error(line),
+    private readonly log: Log = quiet,
     private readonly cap = BACKLOG_CAP,
   ) {}
 

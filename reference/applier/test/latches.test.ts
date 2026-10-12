@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Mutant } from "../src/mutations.js";
 import { Latches } from "../src/safety/latches.js";
 import type { SafetyRule } from "../src/safety/language.js";
 import { lasting, memoryDb } from "./db.js";
@@ -153,7 +154,7 @@ describe("the undos raised after latches clear (GA-SAFE-7)", () => {
   /** Latches alone, over a store that keeps nothing: what they raise is in memory. */
   function latches(values: Record<string, unknown>) {
     const store = { write: async () => undefined, query: async () => ({ rows: [] }) } as never;
-    return new Latches({ store, now: () => 0, reported: (d, k) => values[`${d} ${k}`], assumed: () => undefined,
+    return new Latches({ store, now: () => 0, mutant: Mutant.none, reported: (d, k) => values[`${d} ${k}`], assumed: () => undefined,
       liveness: () => "live", emit: () => undefined });
   }
   const cond = { latch: { condition: { ...LEAK, value: false } } };

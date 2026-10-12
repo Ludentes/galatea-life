@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { Applier, type BusPort, type ToolResult } from "../src/applier.js";
-import type { Puback } from "../src/bus/client.js";
+import type { Puback } from "../src/bus/port.js";
 import { StoreUnavailable } from "../src/core/errors.js";
 import { GATE_MS, Store } from "../src/core/store.js";
 import { ACK_GRACE_MS, LATE_ACK_MS, MAX_ATTEMPTS, REISSUE_GAP_MS, reissuable } from "../src/dispatch/dispatcher.js";
 import { HELD_MS } from "../src/dispatch/records.js";
 import { proofOf } from "../src/gate/token.js";
-import type { Mutation } from "../src/mutations.js";
-import { lasting, memoryDb } from "./db.js";
+import { type Mutation, mutantOf } from "../src/mutations.js";
+import { lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 const OWNER = "owner-credential";
@@ -84,9 +84,9 @@ async function home(opts: { mutation?: Mutation; db?: Awaited<ReturnType<typeof 
   start?: boolean } = {}) {
   const clock = new FakeClock();
   const db = opts.db ?? await memoryDb();
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   const fb = fakeBus();
-  const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1", mutation: opts.mutation, bus: fb.bus });
+  const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1", mutant: mutantOf(opts.mutation), bus: fb.bus });
   if (opts.start !== false) await a.start();
   const owner = a.caller(OWNER);
   const configure = async (changes: unknown[]) => {
@@ -107,6 +107,8 @@ async function home(opts: { mutation?: Mutation; db?: Awaited<ReturnType<typeof 
     send("hall-bridge", "devices", { devices }, true);
     a.listening("hall");
     send("hall-bridge", "status", status("hall-bridge", devices.map((d) => d.id)));
+    // The bridge answers the snapshot its first live status asked for: what it reports next is live (applier, *Causes*).
+    send("hall-bridge", "reply", { requestId: "snapshot-1", op: "snapshot", status: "ok", data: {} });
     await configure(devices.map((d) => ({ op: "upsert", kind: "adopt", value: { device: `hall:${d.id}`, class: d.proposedClass } })));
   }
   const h = a.caller("h-credential");

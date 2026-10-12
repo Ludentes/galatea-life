@@ -1,6 +1,6 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import type { Store } from "../core/store.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import type { Liveness } from "../state/liveness.js";
 
 /** A planned death's grace before its notice: a reload, or the broker's loss (⚠️ a guess, GA-SAFE-10). */
@@ -13,7 +13,7 @@ export interface LivenessPorts {
   clock: Clock;
   /** Where a said stop is kept, so a restart neither says it again nor misses its return. */
   store: Store;
-  mutation?: Mutation;
+  mutant: Mutant;
   liveness(device: string): Liveness | undefined;
   /** The bridge of a device `dead` only because that bridge's death was planned; undefined otherwise. */
   planned(device: string): string | undefined;
@@ -72,13 +72,13 @@ export class LivenessNotices {
       return;
     }
     if (old !== "live") return;
-    const bridge = this.o.mutation === "floods-reload-notices" ? undefined : this.o.planned(device);
+    const bridge = this.o.mutant.floodsReloadNotices ? undefined : this.o.planned(device);
     if (bridge !== undefined && (this.deaths.get(bridge)?.length ?? 0) < 2) {
       if (this.graced.has(device)) return;
       this.graced.set(device, this.o.clock.setTimeout(() => {
         this.graced.delete(device);
         // `silent-on-liveness`: a device still dead after its grace is never noticed.
-        if (this.o.mutation === "silent-on-liveness" || this.o.liveness(device) === "live") return;
+        if (this.o.mutant.silentOnLiveness || this.o.liveness(device) === "live") return;
         for (const rule of this.rules(device)) this.sayStopped(rule, device, `${device} has not been live for ${GRACE_MS / 1000} s, since its bridge went offline.`);
       }, GRACE_MS));
       return;
@@ -90,7 +90,7 @@ export class LivenessNotices {
   /** The stops said before a restart: said once, their return said after it (GA-SAFE-10). */
   async load(): Promise<void> {
     // `forgets-a-said-stop`: the stops said before the restart are not read back.
-    if (this.o.mutation === "forgets-a-said-stop") return;
+    if (this.o.mutant.forgetsASaidStop) return;
     for (const r of (await this.o.store.query<{ key: string }>("SELECT key FROM safety_said")).rows) this.stopped.add(r.key);
   }
 
@@ -104,7 +104,7 @@ export class LivenessNotices {
       if (this.o.liveness(device) === "live" || this.graced.has(device)) continue;
       this.graced.set(device, this.o.clock.setTimeout(() => {
         this.graced.delete(device);
-        if (this.o.mutation === "silent-on-liveness" || this.o.liveness(device) === "live") return;
+        if (this.o.mutant.silentOnLiveness || this.o.liveness(device) === "live") return;
         for (const rule of this.rules(device)) {
           if (this.stopped.has(key(rule, device))) continue;
           this.sayStopped(rule, device, `${device} has not been live for ${GRACE_MS / 1000} s, since the applier started.`);

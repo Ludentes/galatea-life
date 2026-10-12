@@ -1,6 +1,7 @@
 import type { Clock } from "@ludentes/galatea-life-test-clock";
 import type { Tx } from "../core/db.js";
 import type { Store } from "../core/store.js";
+import type { Mutation } from "../mutations.js";
 
 /** A lease's precedence, highest first (steward, *Leases*). */
 export type Precedence = "safety_rule" | "person" | "scheduled_run" | "rule";
@@ -23,13 +24,15 @@ export interface Lease {
   expiresMs: number | null;
   /** The steward's apply whose step it came from, so a later `unreachable` of that step ends it (GA-LEASE-1). */
   apply?: string;
+  /** The rules it refused an action of while it held, re-evaluated at its end (GA-LEASE-4), in code-point order. */
+  refused?: string[];
 }
 
 /**
  * A lease laid at dispatch over a device's lease until the applier answers (the design, *Apply and
  * dispatch*); `refused` once a change it outranked was refused by it, so lifting it re-evaluates.
  */
-interface Provisional { apply: string; step: string; holder: Holder; precedence: Precedence; refused?: true }
+interface Provisional { apply: string; step: string; holder: Holder; precedence: Precedence; refused?: true; rules?: string[] }
 
 /** Whether a change at `p` meets `lease` as lower precedence, so it is refused (GA-LEASE-3); equal or higher replaces. */
 export function refusedBy(lease: Pick<Lease, "precedence"> | undefined, p: Precedence): boolean {
@@ -61,12 +64,21 @@ export interface LeaseOptions {
   /** Puts a `lease` event (granted, replaced, ended) in the steward's log. */
   event: (body: Record<string, unknown>) => void;
   /**
-   * Told when a lease comes off a device, or a provisional lease that refused a change is lifted:
-   * GA-LEASE-4's re-evaluation hangs here (slice 3b). A provisional lease lifted that refused nothing
-   * held nothing off, and is no lease ending.
+   * Told when a lease comes off a device, or a provisional lease that refused a change is lifted, with
+   * the rules it refused: GA-LEASE-4's re-evaluation hangs here. A provisional lease lifted that
+   * refused nothing held nothing off, and is no lease ending.
    */
-  ended: (target: string) => void;
+  ended: (target: string, rules: string[], lease?: Lease) => void;
+  /**
+   * Told whenever a lease comes off a device, a lease beneath it taking its place or none: a safety
+   * rule's that ran out its time ended early (GA-LEASE-6; the code review, CR4).
+   */
+  cameOff?: (target: string, lease: Lease) => void;
+  mutation?: Mutation;
 }
+
+/** `a` and `b` together, once each, in code-point order. */
+const union = (a: string[] = [], b: string[] = []) => [...new Set([...a, ...b])].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
 
 /**
  * The lease table (the design, *Leases*): each device's lease, in memory and in the store, with one
@@ -117,6 +129,8 @@ export class LeaseTable {
   grant(l: Lease): boolean {
     const now = this.leases.get(l.target);
     if (refusedBy(now, l.precedence)) return false;
+    // A replaced lease hands the rules it refused to the one replacing it, which re-evaluates them at its end (GA-LEASE-4).
+    if (now?.refused?.length && this.o.mutation !== "forgets-a-replaced-lease") l = { ...l, refused: union(l.refused, now.refused) };
     const rule = safetyRuleOf(l);
     if (rule !== undefined) {
       const kept = (this.beneath.get(l.target) ?? []).filter((x) => safetyRuleOf(x) !== rule);
@@ -138,14 +152,20 @@ export class LeaseTable {
     const rest = (this.beneath.get(target) ?? []).filter((x) => x.expiresMs === null || x.expiresMs > now);
     const next = rest.pop();
     this.setBeneath(target, rest);
+    this.o.cameOff?.(target, l);
     if (next) {
-      this.set(next);
+      this.set({ ...next, ...(l.refused?.length ? { refused: union(next.refused, l.refused) } : {}) });
       this.o.event({ target, change: "replaced", ...leaseView(next) });
       return;
     }
     this.drop(target);
     this.o.event({ target, change: "ended", ...leaseView(l) });
-    this.o.ended(target);
+    this.o.ended(target, l.refused ?? [], l);
+  }
+
+  /** Every rule a standing lease refused (GA-LEASE-4): after a restart, a firing a lease refused does not count as fired (GA-RULE-1). */
+  refusedRules(): string[] {
+    return union([...this.leases.values()].flatMap((l) => l.refused ?? []));
   }
 
   /**
@@ -175,12 +195,22 @@ export class LeaseTable {
   }
 
   /**
-   * A change on `target` was refused by what it meets (`holding`): if that is a provisional lease, its
-   * lifting will re-evaluate what it held off (GA-LEASE-4).
+   * A change on `target` was refused by what it meets (`holding`): that lease, or the provisional lease
+   * on top of it, keeps `rule`, re-evaluated when it ends or is lifted (GA-LEASE-4).
    */
-  refused(target: string): void {
+  refused(target: string, rule?: string): void {
     const p = this.provisional.get(target);
-    if (p?.length) p[p.length - 1]!.refused = true;
+    if (p?.length) {
+      const top = p[p.length - 1]!;
+      top.refused = true;
+      if (rule !== undefined) top.rules = union(top.rules, [rule]);
+      return;
+    }
+    const l = this.leases.get(target);
+    if (!l || rule === undefined || l.refused?.includes(rule)) return;
+    // In place: the lease's timer ends this very lease.
+    l.refused = union(l.refused, [rule]);
+    this.save(target);
   }
 
   /** Lays a provisional lease for `apply`'s `step` on `target`: no event, nothing written. */
@@ -190,8 +220,10 @@ export class LeaseTable {
 
   /**
    * Takes `apply`'s provisional lease for `step` off `target`: `grant` its lease from `sinceMs` for
-   * `holdMs` (it was dispatched), or lift it, the device's lease standing untouched and the
-   * re-evaluation hook told only if it refused a change (GA-LEASE-1, GA-LEASE-4).
+   * `holdMs` (it was dispatched), or lift it, the device's lease standing untouched. The rules it
+   * refused go to what holds the device after it: the lease granted, else the provisional lease or the
+   * lease beneath it, which re-evaluates them at its own end; with nothing beneath, the re-evaluation
+   * hook is told, and only if it refused a change (GA-LEASE-1, GA-LEASE-4; the code review, CR3, CR9).
    */
   settle(target: string, apply: string, step: string, grant: { sinceMs: number; holdMs: number } | undefined): void {
     const all = this.provisional.get(target) ?? [];
@@ -200,17 +232,36 @@ export class LeaseTable {
     const rest = all.filter((x) => x !== p);
     if (rest.length) this.provisional.set(target, rest);
     else this.provisional.delete(target);
-    if (grant) this.grant({ target, holder: p.holder, precedence: p.precedence, sinceMs: grant.sinceMs, expiresMs: grant.sinceMs + grant.holdMs, apply });
-    else if (p.refused) this.o.ended(target);
+    if (grant && this.grant({ target, holder: p.holder, precedence: p.precedence, sinceMs: grant.sinceMs, expiresMs: grant.sinceMs + grant.holdMs,
+      apply, ...(p.rules?.length ? { refused: p.rules } : {}) })) return;
+    if (!p.refused) return;
+    const rules = p.rules ?? [];
+    const top = rest[rest.length - 1];
+    if (top) {
+      top.refused = true;
+      if (rules.length) top.rules = union(top.rules, rules);
+      return;
+    }
+    const l = this.leases.get(target);
+    if (l) {
+      if (rules.length) {
+        l.refused = union(l.refused, rules);
+        this.save(target);
+      }
+      return;
+    }
+    this.o.ended(target, rules);
   }
 
   /** Reads the leases the store keeps; one whose end passed while the steward was down ends now. */
   async load(): Promise<void> {
     const rows = await this.o.store.query<{ target: string; holder: Holder; precedence: Precedence; since_ms: number | string;
-      expires_ms: number | string | null; apply: string | null }>("SELECT target, holder, precedence, since_ms, expires_ms, apply FROM leases ORDER BY target");
+      expires_ms: number | string | null; apply: string | null; refused: string[] | null }>(
+      "SELECT target, holder, precedence, since_ms, expires_ms, apply, refused FROM leases ORDER BY target");
     for (const r of rows.rows) {
       this.leases.set(r.target, { target: r.target, holder: r.holder, precedence: r.precedence, sinceMs: Number(r.since_ms),
-        expiresMs: r.expires_ms === null ? null : Number(r.expires_ms), ...(r.apply ? { apply: r.apply } : {}) });
+        expiresMs: r.expires_ms === null ? null : Number(r.expires_ms), ...(r.apply ? { apply: r.apply } : {}),
+        ...(r.refused?.length ? { refused: r.refused } : {}) });
     }
     const now = this.o.clock.now();
     for (const l of [...this.leases.values()]) {
@@ -269,8 +320,9 @@ async function writeLease(tx: Tx, target: string, l: Lease | undefined): Promise
     await tx.query("DELETE FROM leases WHERE target = $1", [target]);
     return;
   }
-  await tx.query("INSERT INTO leases (target, holder, precedence, since_ms, expires_ms, apply) VALUES ($1, $2, $3, $4, $5, $6) "
+  await tx.query("INSERT INTO leases (target, holder, precedence, since_ms, expires_ms, apply, refused) VALUES ($1, $2, $3, $4, $5, $6, $7) "
     + "ON CONFLICT (target) DO UPDATE SET holder = EXCLUDED.holder, precedence = EXCLUDED.precedence, since_ms = EXCLUDED.since_ms, "
-    + "expires_ms = EXCLUDED.expires_ms, apply = EXCLUDED.apply",
-  [target, JSON.stringify(l.holder), l.precedence, Math.floor(l.sinceMs), l.expiresMs === null ? null : Math.floor(l.expiresMs), l.apply ?? null]);
+    + "expires_ms = EXCLUDED.expires_ms, apply = EXCLUDED.apply, refused = EXCLUDED.refused",
+  [target, JSON.stringify(l.holder), l.precedence, Math.floor(l.sinceMs), l.expiresMs === null ? null : Math.floor(l.expiresMs), l.apply ?? null,
+    JSON.stringify(l.refused ?? [])]);
 }

@@ -21,7 +21,7 @@ describe("liveness", () => {
 
   it("reads a closed device with no known bound, or no check-in, or a fast clock, stale", () => {
     expect(liveness({ ...closed, freshS: null }, now)).toBe("stale");
-    expect(liveness({ ...closed, freshS: null }, now, { liveBeforeKnown: true })).toBe("live");
+    expect(liveness({ ...closed, freshS: null }, now, { liveWhileUnknown: true })).toBe("live");
     expect(liveness({ ...closed, lastCheckIn: null }, now)).toBe("stale");
     expect(liveness({ ...closed, fastClock: true }, now)).toBe("stale");
   });

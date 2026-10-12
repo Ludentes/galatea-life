@@ -42,8 +42,8 @@ const byCodePoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
  * an exception never marks its rule or its schedule. A schedule's date a brain moved is marked, a skip
  * never (steward, *Authored work*). A device a brain put in a room it was not in carries
  * `room_brain_authored`, and a group's members that joined it through a brain are its `brain_joined`,
- * those already in it keeping what they had. The owner's own change set marks nothing, and clears
- * the marks of what it upserts, since an upsert rebuilds the object whole.
+ * those already in it keeping what they had. The owner's own change set marks nothing; it clears a
+ * mark where it redefines the item whole, or names a device's room or a group's members (`apply`).
  */
 export function markBrain(before: House, after: House): void {
   for (const [id, sc] of after.scenarios) {

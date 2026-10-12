@@ -5,11 +5,21 @@ type Body = Record<string, any>;
 /** One JSON document on one line, as `--json` prints a body. */
 export const jsonLine = (v: unknown): string => JSON.stringify(v);
 
-/** A configure's or a define's answer: its revision, or a dry run's diff, line by line. */
+/** A configure's or a define's answer: its revision, or a dry run's diff, line by line, then `noChannelLines`. */
 export function changeLines(body: Body, what: string): string[] {
   // Both servers answer a dry run that changes nothing with the diff "no change".
-  if (typeof body.diff === "string") return body.diff === "" || body.diff === "no change" ? [`${what}: the dry run changes nothing`] : [`${what}, a dry run:`, ...body.diff.split("\n").map((l: string) => `  ${l}`)];
-  return [`${what}: revision ${body.revision}`];
+  const lines = typeof body.diff === "string"
+    ? body.diff === "" || body.diff === "no change" ? [`${what}: the dry run changes nothing`] : [`${what}, a dry run:`, ...body.diff.split("\n").map((l: string) => `  ${l}`)]
+    : [`${what}: revision ${body.revision}`];
+  return [...lines, ...noChannelLines(body)];
+}
+
+/**
+ * The line a define's answer earns when the house after it has no `notify` channel (steward 0.11,
+ * GA-NOTE-1: `no_notify_channel: true`): the steward holds every notice until one is set.
+ */
+export function noChannelLines(body: Body): string[] {
+  return body.no_notify_channel === true ? ["  no notify channel: notices are held until notice_channels names a device that offers notify"] : [];
 }
 
 /** The bridge a device came through: the bridge it names, else its id's prefix. */

@@ -85,7 +85,7 @@ prune() {
 once() {
   check_keep || return 1
   [ -w "$B" ] || {
-    echo "backup: cannot write $B; create it as uid $(id -u) (bin/galatea-db-prepare does)" >&2
+    echo "backup: cannot write $B; create it as uid $(id -u) (bin/galatea-prepare does)" >&2
     return 1
   }
   password

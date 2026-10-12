@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import { connect, type IClientOptions, type MqttClient } from "mqtt";
 import type { Bridge } from "../config/config.js";
 import { maskUrls } from "../core/db.js";
+import { quiet, type Log } from "../core/log.js";
+import type { BusPort, Puback } from "./port.js";
+
+export type { Puback } from "./port.js";
 
 /** The topics the applier reads under a bridge's `{root}/bridges/{b}/`: never one matching `command` or `request/` (GA-BUS-9). */
 export const BRIDGE_TOPICS = ["status", "lwt", "devices", "devices/+/status", "devices/+/ack", "reply", "event"];
@@ -49,14 +53,6 @@ export function backoffMs(attempt: number, random: number): number {
 }
 
 /**
- * What the broker made of a command or a request (GA-BUS-9): delivered to a subscriber (`ok`); no
- * subscriber, the bridge between connections (`0x10`); refused, with its reason code (`0x87`, not
- * authorised, or another failure); the connection lost before any PUBACK (`lost`: it may have been
- * delivered); or not published at all, the broker being away (`offline`).
- */
-export type Puback = { kind: "ok" } | { kind: "no_subscribers" } | { kind: "refused"; code: number } | { kind: "lost" } | { kind: "offline" };
-
-/**
  * A publish's PUBACK, from the publish callback's error and the reason code the PUBACK carried.
  * mqtt.js 5.16 calls back with no error for `0x10` and passes the publish, not the PUBACK, so the
  * code is read off the PUBACK as it arrives; a failure code comes as the error's `code` too; an error
@@ -95,8 +91,8 @@ export interface BusOptions {
   /** A fault of the bus itself, or of one bridge (`bridge` set). */
   onFault(what: string, bridge?: string): void;
   random?: () => number;
-  /** Where a connect failure is logged (default: stderr). Never carries the broker URL's password. */
-  log?: (line: string) => void;
+  /** Where a connect failure is logged (default: nowhere). Never carries the broker URL's password. */
+  log?: Log;
   /** The mutation `retains-request`: commands and requests are published retained (GA-BUS-5). */
   retainsRequests?: boolean;
   /** One message on `{root}/finder/{path}` (slice 5b). */
@@ -114,7 +110,7 @@ export interface BusOptions {
  * reconnects with exponential backoff and jitter, reset once connected and subscribed; a
  * reconnection asks every bridge for a snapshot (GA-BUS-6).
  */
-export class Bus {
+export class Bus implements BusPort {
   private client?: MqttClient;
   private bridges = new Map<string, Bridge>();
   private attempt = 0;
@@ -236,7 +232,7 @@ export class Bus {
     c.on("error", (err) => {
       // A refused CONNACK or a network error: name it once, by host only, never the URL's password.
       const detail = err.message || (err as NodeJS.ErrnoException).code || String(err);
-      (this.o.log ?? ((l) => console.error(l)))(`bus ${up ? "error" : "connect failed"} (${this.host()}): ${maskUrls(detail)}`);
+      (this.o.log ?? quiet)(`bus ${up ? "error" : "connect failed"} (${this.host()}): ${maskUrls(detail)}`);
     });
     c.on("connect", () => {
       up = true;

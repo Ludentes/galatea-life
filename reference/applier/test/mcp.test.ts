@@ -6,13 +6,14 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Applier } from "../src/applier.js";
+import { mutantOf } from "../src/mutations.js";
+import { Applier, TOOLS, type ApplierService } from "../src/applier.js";
 import { StoreError } from "../src/core/db.js";
 import { StoreUnavailable } from "../src/core/errors.js";
 import { GATE_MS, Store } from "../src/core/store.js";
 import { sameSecret } from "../src/core/secret.js";
 import { bearerOf, isLoopback, publicMessage, serveMcp } from "../src/mcp/server.js";
-import { memoryDb } from "./db.js";
+import { memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 const OWNER = "owner-credential";
@@ -23,13 +24,13 @@ const freePort = () => new Promise<number>((resolve) => {
   const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); });
 });
 
-async function serve(mutation?: "speaks-only-2025") {
+async function serve(mutation?: "speaks-only-2025", log?: (line: string) => void) {
   const db = await memoryDb();
   const clock = new FakeClock();
-  const store = await Store.open(db, clock, (err) => { throw err; });
-  const applier = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo", runId: "r", mutation });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
+  const applier = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo", runId: "r", mutant: mutantOf(mutation) });
   await applier.start();
-  const server = await serveMcp(applier, { port: await freePort() });
+  const server = await serveMcp(applier, TOOLS, { port: await freePort(), mutant: mutantOf(mutation), ...(log ? { log } : {}) });
   cleanup.push(() => server.close(), () => applier.stop());
   return { url: server.url, db, store, clock };
 }
@@ -54,6 +55,20 @@ describe("the MCP binding", () => {
     expect((await legacy.call("describe")).structuredContent.revision).toBe(0);
   });
 
+  it("serves any ApplierService, listing the tools it is given", async () => {
+    const seen: unknown[] = [];
+    const service: ApplierService = {
+      caller: (bearer) => (bearer === OWNER ? { kind: "owner" } : { kind: "anonymous" }),
+      call: async (caller, tool, args) => { seen.push({ caller, tool, args }); return { ok: true, body: { echoed: tool } }; },
+    };
+    const server = await serveMcp(service, [{ name: "echo", readOnly: true, summary: "Echoes", inputSchema: { type: "object", properties: { a: { type: "number" } } } }], { port: await freePort() });
+    cleanup.push(() => server.close());
+    const { client, call } = await connect(server.url, OWNER);
+    expect((await client.listTools()).tools.map((t) => [t.name, t.annotations?.readOnlyHint])).toEqual([["echo", true]]);
+    expect((await call("echo", { a: 1 })).structuredContent).toEqual({ echoed: "echo" });
+    expect(seen).toEqual([{ caller: { kind: "owner" }, tool: "echo", args: { a: 1 } }]);
+  });
+
   it("serves only the 2025 era under speaks-only-2025", async () => {
     const { url } = await serve("speaks-only-2025");
     expect((await connect(url, OWNER)).client.getNegotiatedProtocolVersion()).toBe("2025-11-25");
@@ -67,6 +82,14 @@ describe("the MCP binding", () => {
       "outcome", "plan", "provision", "state"]);
     expect(tools.find((t) => t.name === "apply")?.annotations?.destructiveHint).toBe(true);
     expect(tools.find((t) => t.name === "state")?.annotations?.readOnlyHint).toBe(true);
+    // Typed, self-contained schemas: a small model sends an array as an array only when it sees one.
+    for (const t of tools) {
+      expect(t.description, t.name).toBeTruthy();
+      expect(t.inputSchema.type, t.name).toBe("object");
+      expect(JSON.stringify(t.inputSchema), t.name).not.toContain("$ref");
+    }
+    expect((tools.find((t) => t.name === "configure")?.inputSchema.properties as Record<string, { type?: unknown }>)?.changes?.type)
+      .toBe("array");
     const r = await call("describe");
     expect(r.isError).toBe(true);
     expect(r.structuredContent).toMatchObject({ error: "not_permitted" });
@@ -110,18 +133,16 @@ describe("the MCP binding", () => {
   });
 
   it("answers a store the reads cannot reach with -32603 and a generic message", async () => {
-    const { url, db } = await serve();
+    const said = vi.fn<(line: string) => void>();
+    const { url, db } = await serve(undefined, said);
     const { call } = await connect(url, OWNER);
-    const said = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
+    {
       db.query = async () => { throw new StoreError(new Error("connect ECONNREFUSED 10.9.8.7:5432")); };
       const failed = await call("history", { from: "2026-01-01T00:00:00Z", to: "2026-01-02T00:00:00Z" }).catch((err: unknown) => err);
       expect(failed).toMatchObject({ code: -32603 });
       expect(String((failed as Error).message)).toContain("the store did not answer");
       expect(String((failed as Error).message)).not.toContain("10.9.8.7");
       expect(said.mock.calls.flat().join(" ")).toContain("10.9.8.7");
-    } finally {
-      said.mockRestore();
     }
   });
 
@@ -130,9 +151,9 @@ describe("the MCP binding", () => {
     expect(isLoopback("::1")).toBe(true);
     expect(isLoopback("0.0.0.0")).toBe(false);
     const clock = new FakeClock();
-    const applier = new Applier({ store: await Store.open(await memoryDb(), clock, (err) => { throw err; }), clock,
+    const applier = new Applier({ store: await Store.open(await memoryDb(), clock, (err) => { throw err; }, { migrations }), clock,
       ownerCredential: OWNER, applierId: "demo" });
-    await expect(serveMcp(applier, { port: await freePort(), host: "0.0.0.0" })).rejects.toThrow(/TLS/);
+    await expect(serveMcp(applier, TOOLS, { port: await freePort(), host: "0.0.0.0" })).rejects.toThrow(/TLS/);
   });
 
   it("serves TLS from the PEM contents it is given, reading no file itself", async () => {
@@ -144,9 +165,9 @@ describe("the MCP binding", () => {
       const key = readFileSync(join(dir, "k.pem"), "utf8");
       rmSync(dir, { recursive: true, force: true });
       const clock = new FakeClock();
-      const applier = new Applier({ store: await Store.open(await memoryDb(), clock, (err) => { throw err; }), clock,
+      const applier = new Applier({ store: await Store.open(await memoryDb(), clock, (err) => { throw err; }, { migrations }), clock,
         ownerCredential: OWNER, applierId: "demo" });
-      const server = await serveMcp(applier, { port: await freePort(), tls: { cert, key } });
+      const server = await serveMcp(applier, TOOLS, { port: await freePort(), tls: { cert, key } });
       cleanup.push(() => server.close());
       expect(server.url).toMatch(/^https:/);
       const status = (ca?: string) => new Promise<number>((resolve, reject) => {

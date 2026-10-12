@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { Applier, type ToolResult } from "../src/applier.js";
 import { Store } from "../src/core/store.js";
-import { memoryDb } from "./db.js";
+import { memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 const OWNER = "owner-credential";
@@ -11,7 +11,7 @@ const body = (r: ToolResult) => { if (!r.ok) throw new Error(`${r.error}: ${r.me
 
 async function fresh() {
   const clock = new FakeClock();
-  const store = await Store.open(await memoryDb(), clock, (err) => { throw err; });
+  const store = await Store.open(await memoryDb(), clock, (err) => { throw err; }, { migrations });
   return new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1" });
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Applier, type ToolResult } from "../src/applier.js";
 import { Store } from "../src/core/store.js";
-import { lasting, memoryDb } from "./db.js";
+import { lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 // The whole-applier review's M7: the owner's credential is 16 characters at least, and no client is
@@ -13,7 +13,7 @@ const body = (r: ToolResult) => { if (!r.ok) throw new Error(`${r.error}: ${r.me
 
 async function open(db: Awaited<ReturnType<typeof memoryDb>>, ownerCredential: string) {
   const clock = new FakeClock();
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   return { store, a: new Applier({ store, clock, ownerCredential, applierId: "demo-applier", runId: "run-1" }) };
 }
 

@@ -132,6 +132,7 @@ describe("galatea do", () => {
     a.steward.noAskEvent = true;
     expect(await run(["do", LAMP, TURN_ON, "--yes"], a.deps)).toBe(0);
     expect(a.steward.tools()).toContain("answer");
+    expect(a.err.join("\n")).toMatch(/galatea do: no ask event was seen for p1 in the read after the plan; the question is taken as owner-app's \(the steward judges the answer\)/);
   });
 
   it("with no ask event seen and the question put elsewhere, the steward refuses the yes: not_permitted, 2", async () => {
@@ -328,31 +329,31 @@ describe("galatea answer", () => {
       "applied: apply a1", `  s1  ${LAMP}  acked`]);
   });
 
-  it("takes the steps it answered as answered when the returned plan does not mark them", async () => {
+  it("a returned plan whose answered step carries no answer is malformed (steward 0.11 binds it): said, nothing applied, 1", async () => {
     const a = await asked();
     a.steward.queue("answer", () => {
       const r = a.steward.defaults.answer({ plan_id: "p1", endpoint: "owner-app", answers: { s1: "yes" } });
       if (r.kind === "ok") for (const s of r.body.steps) delete s.answer;
       return r;
     });
-    expect(await run(["answer", "p1", "s1", "yes"], a.deps)).toBe(0);
-    expect(a.steward.tools()).toEqual(["answer", "events", "apply", "outcome"]);
+    expect(await run(["answer", "p1", "s1", "yes"], a.deps)).toBe(1);
+    expect(a.steward.tools()).toEqual(["answer"]);
+    expect(a.err.join("\n")).toMatch(/the steward's answer returned p1 with no answer on s1 \(steward, Steps\): the answer was taken; galatea asks shows the plan/);
   });
 
-  it("without the field, takes an earlier run's answers from history's answer events, so a plan with an earlier no is applied (review M7)", async () => {
+  it("takes an earlier run's answers from the plan the steward returns, reading no history (steward 0.11)", async () => {
     const a = await asked({ [`${LAMP} ${TURN_ON}`]: "confirm", "sim-bridge:door lock.unlock": "no_voice" });
     expect(await run(["answer", "p1", "s2", "no"], a.deps)).toBe(0);
     a.steward.calls.length = 0;
-    a.steward.queue("answer", () => {
-      const r = a.steward.defaults.answer({ plan_id: "p1", endpoint: "owner-app", answers: { s1: "yes" } });
-      if (r.kind === "ok") for (const x of r.body.steps) delete x.answer;
-      return r;
-    });
-    a.steward.queue("history", () => ok({ events: a.steward.log.filter((e) => e.type === "answer") }));
     expect(await run(["answer", "p1", "s1", "yes"], a.deps)).toBe(0);
-    expect(a.steward.tools()).toEqual(["answer", "describe", "history", "events", "apply", "outcome"]);
-    expect(a.steward.calls[2].args).toEqual({ from: "2026-10-07T11:59:00.000Z", to: "2026-10-07T12:01:00.000Z" });
+    expect(a.steward.tools()).toEqual(["answer", "events", "apply", "outcome"]);
     expect(a.out.slice(-2)).toEqual([`  s1  ${LAMP}  acked`, "  s2  sim-bridge:door  skipped (not_confirmed)"]);
+  });
+
+  it("a plan the steward does not hold is its refusal, unknown_plan, 2 (GA-PERSIST-2)", async () => {
+    const a = fakeDeps();
+    expect(await run(["answer", "p404", "s1", "yes"], a.deps)).toBe(2);
+    expect(a.err.join("\n")).toMatch(/the steward refused answer: unknown_plan: no plan p404 is held/);
   });
 
   it("a no still applies the plan: the declined step is named and ends skipped, nothing sent for it, 0 (review M2)", async () => {
@@ -448,10 +449,12 @@ describe("third-party text in plain output (review M6)", () => {
 });
 
 describe("galatea asks", () => {
-  const ASK1 = { seq: 1, type: "ask", plan_id: "p1", step_ids: ["s1"], endpoint: "owner-app", time: "2026-10-07T11:58:00.000Z" };
-  const ASK2 = { seq: 2, type: "ask", plan_id: "p2", step_ids: ["s1", "s2"], endpoint: "owner-app", time: "2026-10-07T11:59:00.000Z" };
+  const ON = { step_id: "s1", target: LAMP, action: TURN_ON, args: {}, tier: "confirm", reason: "confirm_tier" };
+  const UNLOCK = { step_id: "s2", target: "sim-bridge:door", action: "lock.unlock", args: {}, tier: "no_voice", reason: "confirm_tier" };
+  const ASK1 = { seq: 1, type: "ask", plan_id: "p1", step_ids: ["s1"], steps: [ON], endpoint: "owner-app", time: "2026-10-07T11:58:00.000Z" };
+  const ASK2 = { seq: 2, type: "ask", plan_id: "p2", step_ids: ["s1", "s2"], steps: [ON, UNLOCK], endpoint: "owner-app", time: "2026-10-07T11:59:00.000Z" };
 
-  it("reads the asks put on owner-app over ask_expiry_s, less the answered, and shows what there is", async () => {
+  it("reads the asks put on owner-app over ask_expiry_s, less the answered, and shows the steps still waiting", async () => {
     const a = fakeDeps();
     a.steward.queue("history", ok({ events: [ASK1, ASK2, { seq: 3, type: "ask", plan_id: "p3", step_ids: ["s1"], endpoint: "kitchen-voice" },
       { seq: 4, type: "answer", plan_id: "p2", answers: { s1: "yes" } }] }));
@@ -459,12 +462,66 @@ describe("galatea asks", () => {
     expect(a.steward.calls[1].args).toEqual({ from: "2026-10-07T11:55:00.000Z", to: "2026-10-07T12:01:00.000Z" });
     expect(a.out).toEqual([
       "plan p1  asked on owner-app at 2026-10-07T11:58:00.000Z, open until 2026-10-07T12:03:00.000Z  waiting: s1",
-      "  what is asked: not carried by this steward's ask event (steward 0.11 carries it)",
+      `  s1  ${LAMP}  ${TURN_ON}  {}  tier confirm  (confirm_tier)`,
       "  galatea answer p1 s1 yes",
       "plan p2  asked on owner-app at 2026-10-07T11:59:00.000Z, open until 2026-10-07T12:04:00.000Z  waiting: s2",
-      "  what is asked: not carried by this steward's ask event (steward 0.11 carries it)",
+      "  s2  sim-bridge:door  lock.unlock  {}  tier no_voice  (confirm_tier)",
       "  galatea answer p2 s2 yes",
     ]);
+  });
+
+  it("an ask on owner-app without its steps is malformed (GA-CONF-5): said on its line, the others shown, 1", async () => {
+    const a = fakeDeps();
+    const { steps: _s, ...bare } = ASK1;
+    a.steward.queue("history", ok({ events: [bare, ASK2] }));
+    expect(await run(["asks"], a.deps)).toBe(1);
+    expect(a.out.slice(0, 3)).toEqual([
+      "plan p1  asked on owner-app at 2026-10-07T11:58:00.000Z, open until 2026-10-07T12:03:00.000Z  waiting: s1",
+      "  s1: what is asked is missing from the steward's ask event (GA-CONF-5); not answerable here",
+      "plan p2  asked on owner-app at 2026-10-07T11:59:00.000Z, open until 2026-10-07T12:04:00.000Z  waiting: s1, s2",
+    ]);
+    expect(a.out[3]).toBe(`  s1  ${LAMP}  ${TURN_ON}  {}  tier confirm  (confirm_tier)`);
+    expect(a.err.join("\n")).toMatch(/galatea asks: the steward's ask event for p1 is malformed: no step shown for s1 \(GA-CONF-5\)/);
+  });
+
+  it("steps: [] or an entry with no target is malformed (GA-CONF-5): said on stderr with the step ids, no answer line, 1 (review M1, probe P1)", async () => {
+    for (const steps of [[], [{ step_id: "s1", action: TURN_ON }]]) {
+      const a = fakeDeps();
+      a.steward.queue("history", ok({ events: [{ ...ASK1, steps }, ASK2] }));
+      expect(await run(["asks"], a.deps), JSON.stringify(steps)).toBe(1);
+      expect(a.out.slice(0, 2)).toEqual([
+        "plan p1  asked on owner-app at 2026-10-07T11:58:00.000Z, open until 2026-10-07T12:03:00.000Z  waiting: s1",
+        "  s1: what is asked is missing from the steward's ask event (GA-CONF-5); not answerable here",
+      ]);
+      expect(a.out.join("\n")).not.toMatch(/galatea answer p1/);
+      expect(a.out.join("\n")).toMatch(/galatea answer p2 s1 s2 yes/);
+      expect(a.err.join("\n")).toMatch(/galatea asks: the steward's ask event for p1 is malformed: no step shown for s1 \(GA-CONF-5\)/);
+    }
+  });
+
+  it("a waiting step with no entry in steps is said, and only the steps shown are offered (review M2, probe P2)", async () => {
+    const a = fakeDeps();
+    a.steward.queue("history", ok({ events: [{ ...ASK2, steps: [ON] }] }));
+    expect(await run(["asks"], a.deps)).toBe(1);
+    expect(a.out).toEqual([
+      "plan p2  asked on owner-app at 2026-10-07T11:59:00.000Z, open until 2026-10-07T12:04:00.000Z  waiting: s1, s2",
+      `  s1  ${LAMP}  ${TURN_ON}  {}  tier confirm  (confirm_tier)`,
+      "  s2: what is asked is missing from the steward's ask event (GA-CONF-5); not answerable here",
+      "  galatea answer p2 s1 yes",
+    ]);
+    expect(a.err.join("\n")).toMatch(/for p2 is malformed: no step shown for s2/);
+  });
+
+  it("tells a define's step by its reason only: a diff with no target under another reason is not a define (review M3)", async () => {
+    const a = fakeDeps();
+    a.steward.queue("history", ok({ events: [{ ...ASK1, steps: [{ step_id: "s1", reason: "confirm_tier", diff: "rooms: + kitchen" }] }] }));
+    expect(await run(["asks"], a.deps)).toBe(1);
+    expect(a.out.join("\n")).not.toMatch(/ {2}define {2}/);
+    const b = fakeDeps();
+    b.steward.queue("answer", ok({ plan_id: "p9", endpoint: "kitchen-voice", expires_at: "2026-10-07T12:05:00.000Z", revision: 3,
+      steps: [{ step_id: "s1", verdict: "ask", reason: "confirm_tier", diff: "x", answer: "yes" }] }));
+    expect(await run(["answer", "p9", "s1", "yes"], b.deps)).toBe(0);
+    expect(b.out[1]).not.toMatch(/ {2}define {2}/);
   });
 
   it("shows each asked step when the ask event carries it (steward 0.11), whatever version the steward reports", async () => {
@@ -479,7 +536,7 @@ describe("galatea asks", () => {
     ]);
   });
 
-  it("shows a define's asked step as define and its diff, escaped (steward 0.11 draft: no target, its reason confirm_define)", async () => {
+  it("shows a define's asked step as define and its diff, escaped (steward 0.11: no target, its reason confirm_define)", async () => {
     const a = fakeDeps();
     a.steward.queue("history", ok({ events: [{ ...ASK2, steps: [
       askEntry({ step_id: "s1", reason: "confirm_define", diff: "rooms: + kitchen\u001b[2J", target: "ignored" }),
@@ -506,7 +563,6 @@ describe("galatea asks", () => {
 
   it("shows a re-ask's run_id when the event names one, and --json passes it through", async () => {
     const a = fakeDeps();
-    a.steward.askCarriesSteps = true;
     a.steward.askRunId = "r7";
     a.steward.tiers[`${LAMP} ${TURN_ON}`] = "confirm";
     expect(await run(["do", LAMP, TURN_ON], a.deps)).toBe(0);

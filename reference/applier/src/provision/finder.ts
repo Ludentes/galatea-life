@@ -1,7 +1,7 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import { BridgeRules } from "../bus/bridge-rules.js";
 import { parseTime, type Status } from "../bus/wire.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 
 /** A candidate as `candidates` gives it (applier, *Discovery*): the finder's entry in snake case. */
 export type Candidate = {
@@ -88,7 +88,7 @@ export class Finder {
   /** The ids of malformed entries already logged, so each is logged once while it stays malformed. */
   private dropped = new Set<string>();
 
-  constructor(private readonly o: { clock: Clock; log: (line: string) => void; mutation?: Mutation }) {
+  constructor(private readonly o: { clock: Clock; log: (line: string) => void; mutant: Mutant }) {
     this.rules = new BridgeRules("", o.clock.now(), { anyIdentity: true });
   }
 
@@ -148,7 +148,7 @@ export class Finder {
   }
 
   view(): FinderView {
-    const live = this.rules.alive || (this.o.mutation === "trusts-a-dead-finder" && this.everLive);
+    const live = this.rules.alive || (this.o.mutant.trustsADeadFinder && this.everLive);
     return {
       finder: !this.heard ? "none" : live ? "live" : "dead",
       sources: this.latest?.sources ?? [],

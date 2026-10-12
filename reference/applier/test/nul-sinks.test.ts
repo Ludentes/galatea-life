@@ -3,7 +3,7 @@ import { Applier, type ToolResult } from "../src/applier.js";
 import { EventLog } from "../src/core/events.js";
 import { Notices } from "../src/core/notices.js";
 import { Store } from "../src/core/store.js";
-import { memoryDb } from "./db.js";
+import { memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 /**
@@ -19,7 +19,7 @@ async function make() {
   const clock = new FakeClock();
   const faults: unknown[] = [];
   const db = await memoryDb();
-  const store = await Store.open(db, clock, (err) => { faults.push(err); });
+  const store = await Store.open(db, clock, (err) => { faults.push(err); }, { migrations });
   const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1" });
   await a.start();
   const owner = a.caller(OWNER);
@@ -68,7 +68,7 @@ describe("a string the store cannot keep", () => {
   it("the event log and the notices keep whatever they are given, U+0000 and lone surrogates replaced", async () => {
     const clock = new FakeClock();
     const faults: unknown[] = [];
-    const store = await Store.open(await memoryDb(), clock, (err) => { faults.push(err); });
+    const store = await Store.open(await memoryDb(), clock, (err) => { faults.push(err); }, { migrations });
     const log = new EventLog(store, clock);
     await log.load();
     const e = log.append("bridge_fault", { bridge: "b\u0000", what: "x\ud800", list: ["\u0000"], ["k\u0000"]: 1 });

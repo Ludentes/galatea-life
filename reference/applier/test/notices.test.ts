@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { mutantOf } from "../src/mutations.js";
 import { Notices } from "../src/core/notices.js";
 import { Store } from "../src/core/store.js";
-import { lasting, memoryDb } from "./db.js";
+import { lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 async function setup(mutation?: "forgets-a-notice") {
   const clock = new FakeClock();
   const db = lasting(await memoryDb());
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   const notices = new Notices(store, clock);
   await notices.load();
   /** The notices a restart finds, once everything handed over has committed. */
   const again = async () => {
     await store.settled();
-    const next = new Notices(await Store.open(db, clock, (err) => { throw err; }), clock, mutation);
+    const next = new Notices(await Store.open(db, clock, (err) => { throw err; }, { migrations }), clock, mutantOf(mutation));
     await next.load();
     return next;
   };

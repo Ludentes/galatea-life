@@ -38,9 +38,9 @@ export const MAY_HAVE_ACTED = new Set(["no_confirmation", "not_locked"]);
  * an open device's step `sent`, and a stateless one on a closed device `delivered` and `sent` (where
  * it is declared `confirms: false`); a stateful one on a closed device waits for its report (GA-EVT-3).
  * A `sent` for an action declared `confirms: true` is a bridge fault, and the step waits (GA-APPLY-7).
- * `acksWithoutState` is the mutation `acks-without-state`: `applied` acks a stateful step at once.
+ * `appliedAcks` is the mutation `acks-without-state`: `applied` acks a stateful step at once.
  */
-export function onAck(k: StepKind, ack: Ack, acksWithoutState = false): AckEffect {
+export function onAck(k: StepKind, ack: Ack, appliedAcks = false): AckEffect {
   switch (ack.result) {
     case "received":
     case "unknown":
@@ -60,7 +60,7 @@ export function onAck(k: StepKind, ack: Ack, acksWithoutState = false): AckEffec
       const fault = ack.result === "sent" && k.confirms ? "a sent ack for an action declared confirms: true" : undefined;
       if (fault) return { kind: "wait", fault };
       if (k.stateless) return { kind: "final", final: { outcome: ack.result === "applied" ? "delivered" : "sent" }, acted: true };
-      if (acksWithoutState && ack.result === "applied") return { kind: "final", final: { outcome: "acked" }, acted: true };
+      if (appliedAcks && ack.result === "applied") return { kind: "final", final: { outcome: "acked" }, acted: true };
       return { kind: "wait" };
     }
   }

@@ -68,6 +68,13 @@ export class FakeApplier {
     for (const w of this.waiters.splice(0)) w();
   }
 
+  /** Appends an event the steward's follower misses, as in a gap: in the history, never in an `events` answer. */
+  emitUnseen(e: Body): void {
+    this.unseen.add(this.log.length + 1);
+    this.emit(e);
+  }
+  private readonly unseen = new Set<number>();
+
   /** Forgets every event so far: the next cursor read before now is `cursor_expired`. */
   expire(): void {
     this.expiredThrough = this.log.length;
@@ -133,7 +140,7 @@ export class FakeApplier {
         if (Number(cursor) >= this.log.length && waitS > 0 && !closed) await new Promise<void>((r) => this.waiters.push(r));
         if (closed) throw new Error("the session closed");
         if (Number(cursor) < this.expiredThrough) throw new ApplierRefused("cursor_expired", "gone");
-        const events = this.log.slice(Number(cursor));
+        const events = this.log.slice(Number(cursor)).filter((e) => !this.unseen.has(e.seq));
         return { events, cursor: String(this.log.length), notices: notices() };
       },
       history: async (range) => {

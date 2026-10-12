@@ -1,7 +1,7 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import { getMeta, setMeta, type Store } from "../core/store.js";
 import type { HeldApply, Outcome } from "../dispatch/records.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import type { Liveness } from "../state/liveness.js";
 import { ending } from "./engine.js";
 
@@ -9,7 +9,7 @@ import { ending } from "./engine.js";
 export interface CapPorts {
   store: Store;
   clock: Clock;
-  mutation?: Mutation;
+  mutant: Mutant;
   /** An adopted socket: whether it reports its own state (`open` when it never does); undefined for any other device. */
   socket(device: string): { open: boolean } | undefined;
   /** A closed socket's latest reported `on`, never an assumed one. */
@@ -90,7 +90,7 @@ export class LoadCaps {
    */
   async load(): Promise<void> {
     // `forgets-an-on-time`: the on-times are not read back.
-    if (this.o.mutation !== "forgets-an-on-time") {
+    if (!this.o.mutant.forgetsAnOnTime) {
       const rows = await this.o.store.query<{ device: string; since_ms: number | string; attempt: number | null }>(
         "SELECT device, since_ms, attempt FROM load_on");
       for (const r of rows.rows) {
@@ -100,7 +100,7 @@ export class LoadCaps {
       }
     }
     // `forgets-a-cap`: the caps at work are not read back.
-    if (this.o.mutation !== "forgets-a-cap") {
+    if (!this.o.mutant.forgetsACap) {
       const rows = await this.o.store.query<{ device: string; apply_id: string | null; attempt: number; state: Cap["state"];
         began_ms: number | string; said: string | null; stuck: string | null; since_ms: number | string | null }>(
         "SELECT device, apply_id, attempt, state, began_ms, said, stuck, since_ms FROM load_caps");
@@ -157,7 +157,7 @@ export class LoadCaps {
     if (action === "onoff.turn_on" && (outcome === "sent" || outcome === "unanswered")) {
       // `never-caps-a-silent-heater`: an open socket's on-time is never counted. A dispatch read before a
       // backward step the clock took since is no later than now.
-      if (this.o.mutation !== "never-caps-a-silent-heater") this.start(device, Math.min(dispatchedMs, now));
+      if (!this.o.mutant.neverCapsASilentHeater) this.start(device, Math.min(dispatchedMs, now));
     } else if (action === "onoff.turn_off" && outcome === "sent") this.reset(device);
   }
 
@@ -203,7 +203,7 @@ export class LoadCaps {
         this.o.clear(cannotKey(device));
         continue;
       }
-      if (this.o.mutation === "adopts-an-uncappable-socket-quietly" && adopted.includes(device)) continue;
+      if (this.o.mutant.adoptsAnUncappableSocketQuietly && adopted.includes(device)) continue;
       this.o.notice({ cause: "load_cap", devices: [device], text: `${device}'s heating cap cannot act: its onoff.turn_off `
         + `${t ? "is declared toggles: true, a code the applier never sends on its own" : "is not offered"}, so nothing turns it off `
         + "after its max_on_s. Declare what its load is, or have its bridge declare a discrete turn-off." }, cannotKey(device));
@@ -272,7 +272,7 @@ export class LoadCaps {
     const t = this.o.turnOff(device);
     // A turn-off gone, or now a toggle: the cap cannot act until that changes.
     if (!t || t.toggles) kind = "final";
-    const idempotent = t !== undefined && (t.idempotent || this.o.mutation === "retries-a-pulse-off");
+    const idempotent = t !== undefined && (t.idempotent || this.o.mutant.retriesAPulseOff);
     const again = kind === "nothing_ran" || ((kind === "may_have_run" || kind === "unanswered") && idempotent);
     const why = `${o.outcome}${o.reason ? ` (${o.reason})` : ""}`;
     const said = `${why}:${again}`;
@@ -409,7 +409,7 @@ export class LoadCaps {
    */
   private begin(device: string): void {
     // `leaves-heat-on`: the cap never acts.
-    if (this.o.mutation === "leaves-heat-on") return;
+    if (this.o.mutant.leavesHeatOn) return;
     // Its run and its own record commit together, or neither does.
     this.o.store.group(() => this.beginNow(device));
   }

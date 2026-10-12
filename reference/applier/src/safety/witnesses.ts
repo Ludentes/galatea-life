@@ -1,6 +1,6 @@
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import type { Store } from "../core/store.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import type { Liveness } from "../state/liveness.js";
 
 /**
@@ -25,7 +25,7 @@ export interface WitnessPorts {
   clock: Clock;
   /** Where each watch is kept until its verdict, so a restart still says one (the maintainer's ruling 3). */
   store: Store;
-  mutation?: Mutation;
+  mutant: Mutant;
   /** The witness the owner declared on `device`'s `action`; undefined where none. */
   witness(device: string, action: string): Witness | undefined;
   /** Every witness declared, with its device and action. */
@@ -103,7 +103,7 @@ export class Witnesses {
   /** The watches kept by the last life, each awaiting its verdict. */
   async load(): Promise<void> {
     // `forgets-a-watch`: the watches are not read back.
-    if (this.o.mutation === "forgets-a-watch") return;
+    if (this.o.mutant.forgetsAWatch) return;
     const rows = await this.o.store.query<{ apply_id: string; step_id: string; run: Record<string, string>; target: string; action: string;
       witness: Witness; due_ms: number | string }>("SELECT apply_id, step_id, run, target, action, witness, due_ms FROM witness_watches");
     this.kept = rows.rows.map((r) => ({ apply_id: r.apply_id, step_id: r.step_id, run: r.run, target: r.target, action: r.action,

@@ -1,10 +1,10 @@
 import { expect } from "vitest";
 import { Applier, type BusPort, type ToolResult } from "../src/applier.js";
-import type { Puback } from "../src/bus/client.js";
+import type { Puback } from "../src/bus/port.js";
 import { Store } from "../src/core/store.js";
 import { proofOf } from "../src/gate/token.js";
-import type { Mutation } from "../src/mutations.js";
-import { memoryDb } from "./db.js";
+import { type Mutation, mutantOf } from "../src/mutations.js";
+import { memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 export const OWNER = "owner-credential";
@@ -85,9 +85,9 @@ export async function home(o: { mutation?: Mutation; db?: Awaited<ReturnType<typ
   const devices = [...DEVICES, ...(o.extra ?? [])] as (typeof DEVICES[number] & { id: string; proposedClass: string })[];
   const clock = new FakeClock(o.at);
   const db = o.db ?? await memoryDb();
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   const fb = fakeBus();
-  const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1", mutation: o.mutation, bus: fb.bus,
+  const a = new Applier({ store, clock, ownerCredential: OWNER, applierId: "demo-applier", runId: "run-1", mutant: mutantOf(o.mutation), bus: fb.bus,
     levels: ["Act", "Safe"] });
   if (o.start !== false) await a.start();
   const owner = a.caller(OWNER);

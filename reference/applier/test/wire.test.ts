@@ -30,6 +30,17 @@ describe("parseTime", () => {
   });
 });
 
+describe("parseDevices: a plugin's requested tier and tool hash", () => {
+  it("keeps an action's requestedTier and toolHash, and drops an action whose requestedTier is no tier, with a fault", () => {
+    const r = parseDevices({ devices: [entry("box", { capabilities: ["media"], actions: [
+      { action: "media.pause", idempotent: true, stateless: false, confirms: true, requestedTier: "confirm", toolHash: "ab" },
+      { action: "media.resume", idempotent: true, stateless: false, confirms: true, requestedTier: "high" }] })] });
+    expect(r.value.devices[0]!.actions).toEqual([{ action: "media.pause", idempotent: true, stateless: false, toggles: false, whole_state: false,
+      confirms: true, requested_tier: "confirm", tool_hash: "ab" }]);
+    expect(r.faults).toEqual([expect.stringMatching(/media.resume\) requests the tier "high"/)]);
+  });
+});
+
 describe("parseDevices: extensions on any device (bridge, *Extension names*)", () => {
   const PUSH = "org.galatea.test.pusher";
   const ext = (extra: Record<string, unknown> = {}) => ({ capability: PUSH, description: "A button pusher's own settings.",
@@ -273,6 +284,18 @@ describe("parseDevices proposedInfrastructure", () => {
     const bad = parsed({ proposedInfrastructure: false });
     expect(bad.value.devices[0]).not.toHaveProperty("proposed_infrastructure");
     expect(bad.faults).toEqual(["devices[0] (lamp) proposedInfrastructure is malformed"]);
+  });
+});
+
+describe("parseDevices host", () => {
+  const parsed = (extra: Record<string, unknown>) => parseDevices({ devices: [entry("box", extra)] });
+  it("keeps a bridge device id, absent otherwise; anything else, or the device itself, is a fault and read as no host", () => {
+    expect(parsed({ host: "pc" }).value.devices[0]!.host).toBe("pc");
+    expect(parsed({}).value.devices[0]).not.toHaveProperty("host");
+    for (const host of [7, "", "box"]) {
+      const bad = parsed({ host });
+      expect([bad.value.devices[0]?.host, bad.faults]).toEqual([undefined, ["devices[0] (box) host is malformed"]]);
+    }
   });
 });
 

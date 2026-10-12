@@ -25,6 +25,21 @@ async function setup() {
 }
 
 describe("EventLog", () => {
+  it("finds a rule's firing after an applier event by order, never by comparing the applier's clock with its own (GA-RULE-1; the review, M7)", async () => {
+    const { clock, log } = await setup();
+    // The applier's clock ten minutes ahead of the steward's: a time comparison would miss the firing after it.
+    const ahead = new Date(clock.now() + 600_000).toISOString();
+    log.append("rule_fired", { rule: "early", firing: 0 });
+    log.append("state", { target: "sim-bridge:lamp", key: "on", value: true, applier_seq: 7, applier_time: ahead });
+    clock.advance(1_000);
+    log.append("rule_fired", { rule: "night", firing: 0 });
+    const edge = Date.parse(ahead);
+    expect(log.firedSince("night", edge)).toBe(true);
+    expect(log.firedSince("early", edge)).toBe(false);
+    // An edge later than every applier event logged has no firing after it.
+    expect(log.firedSince("night", edge + 1)).toBe(false);
+  });
+
   it("gives the current cursor, then the events after it, with seq and the clock's time", async () => {
     const { clock, log } = await setup();
     const c = log.cursor();

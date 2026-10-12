@@ -103,11 +103,17 @@ describe("the backup service", () => {
     }
     const before = dumps();
     await s.must(s.compose("up", "-d", "backup"));
-    const deadline = Date.now() + 60_000;
-    while (dumps().join() === before.join() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1000));
-    expect(dumps()).not.toEqual(before);
-    const logs = await s.must(s.compose("logs", "backup"));
-    expect(logs.stdout).toContain(": ok");
+    // The dump is renamed into place before its check restores it, and the service reports only
+    // after the check: wait for the report, not for the file (a loaded box takes seconds between).
+    let logs = "";
+    for (const end = Date.now() + 90_000; Date.now() < end;) {
+      logs = (await s.must(s.compose("logs", "backup"))).stdout;
+      if (/backup: galatea-\S+\.dump: /.test(logs) || /error/i.test(logs)) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const fresh = dumps().filter((f) => !before.includes(f));
+    expect(fresh).toHaveLength(1);
+    expect(logs).toContain(`backup: ${fresh[0]}: ok`);
     await s.must(s.compose("stop", "backup"));
   });
   it("refuses a keep count that is not a positive integer, and a time that is not HH:MM", async () => {

@@ -12,14 +12,22 @@
   "files": [
     "bin",
     "broker",
+    "certs",
     "db",
+    "health",
+    "register",
     "compose.yaml",
+    "compose.lan.yaml",
     ".env.example",
     "instances.example"
   ],
-  "description": "The installation: one Postgres with its provisioning, backups, restore and upgrades; the broker; the Zigbee bridge's service",
+  "description": "The installation: one Postgres with its provisioning, backups, restore and upgrades; the broker on mqtts; the applier and the steward; the CA and its certificates; the Zigbee bridge's service",
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@ludentes/galatea-life-sim": "^0.1.2",
+    "@ludentes/galatea-life-test-clock": "^0.1.0"
   }
 }

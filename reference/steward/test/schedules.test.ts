@@ -50,8 +50,10 @@ describe("schedules at define", () => {
     expect(added.schedules.get("bed")!.exceptions).toEqual([{ date: "2030-01-06", action: "skip" }]);
     const moved = planDefine(added, [up("schedule_exception", move)], context()).draft;
     expect(moved.schedules.get("bed")!.exceptions).toEqual([{ date: "2030-01-06", action: "move", time: "23:00" }]);
-    refused([del("schedule_exception", skip)], /schedule bed has no such exception/, moved);
-    expect(planDefine(moved, [del("schedule_exception", move)], context()).draft.schedules.get("bed")!.exceptions).toEqual([]);
+    // A delete names the exception by its key, its schedule and date (GA-DEF-14).
+    refused([del("schedule_exception", skip)], /change 1 \(delete schedule_exception\)/, moved);
+    refused([del("schedule_exception", { schedule: "bed", date: "2030-01-07" })], /schedule bed has no exception on 2030-01-07/, moved);
+    expect(planDefine(moved, [del("schedule_exception", { schedule: "bed", date: "2030-01-06" })], context()).draft.schedules.get("bed")!.exceptions).toEqual([]);
     refused([up("schedule_exception", { ...skip, schedule: "day" })], /no schedule day/, h);
   });
 
@@ -262,6 +264,14 @@ describe("scheduled runs", () => {
     await vi.waitFor(async () => expect((await eventsSince(ok, cursor, "schedule_missed")).map((e: Body) => [e.schedule, e.date, e.at]))
       .toEqual([["dusk", "2030-01-01", "2030-01-01T08:05:00.000Z"]]));
     expect(runs()).toEqual([]);
+  });
+
+  it("runs a date its clock jumped past under runs-a-stepped-schedule (GA-SCHED-2's negative)", async () => {
+    const { clock, runs } = await scheduled([sceneOf("evening", [lampOn]), up("schedule", { id: "dusk", scenario: "evening", time: "11:05" })],
+      { mutation: "runs-a-stepped-schedule" });
+    clock.jump(30 * MINUTE);
+    clock.advance(0);
+    await vi.waitFor(() => expect(runs().length).toBe(1));
   });
 
   it("leaves a scheduled run's skipped(toggle_only) out of failed_steps under passes-a-skipped-toggle", async () => {

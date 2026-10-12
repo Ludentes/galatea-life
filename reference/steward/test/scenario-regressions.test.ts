@@ -152,6 +152,25 @@ describe("a rule's run and a rule's firing", () => {
     expect((await s.ok(SECRETS.olga, "scenario_stop", { run_id: started.run_id, endpoint: "olga-app" })).reason).toBe("stopped");
   });
 
+  it("refuses a visitor's stop of a run no person started (GA-SCN-9); takes it under visitor-stops-a-schedule", async () => {
+    for (const [mutation, want] of [[undefined, "not_permitted"], ["visitor-stops-a-schedule", "ok"]] as const) {
+      const s = await setup({ devices: ALL, state: STATE, mutation, options: { pruneEveryMs: 3_600_000 } });
+      s.applier.answerOutcome = "acked";
+      const kiosk = "a-kiosk-secret-of-twenty";
+      await s.define([scene("night", [{ delay: 3600 }]), doorRule([{ scenario: "night" }]),
+        up("endpoint", { id: "hall-kiosk", name: "Киоск", type: "panel", room: "hall", person: null, served_by: null, max_role: "visitor" }),
+        up("credential", { id: "hall-kiosk", kind: "panel", secret: kiosk, endpoint: "hall-kiosk" })]);
+      const { cursor } = await s.ok(SECRETS.owner, "events");
+      opens(s);
+      const started = await vi.waitFor(async () => {
+        const e = (await s.ok(SECRETS.owner, "events", { cursor })).events.find((x: Body) => x.type === "scenario" && x.change === "started");
+        expect(e).toBeDefined();
+        return e;
+      });
+      expect(await s.error(kiosk, "scenario_stop", { run_id: started.run_id, endpoint: "hall-kiosk" })).toBe(want);
+    }
+  });
+
   it("commits a firing's fired before it sends while the store is up, so a crash after the send cannot fire it again (GA-RULE-1)", async () => {
     const { db, hold } = await slowDb();
     const s = await setup({ db, devices: ALL, state: STATE, options: { pruneEveryMs: 3_600_000 } });

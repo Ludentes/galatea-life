@@ -21,6 +21,25 @@
   "bin": {
     "galatea-applier": "./dist/main.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "default": "./dist/mcp/server.js"
+    },
+    "./bus": {
+      "types": "./dist/bus/client.d.ts",
+      "default": "./dist/bus/client.js"
+    },
+    "./pg": {
+      "types": "./dist/pg.d.ts",
+      "default": "./dist/pg.js"
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
@@ -28,7 +47,7 @@
     "conformance:matrix": "galatea-with-postgres node scripts/full-matrix.mjs"
   },
   "dependencies": {
-    "@ludentes/galatea-life-schemas": "^0.1.2",
+    "@ludentes/galatea-life-schemas": "^0.1.4",
     "@ludentes/galatea-life-test-clock": "^0.1.0",
     "@modelcontextprotocol/node": "2.1.0",
     "@modelcontextprotocol/server": "2.2.0",
@@ -37,7 +56,7 @@
   },
   "devDependencies": {
     "@ludentes/galatea-life-binding": "^0.1.0",
-    "@ludentes/galatea-life-harness": "^0.1.4",
+    "@ludentes/galatea-life-harness": "^0.1.7",
     "@electric-sql/pglite": "0.5.8",
     "@modelcontextprotocol/client": "2.2.0",
     "@types/pg": "8.23.1"

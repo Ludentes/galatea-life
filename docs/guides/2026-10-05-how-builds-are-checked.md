@@ -145,8 +145,10 @@ mutation's run grades, never what a run's verdict means.
   `pass`, and the verdict grades a mutation only on the ids it ran. An id its rows break is graded
   either way, so the matrix is never weaker than the rows. A known coupling (`known-outside.json`)
   outside the reach is not run, so it excuses nothing; the matrix prints a warning for it.
-- **Why it is sound, and its known gap.** The build reads its mutation only through direct
-  comparisons with the mutation's name, its sites (the lint below keeps it so). A check whose clean
+- **Why it is sound, and its known gap.** The build reads its mutation only through its sites: direct
+  comparisons with the mutation's name (the steward), or reads of the mutation's flag in a frozen
+  record built once from it (the applier's `mutant.trustsAnyToken`, the flag being the name in camel
+  case). The lint below keeps it so. A check whose clean
   run evaluated none of a mutation's sites therefore runs the same code under the mutation, unless
   timing takes it down another branch. Reach is a sample: a branch that only some timing takes is
   reached in some clean runs and not others (`acks-without-state` reached GA-APPLY-9 in one of two
@@ -174,6 +176,11 @@ mutation's run grades, never what a run's verdict means.
     - by copying it whole into a field or an alias;
     - by passing it whole to its own functions and classes.
 
+    A build that reads a record of flags (`mutant`) holds it to the same list: it reads a flag only as
+    `mutant.<flag>`, copies the record whole (into a field or an alias named `mutant`), builds it by
+    its own call (`mutantOf`, which alone compares the mutation with every name and is left out of the
+    lint, as `mutationFromEnv` is), or passes it whole. A flag's name anywhere else, an index, a
+    destructuring or a truth test of the record fails the lint.
     It may read `GALATEA_MUTATION` only in `mutationFromEnv`. Every mutation must have a site. Any
     other read fails the lint, and the matrix then refuses to skip; so does a clean run with no report.
 - **What it says.** The matrix prints:

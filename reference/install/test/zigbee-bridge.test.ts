@@ -29,7 +29,7 @@ describe("the Zigbee bridge's service", () => {
   });
   afterAll(async () => s?.destroy());
 
-  it("has a data directory galatea-db-prepare made: the owner's, closed to others", () => {
+  it("has a data directory galatea-prepare made: the owner's, closed to others", () => {
     expect(statSync(data).isDirectory()).toBe(true);
     expect(statSync(data).uid).toBe(process.getuid!());
     expect(statSync(data).mode & 0o777).toBe(0o700);
@@ -56,6 +56,33 @@ describe("the Zigbee bridge's service", () => {
     const [uid, ...files] = r.stdout.trim().split(/\s+/);
     expect(uid).toBe(String(process.getuid!()));
     expect(files.filter((f) => !f.endsWith(":"))).toEqual(["bridge_zigbee", "bridge_zigbee"]);
+  });
+
+  it("reaches the broker over mqtts, trusting the installation's CA through NODE_EXTRA_CA_CERTS until it has a CA option", async () => {
+    const r = await s.must(s.compose("exec", "-T", "zigbee-bridge", "sh", "-c", "echo $GALATEA_BROKER; echo $NODE_EXTRA_CA_CERTS; ls /run/tls"));
+    expect(r.stdout.trim().split("\n")).toEqual(["mqtts://bridge_zigbee@broker:8883", "/run/tls/ca.pem", "ca.pem"]);
+    expect(await s.logs("broker")).toMatch(/New client connected from .* as bridge_zigbee \(p5/);
+  });
+
+  it("follows a new CA: galatea-certs --new-ca restarts the broker before the bridge, which reconnects over mqtts with no refusal and no will left", async () => {
+    const before = JSON.parse((await status(10)).stdout.trim()).instanceId as string;
+    const r = await s.must(s.bin("galatea-certs", "--new-ca"));
+    const order = r.stdout.split("\n").filter((l) => l.startsWith("galatea-certs: restarted ")).map((l) => l.slice("galatea-certs: restarted ".length));
+    expect(order).toEqual(["broker", "zigbee-bridge"]);
+    // A fresh status, from the bridge restarted on the new CA: online, with no grant refused.
+    let st: { state?: string; instanceId?: string; faults?: { code: string }[] } = {};
+    for (const end = Date.now() + 60_000; Date.now() < end;) {
+      const got = await status(10);
+      if (got.code === 0) st = JSON.parse(got.stdout.trim());
+      if (st.instanceId !== before && st.state === "online") break;
+      await new Promise((res) => setTimeout(res, 1000));
+    }
+    expect(st.instanceId).not.toBe(before);
+    expect(st.state).toBe("online");
+    expect((st.faults ?? []).map((f) => f.code)).not.toContain("publish_refused");
+    expect((st.faults ?? []).map((f) => f.code)).not.toContain("subscribe_refused");
+    const will = await s.mqtt("mosquitto_sub", "applier", pw("applier"), ["-t", "galatea/bridges/bridge_zigbee/lwt", "-C", "1", "-W", "3"]);
+    expect(will.stdout).toBe("");
   });
 
   it("stops within its grace, cleanly: its status says it went offline gracefully, and its will is cleared", async () => {

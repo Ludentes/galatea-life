@@ -87,7 +87,8 @@ export function openAsks(events: Body[]): number {
 
 /**
  * `galatea status`: both servers reached and each one's revision, every transport (up, state, its
- * bridge), the devices not live, and the open asks on `owner-app` counted. Each read is its own: a
+ * bridge), the notices the steward holds while no channel offers `notify` (its `held_notices`), the
+ * devices not live, and the open asks on `owner-app` counted. Each read is its own: a
  * server not reached, or a later read of a reached server that fails, is said, and everything else
  * reached is still shown (review I2). It ends 2 when a server was not reached, 1 when a server was
  * reached but a later read of it failed, 0 otherwise.
@@ -127,7 +128,13 @@ export async function status(ctx: Ctx): Promise<Exit> {
   const house = await reach("steward", async () => need(await (await ctx.steward()).describe(), "steward", "describe"));
   if (house) {
     out.steward = house;
-    if (!ctx.json) ctx.say.out(`steward ${house.steward_id}: reached, standard ${house.standard_version}, revision ${house.revision}`);
+    if (!ctx.json) {
+      ctx.say.out(`steward ${house.steward_id}: reached, standard ${house.standard_version}, revision ${house.revision}`);
+      // Shown only while no adopted channel offers notify (GA-NOTE-1); --json carries it in the steward's body.
+      if (house.held_notices !== undefined) {
+        ctx.say.out(`  notices held: ${house.held_notices} (no notify channel: notice_channels names no device that offers notify)`);
+      }
+    }
     const adopted = (house.targets ?? []).filter((t: Body) => t.adopted !== false).map((t: Body) => t.id as string);
     const live = await read(() => livenessOf(ctx, adopted));
     if ("value" in live) {

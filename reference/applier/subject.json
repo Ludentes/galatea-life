@@ -24,5 +24,10 @@
     "trusts-a-dead-finder", "plans-on-a-candidate", "shows-candidates-to-a-client", "hides-the-finders-sources",
     "lists-a-held-candidate", "forgets-an-ignore",
     "connects-to-the-wrong-bridge", "event-without-request-id", "never-ends-a-connect", "ignores-the-address",
-    "hides-awaited-keys", "drops-the-undescribed-event", "accepts-a-safety-rule-on-an-undeclared-key"]
+    "hides-awaited-keys", "drops-the-undescribed-event", "accepts-a-safety-rule-on-an-undeclared-key",
+    "keeps-an-owner-raise", "keeps-an-owner-raise-on-a-set", "keeps-a-manifest-kept-tier", "lowers-a-heater-below-the-table",
+    "keeps-a-table-tier-over-a-new-load", "externalises-a-first-value", "externalises-a-snapshot-value", "externalises-a-rerouted-value",
+    "devices-a-live-press",
+    "extension-under-the-box", "sleeps-the-box-through-its-player", "sleeps-the-proposed-broker-host",
+    "forgets-a-tool-hash", "lowers-by-a-new-manifest", "keeps-a-lowered-tier"]
 }

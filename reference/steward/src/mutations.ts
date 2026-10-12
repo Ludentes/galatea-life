@@ -26,6 +26,19 @@ export const MUTATIONS = [
   "authors-a-moved-device",
   // Slice 11: restarts.
   "forgets-a-held-notice",
+  // Steward 0.11: notice channels and held notices.
+  "refuses-the-first-define", "refuses-an-announcing-channel", "takes-a-silent-channel", "hides-no-notify-channel", "hides-the-held-notices",
+  "loses-an-early-notice", "forgets-an-unsent-notice", "keeps-a-dead-channel-quiet",
+  // Steward 0.11: the ask event's steps and the define event's diff.
+  "asks-without-the-steps", "broadcasts-the-steps", "broadcasts-the-diff",
+  // Steward 0.11: change sets merge, delete by key, and keep their shapes.
+  "renames-away-the-room", "drops-confirm-on", "deletes-the-missing", "takes-a-short-secret",
+  "re-fires-at-every-lease-end", "forgets-a-replaced-lease", "lease-end-fires-in-an-exception",
+  "replays-on-old-conditions", "replays-undeclared", "replays-a-time-trigger", "replays-a-fired-edge", "replays-past-its-bound",
+  "fires-before-the-duration", "forgets-a-restart-hand",
+  "ends-a-safety-lease-early", "ends-a-safety-lease-undeclared", "forgets-a-safety-refusal",
+  "never-notices-again", "coalesces-a-failed-lock", "forgets-an-asked-plan",
+  "runs-a-stepped-schedule", "visitor-stops-a-schedule",
 ] as const;
 export type Mutation = (typeof MUTATIONS)[number];
 

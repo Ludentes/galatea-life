@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Clock } from "@ludentes/galatea-life-test-clock";
-import type { Mutation } from "../mutations.js";
+import type { Clock } from "./clock.js";
+import { Mutant } from "../mutations.js";
 import { wellFormed } from "./canonical.js";
 import type { Store } from "./store.js";
 
@@ -23,12 +23,12 @@ type Row = { id: string; raised_ms: number | string; key: string | null; body: N
 export class Notices {
   private readonly held = new Map<string, Held>();
 
-  constructor(private readonly store: Store, private readonly clock: Clock, private readonly mutation?: Mutation) {}
+  constructor(private readonly store: Store, private readonly clock: Clock, private readonly mutant: Mutant = Mutant.none) {}
 
   /** Loads the notices kept: the ones not taken, and the taken ones whose condition still stands. */
   async load(): Promise<void> {
     // `forgets-a-notice`: the notices kept before the restart are not read back.
-    if (this.mutation === "forgets-a-notice") return;
+    if (this.mutant.forgetsANotice) return;
     const rows = await this.store.query<Row>("SELECT id, raised_ms, key, body, taken, standing FROM notices ORDER BY raised_ms, id");
     for (const r of rows.rows) {
       this.held.set(r.id, { notice: { ...r.body, notice_id: r.id }, ms: Number(r.raised_ms), ...(r.key ? { key: r.key } : {}),

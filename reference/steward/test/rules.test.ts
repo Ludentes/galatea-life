@@ -438,6 +438,79 @@ describe("rules: a lease that ended while the steward was down (the milestone re
   });
 });
 
+describe("a lease's end re-evaluates only the rules it refused (GA-LEASE-4)", () => {
+  const OFF = { id: "off", name: "off", conditions: [{ target: MOTION, key: "motion", op: "eq", value: true }],
+    actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }] };
+  const touch = (a: Awaited<ReturnType<typeof ruled>>) => a.change(LAMP, "on", true, "external");
+
+  it("re-evaluates nothing at the end of a lease that refused nothing; re-fires under re-fires-at-every-lease-end", async () => {
+    for (const [mutation, want] of [[undefined, ["rule:off:0"]], ["re-fires-at-every-lease-end", ["rule:off:0", "rule:off:1"]]] as const) {
+      const a = await ruled([OFF], { mutation });
+      await a.change(MOTION, "motion", true);
+      await a.keys(["rule:off:0"]);
+      await touch(a);
+      expect(Object.keys((await a.ok(SECRETS.owner, "state")).leases)).toEqual([LAMP]);
+      a.clock.advance(HOLD_MS + 1_000);
+      await a.settle();
+      await a.keys([...want]);
+    }
+  });
+
+  it("hands the rules a replaced lease refused to the lease that replaces it, re-evaluated at its end; forgets them under forgets-a-replaced-lease", async () => {
+    // The refused firing took number 0.
+    for (const [mutation, want] of [[undefined, ["rule:off:1"]], ["forgets-a-replaced-lease", []]] as const) {
+      const a = await ruled([OFF], { mutation });
+      await touch(a);
+      await a.change(MOTION, "motion", true);
+      await a.settle();
+      await a.keys([]);
+      a.clock.advance(60_000);
+      // A second touch replaces the lease: nothing is re-evaluated now.
+      await a.change(LAMP, "on", true, "external");
+      await a.settle();
+      await a.keys([]);
+      a.clock.advance(HOLD_MS + 1_000);
+      await a.settle();
+      await a.keys([...want]);
+    }
+  });
+
+  it("fires a rule a lease refused only outside its exceptions; inside one under lease-end-fires-in-an-exception", async () => {
+    for (const [mutation, want] of [[undefined, []], ["lease-end-fires-in-an-exception", ["rule:off:1"]]] as const) {
+      const clock = new FakeClock();
+      const from = new Date(clock.now() + HOLD_MS - 600_000).toISOString();
+      const until = new Date(clock.now() + HOLD_MS + 600_000).toISOString();
+      const a = await ruled([{ ...OFF, exceptions: [{ from, until }] }], { mutation, clock });
+      await touch(a);
+      await a.change(MOTION, "motion", true);
+      await a.settle();
+      a.clock.advance(HOLD_MS + 1_000);
+      await a.settle();
+      await a.keys([...want]);
+    }
+  });
+
+  it("keeps each lease's refused rules across a restart, and re-evaluates them at its end after it", async () => {
+    const db = lasting(await memoryDb());
+    const clock = new FakeClock();
+    const a = await ruled([OFF], { db, clock });
+    await touch(a);
+    await a.change(MOTION, "motion", true);
+    await a.settle();
+    await a.store.settled();
+    expect((await a.store.query<{ refused: unknown }>("SELECT refused FROM leases")).rows).toEqual([{ refused: ["off"] }]);
+    a.steward.stop();
+    await a.store.close();
+    const b = await ruled([], { db, clock, define: false, values: { ...START, [LAMP]: { on: true }, [MOTION]: { motion: true } } });
+    await b.settle();
+    // At start, a firing the standing lease refused does not count as fired: tried again, and refused again.
+    const tried = b.firedKeys().length;
+    b.clock.advance(HOLD_MS + 1_000);
+    await b.settle();
+    await vi.waitFor(() => { b.clock.advance(0); expect(b.firedKeys()).toHaveLength(tried + 1); });
+  });
+});
+
 describe("rules: a return to life, or a restart, is no change (the milestone review, M1; G4)", () => {
   const night = { id: "night", name: "Ночник гаснет", trigger: { held: { target: MOTION, key: "motion", op: "eq", value: false, for_s: 180 } },
     actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }] };
@@ -485,6 +558,70 @@ describe("rules: a return to life, or a restart, is no change (the milestone rev
     await change(MOTION, "motion", true);
     await liveness(MOTION, "dead", "live");
     await keys(["rule:on:0", "rule:on:1"]);
+  });
+});
+
+describe("rules after a restart (GA-RULE-1, GA-LEASE-2: steward 0.11)", () => {
+  const night = { id: "night", name: "Ночник гаснет", trigger: { held: { target: MOTION, key: "motion", op: "eq", value: false, for_s: 180 } },
+    actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }] };
+  const morning = { id: "morning", name: "Утро", trigger: { time: { at: "11:30", days: [2] } }, actions: [{ target: LAMP, action: "onoff.turn_on", args: {} }] };
+
+  it("fires a held trigger only once it has held the whole duration afresh since the restart; at once under fires-before-the-duration", async () => {
+    for (const [mutation, early] of [[undefined, false], ["fires-before-the-duration", true]] as const) {
+      const db = lasting(await memoryDb());
+      const clock = new FakeClock();
+      const a = await ruled([night], { db, clock, mutation });
+      clock.advance(100_000);
+      await a.settle();
+      await a.keys([]);
+      await a.store.settled();
+      a.steward.stop();
+      await a.store.close();
+      const b = await ruled([], { db, clock, define: false, mutation });
+      clock.advance(10_000);
+      await b.settle();
+      expect(b.steward.ruleFired("night")).toBe(early);
+      if (mutation) continue;
+      clock.advance(170_000);
+      await vi.waitFor(() => { b.clock.advance(0); expect(b.firedKeys()).toHaveLength(1); });
+    }
+  });
+
+  it("never replays a time trigger whose minute fell in a restart's gap; does under replays-a-time-trigger", async () => {
+    for (const [mutation, want] of [[undefined, 0], ["replays-a-time-trigger", 1]] as const) {
+      const db = lasting(await memoryDb());
+      const clock = new FakeClock();
+      const a = await ruled([morning], { db, clock, mutation });
+      clock.advance(29 * 60_000);
+      await a.settle();
+      await a.store.settled();
+      a.steward.stop();
+      await a.store.close();
+      clock.advance(2 * 60_000);
+      const b = await ruled([], { db, clock, define: false, mutation });
+      for (let i = 0; i < 4; i++) await b.settle();
+      expect(b.firedKeys()).toHaveLength(want);
+    }
+  });
+
+  it("leases an outside change made while the steward was down, read back at the start; none under forgets-a-restart-hand", async () => {
+    for (const [mutation, want] of [[undefined, [LAMP]], ["forgets-a-restart-hand", []]] as const) {
+      const db = lasting(await memoryDb());
+      const clock = new FakeClock();
+      const a = await setup({ db, clock, mutation });
+      a.applier.emit({ type: "state", target: DIMMER, key: "on", value: false, time: new Date(clock.now()).toISOString(), cause: "device" });
+      await a.pump();
+      await a.store.settled();
+      a.steward.stop();
+      await a.store.close();
+      clock.advance(60_000);
+      a.applier.emit({ type: "state", target: LAMP, key: "on", value: true, time: new Date(clock.now()).toISOString(), cause: "external" });
+      const b = await setup({ db, clock, mutation, applier: a.applier, define: false, sync: false });
+      const missed = (await b.port.history({ from: new Date(0).toISOString(), to: new Date(clock.now()).toISOString() })).events as Body[];
+      b.steward.recover(missed, { targets: {}, transports: [], latches: [] }, String(missed.at(-1)?.seq ?? 0));
+      await b.store.settled();
+      expect(Object.keys((await b.ok(SECRETS.owner, "state")).leases)).toEqual(want);
+    }
   });
 });
 

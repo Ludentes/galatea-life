@@ -46,6 +46,8 @@ describe("define through a brain (GA-DEF-3, GA-DEF-6)", () => {
       diff: expect.stringMatching(/\+ room attic: name "Чердак"[\s\S]*\+ scenario night: brain_authored true/) }]);
     expect(plan.request).toEqual({ endpoint: "owner-chat", changes: [attic, night], expected_revision: before.revision });
     expect((await eventsSince(ok, cursor)).map((e) => [e.type, e.plan_id, e.step_ids, e.endpoint])).toEqual([["ask", plan.plan_id, ["s1"], "owner-chat"]]);
+    // Its steps, the confirm_define step's own shape (GA-CONF-5).
+    expect((await eventsSince(ok, cursor))[0]!.steps).toEqual([{ step_id: "s1", reason: "confirm_define", diff: plan.steps[0].diff }]);
     expect(await ok(SECRETS.owner, "describe")).toEqual(before);
   });
 

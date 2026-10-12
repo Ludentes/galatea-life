@@ -220,7 +220,11 @@ export function wireConstraint(c: Constraint): unknown {
  */
 export type ConfirmedBy = { key: string; value: string | number | boolean | { arg: string } };
 export type ActionDoc = { action: string; idempotent: boolean; stateless: boolean; toggles: boolean; whole_state: boolean; confirms: boolean;
-  args?: Record<string, Constraint>; confirmed_by?: ConfirmedBy };
+  args?: Record<string, Constraint>; confirmed_by?: ConfirmedBy;
+  /** A plugin's action: the tier its manifest requests (`requestedTier`), which joins its floor (applier, *Default tiers*). */
+  requested_tier?: "reversible" | "confirm" | "no_voice";
+  /** A plugin's action: the SHA-256 of the MCP tool that implements it (`toolHash`), compared across a replacement (GA-DESC-11). */
+  tool_hash?: string };
 /** An extension key: a `state` key is a state key of the device like any other, an `event` key never one (applier, *Extensions*). */
 export type ExtensionKey = { key: string; kind: "state" | "event"; description?: string; schema: Record<string, unknown> };
 /** An extension capability its bridge declares on a device, as the applier holds and describes it (applier, *Devices*, `extensions`). */
@@ -242,6 +246,8 @@ export type DeviceDoc = {
   other_admins: { vendor: string; label: string }[] | "unknown";
   /** Only on a computer: its bridge's proposal that it carries the broker (GA-BRIDGE-65), for the owner to set `infrastructure`. */
   proposed_infrastructure?: true;
+  /** Only on a plugin device: the bridge's id of the computer that hosts it (applier, *Devices*, `host`). */
+  host?: string;
   self_changing: string[];
   personal: string[];
   internal: boolean;
@@ -458,12 +464,20 @@ function parseAction(a: unknown, where: string, faults: string[], extensions: Ex
       }
     }
   }
+  // A requested tier the applier cannot read would set a floor it does not know: the action cannot stand.
+  const tiers = ["reversible", "confirm", "no_voice"];
+  if (a.requestedTier !== undefined && !tiers.includes(a.requestedTier as string)) {
+    faults.push(`${where} (${a.action}) requests the tier ${JSON.stringify(a.requestedTier)}, which is none of ${tiers.join(", ")}`);
+    return undefined;
+  }
   // An extension action's arguments are its `args`; where it gives none, its schema's `properties` (I4, the maintainer's ruling).
   const args = parseArgs(a.args, where, faults) ?? (extension && a.args === undefined ? fromSchema(extensions, a.action) : undefined);
   // Least it can mean: an action whose confirmation is not stated cannot confirm.
   return { action: a.action, idempotent: a.idempotent, stateless: a.stateless, toggles: a.toggles === true,
     whole_state: a.wholeState === true, confirms: a.confirms === true, ...(args ? { args } : {}),
-    ...(confirmedBy ? { confirmed_by: confirmedBy } : {}) };
+    ...(confirmedBy ? { confirmed_by: confirmedBy } : {}),
+    ...(a.requestedTier !== undefined ? { requested_tier: a.requestedTier as ActionDoc["requested_tier"] } : {}),
+    ...(typeof a.toolHash === "string" ? { tool_hash: a.toolHash } : {}) };
 }
 
 /**
@@ -523,6 +537,9 @@ function parseDeviceDoc(e: unknown, i: number, faults: string[]): DeviceDoc | un
   if (Array.isArray(e.otherAdmins) && e.otherAdmins.every(wellFormed)) otherAdmins = e.otherAdmins;
   else if (e.otherAdmins !== undefined && e.otherAdmins !== "unknown") faults.push(`${name} otherAdmins is malformed`);
   if (e.proposedInfrastructure !== undefined && e.proposedInfrastructure !== true) faults.push(`${name} proposedInfrastructure is malformed`);
+  // A host that is no bridge device id is dropped with a fault: the device is then read as hosted by none.
+  const host = typeof e.host === "string" && BRIDGE_ID.test(e.host) && e.host !== e.id ? e.host : undefined;
+  if (e.host !== undefined && host === undefined) faults.push(`${name} host is malformed`);
   /** A list of strings its bridge may leave out: kept as given, or dropped with a fault (GA-BUS-1). */
   const listed = (wireName: string, key: "awaited_keys" | "settings") => {
     if (e[wireName] === undefined) return {};
@@ -552,6 +569,7 @@ function parseDeviceDoc(e: unknown, i: number, faults: string[]): DeviceDoc | un
     class_evidence: EVIDENCE.includes(e.classEvidence as string) ? (e.classEvidence as string) : "none",
     other_admins: otherAdmins,
     ...(e.proposedInfrastructure === true ? { proposed_infrastructure: true as const } : {}),
+    ...(host !== undefined ? { host } : {}),
     self_changing: strings(e.selfChanging) ?? [],
     personal: strings(e.personal) ?? [],
     internal: e.internal === true,

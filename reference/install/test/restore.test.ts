@@ -1,4 +1,4 @@
-import { copyFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Stack } from "./stack.js";
@@ -9,28 +9,28 @@ describe("galatea-restore", () => {
   const pw = (role: string) => readFileSync(join(s.secrets, role), "utf8");
 
   beforeAll(async () => {
-    s = await Stack.create(["applier", "steward"]);
+    s = await Stack.create(["applier", "steward", "voice_den", "voice_attic"]);
     await s.up();
-    await s.must(s.sql("applier", pw("applier"), "CREATE TABLE t (x int); INSERT INTO t VALUES (1), (2)"));
-    await s.must(s.sql("applier", pw("applier"), "CREATE VIEW history_v AS SELECT x FROM t; GRANT USAGE ON SCHEMA applier TO reader; GRANT SELECT ON history_v TO reader"));
+    await s.must(s.sql("voice_den", pw("voice_den"), "CREATE TABLE t (x int); INSERT INTO t VALUES (1), (2)"));
+    await s.must(s.sql("voice_den", pw("voice_den"), "CREATE VIEW history_v AS SELECT x FROM t; GRANT USAGE ON SCHEMA voice_den TO reader; GRANT SELECT ON history_v TO reader"));
     await s.must(s.compose("run", "--rm", "--no-deps", "backup", "once"));
     dump = join(s.backups, readdirSync(s.backups).find((f) => f.endsWith(".dump"))!);
   });
   afterAll(async () => s?.destroy());
 
   it("brings back the data, owners and grants of the dump", async () => {
-    await s.admin("DELETE FROM applier.t; DROP SCHEMA steward CASCADE");
+    await s.admin("DELETE FROM voice_den.t; DROP SCHEMA voice_attic CASCADE");
     const r = await s.bin("galatea-restore", dump);
     expect(r.code, r.stderr).toBe(0);
-    expect((await s.sql("applier", pw("applier"), "SELECT count(*) FROM t")).stdout.trim()).toBe("2");
-    expect((await s.sql("steward", pw("steward"), "SELECT current_schema()")).stdout.trim()).toBe("steward");
-    expect((await s.sql("reader", pw("reader"), "SELECT count(*) FROM applier.history_v")).stdout.trim()).toBe("2");
-    expect((await s.sql("steward", pw("steward"), "SELECT * FROM applier.t")).code).not.toBe(0);
+    expect((await s.sql("voice_den", pw("voice_den"), "SELECT count(*) FROM t")).stdout.trim()).toBe("2");
+    expect((await s.sql("voice_attic", pw("voice_attic"), "SELECT current_schema()")).stdout.trim()).toBe("voice_attic");
+    expect((await s.sql("reader", pw("reader"), "SELECT count(*) FROM voice_den.history_v")).stdout.trim()).toBe("2");
+    expect((await s.sql("voice_attic", pw("voice_attic"), "SELECT * FROM voice_den.t")).code).not.toBe(0);
   });
 
   it("gives an instance added since the dump its schema", async () => {
-    s.setInstances(["applier", "steward", "voice_hall"]);
-    await s.must(s.bin("galatea-db-prepare"));
+    s.setInstances(["applier", "steward", "voice_den", "voice_attic", "voice_hall"]);
+    await s.must(s.bin("galatea-prepare"));
     await s.must(s.bin("galatea-restore", dump));
     expect((await s.sql("voice_hall", pw("voice_hall"), "SELECT current_schema()")).stdout.trim()).toBe("voice_hall");
   });
@@ -47,16 +47,16 @@ describe("galatea-restore", () => {
     await s.must(s.compose("down", "-v"));
     const r = await s.bin("galatea-restore", dump);
     expect(r.code, r.stderr).toBe(0);
-    expect((await s.sql("applier", pw("applier"), "SELECT count(*) FROM t")).stdout.trim()).toBe("2");
+    expect((await s.sql("voice_den", pw("voice_den"), "SELECT count(*) FROM t")).stdout.trim()).toBe("2");
   });
 
   it("refuses a file that is not there, and changes nothing", async () => {
     const r = await s.bin("galatea-restore", join(s.dir, "missing.dump"));
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain("no such file");
-    expect((await s.sql("applier", pw("applier"), "SELECT count(*) FROM t")).stdout.trim()).toBe("2");
+    expect((await s.sql("voice_den", pw("voice_den"), "SELECT count(*) FROM t")).stdout.trim()).toBe("2");
   });
-  const count = async () => (await s.sql("applier", pw("applier"), "SELECT count(*) FROM t")).stdout.trim();
+  const count = async () => (await s.sql("voice_den", pw("voice_den"), "SELECT count(*) FROM t")).stdout.trim();
 
   it("refuses a file that is not a readable archive, and changes nothing", async () => {
     const bad = join(s.dir, "corrupt.dump");
@@ -70,8 +70,8 @@ describe("galatea-restore", () => {
   it("refuses a dump whose check failed, names the check file, and restores it with --force", async () => {
     const d = join(s.dir, "failed.dump");
     copyFileSync(dump, d);
-    writeFileSync(`${d}.check`, "failed: applier.migrations is empty\n");
-    await s.admin("DELETE FROM applier.t");
+    writeFileSync(`${d}.check`, "failed: voice_den.migrations is empty\n");
+    await s.admin("DELETE FROM voice_den.t");
     const r = await s.bin("galatea-restore", d);
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain("failed.dump.check");
@@ -82,15 +82,15 @@ describe("galatea-restore", () => {
   });
 
   it("refuses a dump with a schema that instances lacks, and names it", async () => {
-    s.setInstances(["applier"]);
+    s.setInstances(["applier", "steward", "voice_den"]);
     try {
       const r = await s.bin("galatea-restore", dump);
       expect(r.code).not.toBe(0);
-      expect(r.stderr).toContain("steward");
+      expect(r.stderr).toContain("voice_attic");
       expect(r.stderr).not.toMatch(/\bapplier\b.*add/);
       expect(await count()).toBe("2");
     } finally {
-      s.setInstances(["applier", "steward", "voice_hall"]);
+      s.setInstances(["applier", "steward", "voice_den", "voice_attic", "voice_hall"]);
     }
   });
 
@@ -111,5 +111,21 @@ describe("galatea-restore", () => {
     expect(running.stdout).toContain("backup");
     const dbs = await s.admin("SELECT datname FROM pg_database WHERE datname LIKE 'galatea%' ORDER BY 1", "postgres");
     expect(dbs.stdout.trim()).toBe("galatea");
+  });
+
+  it("says why a service failed to start after the restore, in the service's own words", async () => {
+    // db-init reads the password as root; the steward's migrate, as the owner's account, refuses a
+    // file other accounts can read. The restore itself works; the start after it does not.
+    const file = join(s.secrets, "steward");
+    chmodSync(file, 0o640);
+    try {
+      const r = await s.bin("galatea-restore", dump);
+      expect(r.code).not.toBe(0);
+      expect(r.stderr).toMatch(/galatea-restore: steward-migrate exited \d+; the end of its log:/);
+      expect(r.stderr).toContain("can be reached by other accounts");
+    } finally {
+      chmodSync(file, 0o600);
+    }
+    await s.must(s.compose("up", "-d"), "up after the mode is mended");
   });
 });

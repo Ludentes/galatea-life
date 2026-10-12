@@ -15,5 +15,16 @@
     "notices-every-skipped-toggle", "defines-a-toggle-rule-silently", "notices-a-late-launch", "notices-every-lease",
     "drops-the-starting-endpoint", "branches-on-an-assumed-value", "stales-an-assumed-if", "toggles-on-an-old-yes",
     "passes-a-skipped-toggle", "schedules-a-toggle-silently", "authors-a-moved-device",
-    "forgets-a-held-notice"]
+    "forgets-a-held-notice",
+    "refuses-the-first-define", "refuses-an-announcing-channel", "takes-a-silent-channel", "hides-no-notify-channel", "hides-the-held-notices",
+    "loses-an-early-notice", "forgets-an-unsent-notice",
+    "keeps-a-dead-channel-quiet",
+    "asks-without-the-steps", "broadcasts-the-steps", "broadcasts-the-diff",
+    "renames-away-the-room", "drops-confirm-on", "deletes-the-missing", "takes-a-short-secret",
+    "re-fires-at-every-lease-end", "forgets-a-replaced-lease", "lease-end-fires-in-an-exception",
+    "replays-on-old-conditions", "replays-undeclared", "replays-a-time-trigger", "replays-a-fired-edge", "replays-past-its-bound", "fires-before-the-duration", "forgets-a-restart-hand",
+    "ends-a-safety-lease-early", "ends-a-safety-lease-undeclared", "forgets-a-safety-refusal",
+    "never-notices-again", "coalesces-a-failed-lock",
+    "forgets-an-asked-plan",
+    "runs-a-stepped-schedule", "visitor-stops-a-schedule"]
 }

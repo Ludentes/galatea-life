@@ -1,13 +1,13 @@
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { Applier, type BusPort, type ToolResult } from "../src/applier.js";
+import { migrationsFrom } from "../src/adapters/migrations.js";
 import { migrate } from "../src/core/migrate.js";
 import { hashSecret } from "../src/core/secret.js";
 import { Store } from "../src/core/store.js";
-import { blankDb, lasting, memoryDb } from "./db.js";
+import { blankDb, lasting, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 // The whole-applier review's M6: the secrets the applier only compares are kept as SHA-256 digests,
@@ -20,7 +20,7 @@ const sha = (s: string) => hashSecret(s);
 
 async function make(db: Awaited<ReturnType<typeof memoryDb>>, fresh = true) {
   const clock = new FakeClock();
-  const store = await Store.open(db, clock, (err) => { throw err; });
+  const store = await Store.open(db, clock, (err) => { throw err; }, { migrations });
   const sent: Record<string, any>[] = [];
   const bus: BusPort = { follow: () => undefined, snapshot: async () => ({ kind: "ok" }), command: async () => ({ kind: "ok" }),
     request: async (_b, _op, req) => { sent.push(req); return { kind: "ok" }; } };
@@ -86,14 +86,14 @@ describe("secrets kept as digests", () => {
     const before = mkdtempSync(join(tmpdir(), "galatea-migrations-"));
     try {
       cpSync(all, before, { recursive: true, filter: (src) => !src.endsWith("0019_hashed_secrets.sql") });
-      await migrate(db, pathToFileURL(`${before}/`));
+      await migrate(db, migrationsFrom(before));
     } finally {
       rmSync(before, { recursive: true, force: true });
     }
     await db.query("INSERT INTO clients (id, credential, token_key, kind) VALUES ('h', 'plain-credential-1', NULL, 'steward')");
     await db.query("INSERT INTO provisions (request_id, op, bridge, idempotency_key, body, result, created_ms) "
       + "VALUES ('r1', 'commission', 'hall', 'k1', '{\"commission\":{\"code\":\"MT:secret\"}}', '{}', 1), ('r2', 'join', 'hall', NULL, NULL, '{}', 1)");
-    expect(await migrate(db, all)).toEqual(["0019_hashed_secrets.sql"]);
+    expect(await migrate(db, migrationsFrom(all))).toEqual(["0019_hashed_secrets.sql"]);
     expect((await db.query("SELECT id, credential_sha256 FROM clients")).rows).toEqual([{ id: "h", credential_sha256: sha("plain-credential-1") }]);
     expect((await db.query("SELECT request_id, body FROM provisions ORDER BY request_id")).rows)
       .toEqual([{ request_id: "r1", body: sha("{\"commission\":{\"code\":\"MT:secret\"}}") }, { request_id: "r2", body: null }]);

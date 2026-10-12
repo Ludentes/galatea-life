@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
 import { validate } from "@ludentes/galatea-life-schemas";
 import type { Bridge, Config } from "../config/config.js";
-import { loadIn, tierIn, type DeviceInfo, type Effects, type Routed } from "../config/configure.js";
+import { loadIn, type Seen, tierIn, type DeviceInfo, type Effects, type Routed } from "../config/configure.js";
 import { canonical, storable } from "../core/canonical.js";
-import { sets } from "../gate/actions.js";
-import type { Mutation } from "../mutations.js";
+import { Mutant } from "../mutations.js";
 import { BridgeRules, SKEW_MS, type Outcome } from "../bus/bridge-rules.js";
 import {
   isStr, parseAck, parseDevices, parseDeviceStatus, parseEvent, parseStatus, parseTime, wireConstraint,
@@ -13,8 +11,10 @@ import {
 import type { GateDevice } from "../gate/plan.js";
 import { FRESH_SLACK_S, liveness, type Liveness } from "../state/liveness.js";
 import {
-  DEFAULT_MAX_ON_S, defaultAckWithinS, mayBeIdempotent, standardKeys, statelessOf, union, type Tier,
+  DEFAULT_MAX_ON_S, mayBeIdempotent, standardKeys, statelessOf, union, type Tier,
 } from "./declarations.js";
+import { PROVISION_EVENTS, type Arrival, firstValue, fingerprintOf, deviceId, MAX_ID, MAX_UNLISTED, MAX_FAULT_CODE, MAX_DEVICE_FAULTS, SNAPSHOT_ANSWER_MS, ackWithinS, UNKNOWN_BOUND, openLoopKey, openLoop, adminKey, faultPrefix } from "./home-helpers.js";
+export { PROVISION_EVENTS, type Arrival, firstValue, fingerprintOf, deviceId, MAX_ID, MAX_UNLISTED, MAX_FAULT_CODE, MAX_DEVICE_FAULTS } from "./home-helpers.js";
 
 export { canonical };
 
@@ -32,7 +32,10 @@ export type HeldTransport = { id: string; bridge: string; bridge_transport: stri
  */
 export type ConnectionRow = { kind: "device" | "transport"; entity: string; keys: string[] };
 
-type Value = { value: string | number | boolean; basis: number };
+/** A value of a key the applier held for a device, and whether its event went out. */
+type Held = { value: string | number | boolean; said: boolean };
+/** A value a bridge reported, its basis, and how it arrived where that was not live (`Arrival`), judged when it came. */
+type Value = { value: string | number | boolean; basis: number; arrival?: Exclude<Arrival, "live"> };
 /** What a bridge said of one of its devices, kept by the bridge's own id, whether or not it is in the model yet. */
 type DeviceFacts = {
   values: Map<string, Value>;
@@ -65,6 +68,29 @@ type BridgeView = {
   /** Until when a `devices` document is the answer to the applier's `snapshot` (GA-BUS-6). */
   snapshotUntil?: number;
   /**
+   * Its devices a route moved here, by its own ids, while the snapshot asked at the move is awaited:
+   * their first values in its answer are over the new route (applier, *Causes*, R16-4).
+   */
+  rerouted?: Set<string>;
+  /**
+   * Not heard live since the applier connected or lost its broker: what comes now is the load of its
+   * statuses after a connection or a restart (applier, *Causes*). Ends at its first live status.
+   */
+  loading: boolean;
+  /**
+   * When listening last began (`listening`): a reading the bridge stamped later than this, allowing
+   * `SKEW_MS`, is no delivery on subscribing, so it is out of the load (applier, *Causes*).
+   */
+  listeningAt?: number;
+  /**
+   * Found dead after it was live, by its will or its `offline` status, never by silence: what comes
+   * before its next live status may be a new instance's first statuses, which a new instance's
+   * `status` then asks a snapshot for (applier, *Causes*).
+   */
+  awaiting: boolean;
+  /** The applier lost its broker since this bridge's last listening: the bus asks it for a snapshot on listening (GA-BUS-6). */
+  reconnecting: boolean;
+  /**
    * The ways its doer changes a device unseen, from its latest status taken (GA-BRIDGE-32): the
    * applier's own for GA-DESC-6. Kept while the bridge is dead, since its doer may run on.
    */
@@ -75,10 +101,6 @@ type BridgeView = {
   bridge_type?: string;
 };
 
-/** The bridge event types that are one `provision` event each (the design, *The `provision` event*); `interviewed` is not one. */
-export const PROVISION_EVENTS = new Set(["joined", "left", "window_closed", "commissioned", "commission_failed", "connected",
-  "connect_failed", "blocked_rejoin"]);
-
 /** What provisioning reads of a registered bridge: alive, its claimed levels and type, and its identity on the bus. */
 export type BridgeFacts = { alive: boolean; levels: string[]; bridge_type?: string; identity: string };
 
@@ -88,28 +110,6 @@ export type Owner = Pick<Config, "adoptions" | "declarations" | "safe"> & { prev
 
 /** A notice the home asks for: `notice_id` is the applier's to give. */
 export type NoticeAsk = { cause: string; devices?: string[]; text: string };
-
-/**
- * An action's declarations on `doc`, hashed (GA-DESC-18): what the action does and how a step of it is
- * judged and acked. These wire fields, a fixed list under a version tag so that a later build parsing
- * more of a document moves no fingerprint: the action's entry (idempotent, stateless, toggles,
- * whole_state, confirms, args, confirmed_by), its extension schema, the key it sets (its extension
- * kind and schema, and whether the bridge marks it personal or self-changing), and the device's
- * feedback and reach. A description, another key or another action changes none of it.
- */
-export function fingerprintOf(doc: DeviceDoc, action: string): string {
-  const a = doc.actions.find((x) => x.action === action);
-  const key = a && sets(action, {}, a.confirmed_by)?.key;
-  const ext = doc.extensions?.flatMap((e) => e.actions).find((x) => x.action === action);
-  const extKey = key === undefined ? undefined : doc.extensions?.flatMap((e) => e.keys).find((k) => k.key === key);
-  return createHash("sha256").update(canonical({ v: 1,
-    action: a ? { idempotent: a.idempotent, stateless: a.stateless, toggles: a.toggles, whole_state: a.whole_state, confirms: a.confirms,
-      args: a.args ?? null, confirmed_by: a.confirmed_by ?? null } : null,
-    schema: ext?.schema ?? null,
-    key: key === undefined ? null : { key, kind: extKey?.kind ?? null, schema: extKey?.schema ?? null,
-      personal: doc.personal.includes(key), self_changing: doc.self_changing.includes(key) },
-    feedback: doc.feedback, reach_ms: doc.reach_ms ?? null })).digest("hex").slice(0, 32);
-}
 
 export interface HomeHooks {
   /** Serves an event (and hands it to the writer); `eventsOnly`, never in `history` (GA-EVT-5). */
@@ -212,20 +212,6 @@ export type DispatchTarget = {
   declared_args: string[];
 };
 
-/** The applier's id for a bridge's device: `{bridge id}:{bridge device id}`, never the device id alone (lesson 12). */
-export const deviceId = (bridge: string, device: string) => `${bridge}:${device}`;
-/** The longest id the applier gives (applier, *Identifiers and revision*): a bridge's own id may fill it, so `{bridge}:{id}` may not. */
-export const MAX_ID = 128;
-
-/** How many device topics of one bridge, listed nowhere, the home keeps facts for (a bridge publishing on bogus ids). */
-export const MAX_UNLISTED = 1024;
-/** A device fault's `code` is kept to this many characters in its notice and key. */
-export const MAX_FAULT_CODE = 128;
-/** At most this many device-fault notices of one bridge stand at once. */
-export const MAX_DEVICE_FAULTS = 64;
-/** How long after asking for a snapshot a `devices` document counts as its answer: the request's expiry. */
-const SNAPSHOT_ANSWER_MS = 10_000;
-
 /**
  * The home as the bridges report it: each registered bridge's liveness and facts, and the devices
  * of the model. Every method is one step: synchronous, in memory, and it hands what must be kept
@@ -249,6 +235,13 @@ export class Home {
   private readonly modelTransports = new Map<string, HeldTransport>();
   private readonly bridges = new Map<string, BridgeView>();
   private readonly verdicts = new Map<string, Liveness>();
+  /**
+   * Each exposed device's keys the applier has held a value for in this life, by the device's id, on
+   * any route: the value it last took, and whether it was said. A value whose announce failed was
+   * never said: the same value again is still first, a different one a change. Kept across a route
+   * move, the old bridge's view gone or not; it goes with the device, a fold or a forget.
+   */
+  private readonly held = new Map<string, Map<string, Held>>();
   /** The bridges alive at the last step, so one found dead is told once (GA-APPLY-8). */
   private readonly aliveBridges = new Set<string>();
   /** Each device's effective bound as last reported, once its first is known in this life. */
@@ -261,7 +254,7 @@ export class Home {
   /** The undescribed names announced, by bridge and bridge device (GA-DESC-19). */
   private readonly announcedNames = new Map<string, Set<string>>();
 
-  constructor(private readonly now: () => number, private readonly hooks: HomeHooks, private readonly mutation?: Mutation) {}
+  constructor(private readonly now: () => number, private readonly hooks: HomeHooks, private readonly mutant: Mutant = Mutant.none) {}
 
   /**
    * The devices and transports kept in the store, as a start finds them: the devices dead and the
@@ -293,7 +286,7 @@ export class Home {
    * said it in an event or the applier first met it in a `devices` document. A folded copy's are no one's.
    */
   private announceUndescribed(d: HeldDevice, names: string[]): void {
-    if (d.into !== undefined || this.mutation === "drops-the-undescribed-event") return;
+    if (d.into !== undefined || this.mutant.dropsTheUndescribedEvent) return;
     const known = this.namesOf(d.bridge, d.bridge_device);
     const fresh = [...new Set(names)].filter((n) => !known.has(n));
     if (!fresh.length) return;
@@ -379,7 +372,8 @@ export class Home {
           .map((t): [string, TransportFacts] => [t.bridge_transport, { id: t.bridge_transport, kind: t.kind, state: "down" }]);
         this.bridges.set(id, { config: b, rules: this.rules(b), transports: new Map(kept), roster: new Map(),
           facts: new Map(), fastCheckIn: new Set(), standing: new Map(),
-          deviceFaults: new Set(this.hooks.standingNotices(faultPrefix(id))), heardDevices: false, ungoverned: [], levels: [] });
+          deviceFaults: new Set(this.hooks.standingNotices(faultPrefix(id))), heardDevices: false, ungoverned: [], levels: [],
+          loading: true, awaiting: false, reconnecting: false });
       }
     }
     this.pruneTransports();
@@ -407,10 +401,10 @@ export class Home {
 
   private rules(b: Bridge): BridgeRules {
     return new BridgeRules(b.identity, this.now(), {
-      trustsRetained: this.mutation === "trusts-retained-online",
-      takesBadStatus: this.mutation === "plans-for-a-faulted-bridge",
-      ignoresGaps: this.mutation === "ignores-seq-gap",
-      trustsFastClock: this.mutation === "trusts-a-fast-clock",
+      trustsRetained: this.mutant.trustsRetainedOnline,
+      takesBadStatus: this.mutant.plansForAFaultedBridge,
+      ignoresGaps: this.mutant.ignoresSeqGap,
+      trustsFastClock: this.mutant.trustsAFastClock,
     });
   }
 
@@ -454,6 +448,8 @@ export class Home {
   /** Puts a device in the model and the id map. */
   private hold(d: HeldDevice): void {
     this.devices.set(d.id, d);
+    // A folded copy's values are no one's: its id holds no key.
+    if (d.into !== undefined) this.held.delete(d.id);
     let m = this.ids.get(d.bridge);
     if (!m) this.ids.set(d.bridge, m = new Map());
     m.set(d.bridge_device, d.id);
@@ -478,7 +474,6 @@ export class Home {
   setOwner(owner: Owner, effects: Effects = { forgotten: [], replaced: [], routed: [] }, placed: HeldDevice[] = []): string[] {
     const kept = this.forget(effects.forgotten);
     for (const r of effects.replaced) this.repoint(r.device, r.replaces);
-    this.place(placed);
     const unadopted = [...this.owner.adoptions.keys()].filter((id) => !owner.adoptions.has(id));
     // A device no longer adopted owes no `other_admin` notice, and a later adoption says its open loop again.
     for (const id of this.owner.adoptions.keys()) {
@@ -489,6 +484,9 @@ export class Home {
       });
     }
     this.owner = owner;
+    // Placed under the configuration the change set leaves: a device it routes and adopts at once is
+    // adopted as its values over the new route are said (applier, *Causes*).
+    this.place(placed);
     // Only a change that took devices away can leave a transport named by none; at start, the bridges are not followed yet.
     if (effects.forgotten.length || effects.replaced.length || effects.routed.length || unadopted.length) {
       this.pruneTransports();
@@ -517,7 +515,7 @@ export class Home {
    * copy is a device of its own. `id` is the copy's own; an adopted copy never folds.
    */
   private host(bridge: string, id: string, sid: string, twice = false): string | undefined {
-    if (this.owner.adoptions.has(id) || this.mutation === "merges-a-claimant") return undefined;
+    if (this.owner.adoptions.has(id) || this.mutant.mergesAClaimant) return undefined;
     const same = [...this.devices.values()].filter((d) => d.id !== id && d.doc.stable_identifier === sid);
     // `twice`: the arriving document itself shows `sid` more than once.
     if (twice || same.some((d) => d.bridge === bridge)) return undefined;
@@ -569,6 +567,7 @@ export class Home {
       if (was) this.ids.get(was.bridge)?.delete(was.bridge_device);
     }
     const newer: HeldDevice[] = [];
+    const moved = new Map<string, string[]>();
     for (const r of rows) {
       const doc = docs.get(r.id)!;
       const row = { ...r, doc };
@@ -580,13 +579,24 @@ export class Home {
         continue;
       }
       const was = olds.get(r.id);
+      if (was && was.bridge !== row.bridge) moved.set(row.bridge, [...moved.get(row.bridge) ?? [], row.bridge_device]);
       if (!was || this.feedbackOf(row) === "open") continue;
-      const before = this.bridges.get(was.bridge)?.facts.get(was.bridge_device)?.values;
+      // The id's last values, on whatever route it had: the old bridge's view may be gone.
+      const last = this.held.get(r.id);
       for (const [key, x] of this.bridges.get(row.bridge)?.facts.get(row.bridge_device)?.values ?? []) {
-        if (before?.get(key)?.value !== x.value) this.announce(row, key, x);
+        if (last?.get(key)?.said && last.get(key)!.value === x.value) continue;
+        // Over a new route as it moves (applier, *Causes*). `externalises-a-rerouted-value` takes it as live.
+        this.take(row, key, x, undefined, this.isFirst(row.id, key, x.value, false, this.mutant.externalisesAReroutedValue ? x.arrival ?? "live" : "route"));
       }
     }
     if (newer.length) this.hook("modelChanged", () => this.hooks.modelChanged(newer, []));
+    // The new bridge is asked for a snapshot: its answer's first values are over the new route too.
+    for (const [bridge, devices] of moved) {
+      const v = this.bridges.get(bridge);
+      if (!v || !this.hook("snapshot", () => this.hooks.snapshot(v.config))) continue;
+      v.snapshotUntil = this.now() + SNAPSHOT_ANSWER_MS;
+      v.rerouted = new Set([...v.rerouted ?? [], ...devices]);
+    }
   }
 
   /**
@@ -642,6 +652,7 @@ export class Home {
       stable_identifier: d.doc.stable_identifier, bridge: d.bridge,
       ...(this.liveCopiesOf(d.id).length ? { copies: this.liveCopiesOf(d.id).map((x) => x.bridge) } : {}),
       fingerprints: Object.fromEntries(d.doc.actions.map((a) => [a.action, fingerprintOf(d.doc, a.action)])),
+      requested_tiers: Object.fromEntries(d.doc.actions.filter((a) => a.requested_tier).map((a) => [a.action, a.requested_tier!])),
       extension_keys: { state: (d.doc.extensions ?? []).flatMap((e) => e.keys.filter((k) => k.kind === "state").map((k) => k.key)),
         event: (d.doc.extensions ?? []).flatMap((e) => e.keys.filter((k) => k.kind === "event").map((k) => k.key)) },
       toggles: d.doc.actions.filter((a) => a.toggles).map((a) => a.action),
@@ -650,8 +661,26 @@ export class Home {
       other_admins: d.doc.other_admins,
       proposed_class: d.doc.proposed_class,
       ...(d.doc.proposed_infrastructure ? { proposed_infrastructure: true } : {}),
+      ...(d.doc.host !== undefined ? { host: this.hostOf(d) } : {}),
     }]));
   }
+
+  /** The applier's id of the computer hosting `d`, where its bridge names one: the same bridge's device (applier, *Devices*). */
+  private hostOf(d: HeldDevice): string | undefined {
+    return d.doc.host === undefined ? undefined : deviceId(d.bridge, d.doc.host);
+  }
+
+  /**
+   * What the tiers read of the devices besides the owner's declarations (`factsIn`): a computer's
+   * `proposed_infrastructure` and class, and a plugin device's `host`.
+   */
+  readonly seen: Seen = {
+    get: (id) => {
+      const d = this.devices.get(id);
+      return d && { proposed_class: d.doc.proposed_class, ...(d.doc.proposed_infrastructure ? { proposed_infrastructure: true } : {}),
+        ...(d.doc.host !== undefined ? { host: this.hostOf(d) } : {}) };
+    },
+  };
 
   /**
    * An action's declarations as they stand, as a fingerprint (GA-DESC-18, `fingerprintOf`); undefined
@@ -660,6 +689,11 @@ export class Home {
   fingerprint(id: string, action: string): string | undefined {
     const d = this.devices.get(id);
     return d && fingerprintOf(d.doc, action);
+  }
+
+  /** The tier a plugin's manifest requests for an action of a device held, where it requests one (applier, *Default tiers*). */
+  requestedTier(id: string, action: string): Tier | undefined {
+    return this.devices.get(id)?.doc.actions.find((a) => a.action === action)?.requested_tier;
   }
 
   /**
@@ -689,6 +723,7 @@ export class Home {
       }
       this.devices.delete(id);
       this.ids.get(d.bridge)?.delete(d.bridge_device);
+      this.held.delete(id);
       this.verdicts.delete(id);
       this.bounds.delete(id);
     }
@@ -705,6 +740,11 @@ export class Home {
     if (!n) return;
     const o = this.devices.get(to);
     this.devices.delete(from);
+    // The id now names the hardware that was `from`: the keys it held go with it.
+    const keys = this.held.get(from);
+    this.held.delete(from);
+    if (keys) this.held.set(to, keys);
+    else this.held.delete(to);
     this.verdicts.delete(from);
     this.bounds.delete(from);
     if (o) this.ids.get(o.bridge)?.delete(o.bridge_device);
@@ -755,13 +795,25 @@ export class Home {
     this.brokerUp = true;
     this.raise(v, "subscription", []);
     this.apply(v, v.rules.listening(this.now()));
+    v.listeningAt = this.now();
+    // A reconnection asks the bridge for a snapshot (the bus sends it, GA-BUS-6): its answer is a snapshot's.
+    if (v.reconnecting) {
+      v.reconnecting = false;
+      v.snapshotUntil = this.now() + SNAPSHOT_ANSWER_MS;
+    }
   }
 
   /** The broker is lost: every bridge is dead, and needs a live status to come back (GA-BUS-7, GA-BUS-8). */
   lost(): void {
-    if (this.mutation === "plans-through-broker-loss") return;
+    if (this.mutant.plansThroughBrokerLoss) return;
     this.brokerUp = false;
-    for (const v of this.bridges.values()) this.apply(v, v.rules.lost(this.now()));
+    for (const v of this.bridges.values()) {
+      this.apply(v, v.rules.lost(this.now()));
+      // What comes after the reconnection is a load again, then the reconnection's snapshot (applier, *Causes*).
+      v.loading = true;
+      v.awaiting = false;
+      v.reconnecting = true;
+    }
     this.reverdict();
   }
 
@@ -801,13 +853,13 @@ export class Home {
     }
     if (typeof body !== "object" || body === null || Array.isArray(body)) return this.fault(v, `${path} is not an object`);
     const b = body as Record<string, unknown>;
-    if (this.mutation === "rejects-unknown-kind") {
+    if (this.mutant.rejectsUnknownKind) {
       const schema = path === "status" ? "bridge/status.json" : path === "devices" ? "bridge/devices.json" : undefined;
       const errors = schema ? validate(schema, b) : [];
       if (errors.length) return this.fault(v, `${path} rejected whole: ${errors[0]}`);
     }
     if (path === "status") return this.onStatus(v, b, retained);
-    if (path === "lwt") return this.apply(v, v.rules.will(typeof b.instanceId === "string" ? b.instanceId : undefined, this.now()));
+    if (path === "lwt") return this.apply(v, v.rules.will(typeof b.instanceId === "string" ? b.instanceId : undefined, this.now()), true);
     if (path === "devices") return this.onDevices(v, b, retained);
     if (device) return this.onDeviceStatus(v, device, b);
     const acked = /^devices\/([^/]+)\/ack$/.exec(path)?.[1];
@@ -839,6 +891,7 @@ export class Home {
       // A snapshot's reply ends its answer: the bridge re-publishes, then replies (GA-BRIDGE-30).
       if (b.op === "snapshot") {
         v.snapshotUntil = undefined;
+        v.rerouted = undefined;
         return;
       }
       // Any other reply names no request this applier holds: a late one, or another life's.
@@ -854,7 +907,7 @@ export class Home {
   private onAck(v: BridgeView, device: string, body: Record<string, unknown>): void {
     const { value: ack, faults } = parseAck(body);
     const source = `devices/${device}/ack`;
-    if (ack && ack.source !== v.config.identity && this.mutation !== "trusts-a-foreign-ack") {
+    if (ack && ack.source !== v.config.identity && !this.mutant.trustsAForeignAck) {
       // The text names neither the source nor the command: one fault stands per device while it lasts.
       faults.push(`devices/${device}/ack names a source that is not this bridge's id`);
     } else if (ack && this.hooks.ack) {
@@ -869,6 +922,12 @@ export class Home {
   private onStatus(v: BridgeView, body: Record<string, unknown>, retained: boolean): void {
     const { value: s, faults } = parseStatus(body);
     const o = v.rules.status(s, retained, this.now());
+    // Heard live (GA-BUS-8: a retained status never revives): its statuses' load after a connection ends,
+    // and so does the wait for a new instance, whose own status, if it is one, has asked a snapshot.
+    if (!retained && v.rules.alive) {
+      v.loading = false;
+      v.awaiting = false;
+    }
     if (o.take) {
       this.raise(v, "status", faults);
       this.takeStatus(v, s.transports, s.roster, s.listed);
@@ -883,7 +942,8 @@ export class Home {
         if (this.hooks.ungovernedChanged) this.hook("ungovernedChanged", () => this.hooks.ungovernedChanged!(v.config.id));
       }
     }
-    this.apply(v, o);
+    // A status that finds it dead is its `offline`: the instance said it ended.
+    this.apply(v, o, true);
   }
 
   /**
@@ -892,7 +952,7 @@ export class Home {
    */
   private takeFaults(v: BridgeView, faults: BridgeFault[]): void {
     this.raise(v, "status faults", faults.map((f) => `status fault ${f.code}${f.device ? ` on device ${f.device}` : ""}`));
-    if (this.mutation === "swallows-device-fault") return;
+    if (this.mutant.swallowsDeviceFault) return;
     const now = new Map<string, { id: string; code: string }>();
     for (const f of faults) {
       if (f.device === undefined) continue;
@@ -955,8 +1015,8 @@ export class Home {
     }
     for (const e of roster) {
       // `fresh-by-arrival`: the check-in is when the status arrived, not what the bridge says (GA-BUS-10).
-      const entry = this.mutation === "fresh-by-arrival" ? { ...e, last_check_in: now } : e;
-      const fast = entry.last_check_in !== null && entry.last_check_in > now + SKEW_MS && this.mutation !== "trusts-a-fast-clock";
+      const entry = this.mutant.freshByArrival ? { ...e, last_check_in: now } : e;
+      const fast = entry.last_check_in !== null && entry.last_check_in > now + SKEW_MS && !this.mutant.trustsAFastClock;
       if (fast && !v.fastCheckIn.has(e.id)) this.fault(v, `device ${e.id} checked in ${Math.round((entry.last_check_in! - now) / 1000)} s ahead of the applier's clock`);
       if (fast) v.fastCheckIn.add(e.id);
       else v.fastCheckIn.delete(e.id);
@@ -979,7 +1039,7 @@ export class Home {
    * crash between the two leaves a duplicate, never a loss.
    */
   private onDevices(v: BridgeView, body: Record<string, unknown>, retained: boolean): void {
-    if (this.mutation === "one-bad-entry-silences") {
+    if (this.mutant.oneBadEntrySilences) {
       const errors = validate("bridge/devices.json", body);
       if (errors.length) return this.fault(v, `devices dropped whole: ${errors[0]}`);
     }
@@ -1014,7 +1074,7 @@ export class Home {
       const next: HeldDevice = { id, bridge: v.config.id, bridge_device: doc.id, doc, ...(into !== undefined ? { into } : {}) };
       // `plans-on-a-stale-declaration`: a change of declarations alone taken as no model change.
       // A change of `undescribed` alone moves no revision either (GA-DESC-19).
-      const asIs = (x: DeviceDoc) => this.mutation === "plans-on-a-stale-declaration"
+      const asIs = (x: DeviceDoc) => this.mutant.plansOnAStaleDeclaration
         ? { ...x, other_admins: [], undescribed: undefined, actions: [], capabilities: [], extensions: undefined }
         : { ...x, other_admins: [], undescribed: undefined };
       (held && canonical(asIs(held.doc)) === canonical(asIs(doc)) ? admins : changed).push(next);
@@ -1041,7 +1101,10 @@ export class Home {
       if (fresh && d.into === undefined) {
         const values = v.facts.get(d.bridge_device)?.values;
         if (values && this.feedbackOf(d) === "open") values.clear();
-        for (const [key, x] of [...(values ?? [])]) if (!this.announce(d, key, x)) values!.delete(key);
+        // A value whose announce failed is dropped, so the next reading is announced; its key stays held.
+        for (const [key, x] of [...(values ?? [])]) {
+          if (!this.take(d, key, x, undefined, this.isFirst(d.id, key, x.value, false, x.arrival ?? "live"))) values!.delete(key);
+        }
       }
     }
     this.settleFolds();
@@ -1107,12 +1170,14 @@ export class Home {
 
   /**
    * Whether a device has an action whose effective tier is above `reversible`: a door worth guarding.
-   * With `before`, the tier is also judged as it stood before the change set that adopted the device,
-   * so a change in the same set that lowers it does not hide the door (GA-ADOPT-3).
+   * With `before`, each action's tier is judged as the higher of its tier before the change set that
+   * adopted the device and after it, adopted then or not, so neither a lowering nor a raise in the same
+   * set hides the door (GA-ADOPT-3).
    */
   private door(d: HeldDevice, before?: Owner): boolean {
-    return d.doc.actions.some((a) => tierIn(this.owner, d.id, a.action, false, fingerprintOf(d.doc, a.action)) !== "reversible"
-      || (before?.adoptions.has(d.id) === true && tierIn(before, d.id, a.action, false, fingerprintOf(d.doc, a.action)) !== "reversible"));
+    const tier = (o: Owner, a: DeviceDoc["actions"][number]) => tierIn(o, d.id, a.action,
+      { fingerprint: fingerprintOf(d.doc, a.action), requested: a.requested_tier, seen: this.seen, mutant: this.mutant });
+    return d.doc.actions.some((a) => tier(this.owner, a) !== "reversible" || (before !== undefined && tier(before, a) !== "reversible"));
   }
 
   /** A notice raised afresh under its key: the key's earlier notice, taken or not, no longer holds it back. */
@@ -1125,7 +1190,7 @@ export class Home {
 
   /** A notice that a device with an action above `reversible` has another admin, or may have one (GA-ADOPT-3). */
   private adminNotice(d: HeldDevice): void {
-    if (this.mutation === "hides-a-second-door") return;
+    if (this.mutant.hidesASecondDoor) return;
     const key = adminKey(d.id);
     const who = Array.isArray(d.doc.other_admins) ? d.doc.other_admins.map((a) => `${a.vendor} ${JSON.stringify(a.label)}`).join(", ")
       : "an admin its protocol cannot rule out";
@@ -1156,7 +1221,7 @@ export class Home {
       const alone = Array.isArray(d.doc.other_admins) && !d.doc.other_admins.length;
       if (!alone && this.door(d, before)) this.adminNotice(d);
       else this.hook("clearNotice", () => this.hooks.clearNotice(adminKey(id)));
-      if (sweep || this.mutation === "adopts-a-mute-device-quietly") continue;
+      if (sweep || this.mutant.adoptsAMuteDeviceQuietly) continue;
       const t = this.bridges.get(d.bridge)?.transports.get(d.doc.transport);
       // A key the id's earlier hardware left standing would hold back the first unknown of this one's.
       if (t?.state === "unknown") this.renotice(openLoop(d), openLoopKey(id));
@@ -1170,7 +1235,7 @@ export class Home {
    * restarts too (GA-ADOPT-6).
    */
   private mute(v: BridgeView, transport: string): void {
-    if (this.mutation === "upgrades-a-mute-device-quietly") return;
+    if (this.mutant.upgradesAMuteDeviceQuietly) return;
     for (const d of this.devices.values()) {
       if (d.bridge !== v.config.id || d.doc.transport !== transport || !this.owner.adoptions.has(d.id)) continue;
       this.hook("notice", () => this.hooks.notice(openLoop(d), openLoopKey(d.id)));
@@ -1179,7 +1244,7 @@ export class Home {
 
   /** `merges-a-claimant`: a device new to the model takes the id of an adopted device showing its identifier. */
   private claimed(doc: DeviceDoc): string | undefined {
-    if (this.mutation !== "merges-a-claimant") return undefined;
+    if (!this.mutant.mergesAClaimant) return undefined;
     return [...this.devices.values()].find((d) => d.doc.stable_identifier === doc.stable_identifier && this.owner.adoptions.has(d.id))?.id;
   }
 
@@ -1223,14 +1288,47 @@ export class Home {
       && this.protocolOf(d) === "ir").map((d) => `${d.bridge_device} is on an ir transport and declared closed; taken as open`);
   }
 
+  /** The keys `id` holds a value for, made on first use. */
+  private heldOf(id: string): Map<string, Held> {
+    let m = this.held.get(id);
+    if (!m) this.held.set(id, m = new Map());
+    return m;
+  }
+
+  /**
+   * Whether `value` of `id`'s `key` is its first (`firstValue`): `before` says its bridge's view held
+   * one already, and a value the id held on any route counts too, except the same value again after
+   * its announce failed, which was never said.
+   */
+  private isFirst(id: string, key: string, value: Held["value"], before: boolean, arrival: Arrival): boolean {
+    const h = this.held.get(id)?.get(key);
+    // `devices-a-live-press`: a first value taken for the device's word wherever it arrived, a live press included.
+    const adopted = this.owner.adoptions.has(id) && !this.mutant.devicesALivePress;
+    return firstValue({ held: before || (h !== undefined && (h.said || h.value !== value)), arrival, adopted });
+  }
+
+  /** Announces a value and holds its key with it, said or not. */
+  private take(d: HeldDevice, key: string, x: Value, by: { cause: Record<string, unknown> | string; own: boolean } | undefined, first: boolean): boolean {
+    const ok = this.announce(d, key, x, by, first);
+    this.heldOf(d.id).set(key, { value: x.value, said: ok });
+    return ok;
+  }
+
   /**
    * A `state` event (applier, *Causes*): the apply it moves towards, given by `by`; else `device` for
    * a `self_changing` key, `external` for any other. A `self_changing` key keeps an apply's cause only
-   * when it is the key that apply's action sets (GA-EVT-6).
+   * when it is the key that apply's action sets (GA-EVT-6). A `first` value, the key holding none
+   * before, where no hand can be told (`firstValue`: it arrived in the load after a connection or a
+   * restart, in a snapshot's answer or a new instance's first statuses, over a new route, or on a device
+   * not adopted), changes nothing the applier knew: it is the device's word, `device`, so it takes no
+   * lease (the steward's GA-LEASE-2; the plug rehearsal's F3, the maintainer's ruling of 2026-10-11). A
+   * key first reported live by a running bridge instance on an adopted device stays `external`: a
+   * person's first press keeps its lease.
    */
-  private announce(d: HeldDevice, key: string, x: Value, by?: { cause: Record<string, unknown> | string; own: boolean }): boolean {
+  private announce(d: HeldDevice, key: string, x: Value, by?: { cause: Record<string, unknown> | string; own: boolean }, first = false): boolean {
     const self = this.keysOf(d).self_changing.includes(key);
-    const cause = by && (!self || by.own) ? by.cause : self ? "device" : "external";
+    // `externalises-a-first-value`: every first value taken for a hand, as any change.
+    const cause = by && (!self || by.own) ? by.cause : self || (first && !this.mutant.externalisesAFirstValue) ? "device" : "external";
     return this.emitEvent("state", { target: d.id, key, value: x.value, basis_time: new Date(x.basis).toISOString(), cause });
   }
 
@@ -1257,12 +1355,12 @@ export class Home {
     }
     const at = parseTime(b.timestamp);
     if (at === undefined) return this.fault(v, `${what} whose timestamp ${JSON.stringify(b.timestamp)} is not a time`);
-    if (at > this.now() + SKEW_MS && this.mutation !== "trusts-a-fast-clock") return this.fault(v, `${what} observed ahead of the applier's clock`);
+    if (at > this.now() + SKEW_MS && !this.mutant.trustsAFastClock) return this.fault(v, `${what} observed ahead of the applier's clock`);
     const body = { target: held.id, key, value, basis_time: new Date(at).toISOString(), cause: "device" };
-    const personal = this.keysOf(held).personal.includes(key) && this.mutation !== "history-keeps-a-personal-occurrence";
+    const personal = this.keysOf(held).personal.includes(key) && !this.mutant.historyKeepsAPersonalOccurrence;
     this.hook("emit occurrence", () => this.hooks.emit("occurrence", body, personal ? { eventsOnly: true } : undefined));
     // `stores-an-occurrence-as-state`: the alarm taken as a value the device holds.
-    if (this.mutation === "stores-an-occurrence-as-state") {
+    if (this.mutant.storesAnOccurrenceAsState) {
       const x: Value = { value, basis: at };
       this.facts(v, held.bridge_device).values.set(key, x);
       this.announce(held, key, x);
@@ -1276,7 +1374,7 @@ export class Home {
    */
   private dropEventValues(v: BridgeView, d: HeldDevice): void {
     const values = v.facts.get(d.bridge_device)?.values;
-    if (!values || this.mutation === "stores-an-occurrence-as-state") return;
+    if (!values || this.mutant.storesAnOccurrenceAsState) return;
     for (const e of d.doc.extensions ?? []) {
       for (const k of e.keys) {
         if (k.kind !== "event" || !values.delete(k.key)) continue;
@@ -1314,7 +1412,7 @@ export class Home {
     const now = this.now();
     let anyFast = false;
     for (const r of s.readings) {
-      const fast = r.basis > now + SKEW_MS && this.mutation !== "trusts-a-fast-clock";
+      const fast = r.basis > now + SKEW_MS && !this.mutant.trustsAFastClock;
       if (fast) {
         anyFast = true;
         faults.push(`devices/${topicDevice}/status: ${r.key} observed ahead of the applier's clock`);
@@ -1322,7 +1420,8 @@ export class Home {
       // A value from a fast clock never becomes the last seen (GA-BUS-2); the device's flag holds it stale.
       if (fast) continue;
       const before = facts.values.get(r.key);
-      const x: Value = { value: r.value, basis: r.basis };
+      const arrival = this.rerouted(v, topicDevice, this.arrival(v, r.basis));
+      const x: Value = { value: r.value, basis: r.basis, ...(arrival !== "live" ? { arrival } : {}) };
       const changed = !before || before.value !== r.value;
       // Only the exposed device's own bridge acks a step or causes a change: a folded copy's reports are no one's (GA-BUS-11).
       let by: ReturnType<NonNullable<HomeHooks["reading"]>>;
@@ -1331,7 +1430,9 @@ export class Home {
         this.hook("reading", () => { by = hook(held.id, r.key, r.value, before?.value, r.basis, changed); });
       }
       // Re-published unchanged data is silent (lesson 16): only a changed value is a change.
-      if (held && held.into === undefined && changed && !this.announce(held, r.key, x, by)) continue;
+      const exposed = held !== undefined && held.into === undefined;
+      if (exposed && changed && !this.take(held, r.key, x, by, this.isFirst(held.id, r.key, r.value, before !== undefined, arrival))) continue;
+      if (exposed) this.heldOf(held.id).set(r.key, { value: r.value, said: true });
       facts.values.set(r.key, x);
     }
     // Only a correctly stamped report of the device, of any key, ends its fast clock (GA-BUS-2).
@@ -1423,9 +1524,39 @@ export class Home {
     return this.hook(`emit ${type}`, () => this.hooks.emit(type, body));
   }
 
-  private apply(v: BridgeView, o: Outcome): void {
+  /**
+   * Takes an outcome of the bridge's rules. `ended` is an outcome of its will or its `offline` status:
+   * its instance said it ended, so, found dead after it was live, its next statuses may be a new
+   * instance's (applier, *Causes*). Silence (`tick`) ends no instance: a running one that went quiet
+   * still reports live.
+   */
+  private apply(v: BridgeView, o: Outcome, ended = false): void {
     for (const f of o.faults) this.fault(v, f);
     if (o.snapshot && this.hook("snapshot", () => this.hooks.snapshot(v.config))) v.snapshotUntil = this.now() + SNAPSHOT_ANSWER_MS;
+    if (ended && o.changed && !v.rules.alive && !v.loading) v.awaiting = true;
+  }
+
+  /**
+   * How a value of `v` arriving now, stamped `basis`, reached the applier (`Arrival`, applier, *Causes*):
+   * by the bridge's liveness (GA-BUS-8), when listening began and the snapshots asked of it, never by
+   * the value's own retain flag. The load holds only what was stamped before listening began.
+   * `externalises-a-snapshot-value` takes a snapshot's answer, and a new instance's first statuses, as live.
+   */
+  private arrival(v: BridgeView, basis: number): Exclude<Arrival, "route"> {
+    // The load is the deliveries on subscribing: a reading stamped after listening began is no part of it.
+    const delivered = v.listeningAt === undefined || basis <= v.listeningAt + SKEW_MS;
+    if (v.loading && delivered) return "load";
+    const snapshot = v.awaiting || (v.snapshotUntil !== undefined && this.now() <= v.snapshotUntil);
+    return snapshot && !this.mutant.externalisesASnapshotValue ? "snapshot" : "live";
+  }
+
+  /**
+   * A device a route moved to `v`, reporting in the snapshot asked at the move: over the new route.
+   * `externalises-a-rerouted-value` takes it as live.
+   */
+  private rerouted(v: BridgeView, device: string, arrival: Exclude<Arrival, "route">): Arrival {
+    if (arrival !== "snapshot" || !v.rerouted?.has(device)) return arrival;
+    return this.mutant.externalisesAReroutedValue ? "live" : "route";
   }
 
   /** Emits a `liveness` event for every device whose verdict changed, and a `freshness` event for every changed bound. */
@@ -1493,11 +1624,11 @@ export class Home {
       gone: !!facts?.unavailable || !!facts?.cleared || (v.docListed !== undefined && !v.docListed.has(d.bridge_device))
         || (v.rosterListed !== undefined && !v.rosterListed.has(d.bridge_device)),
       // `kills-a-mute-transmitters-devices`: a transmitter that can answer nothing is taken as down.
-      transport: transport === "unknown" && this.mutation === "kills-a-mute-transmitters-devices" ? "down" : transport,
+      transport: transport === "unknown" && this.mutant.killsAMuteTransmittersDevices ? "down" : transport,
       freshS: this.bound(d).fresh_s,
       lastCheckIn: roster?.last_check_in ?? null,
       fastClock: v.fastCheckIn.has(d.bridge_device) || !!facts?.fast,
-    }, this.now(), { liveBeforeKnown: this.mutation === "live-before-known" });
+    }, this.now(), { liveWhileUnknown: this.mutant.liveBeforeKnown });
   }
 
   /** The bridge's declared bound in seconds, or null (GA-STATE-5). An open device has none. */
@@ -1512,7 +1643,7 @@ export class Home {
     // An open device has no check-ins and no bound; the owner's is kept, and counts once it is closed.
     if (this.feedbackOf(d) === "open") return { fresh_s: null, fresh_basis: "unknown" };
     const owner = this.owner.declarations.get(d.id)?.fresh_s;
-    if (owner !== undefined && this.mutation !== "ignores-owner-bound") return { fresh_s: owner, fresh_basis: "configured" };
+    if (owner !== undefined && !this.mutant.ignoresOwnerBound) return { fresh_s: owner, fresh_basis: "configured" };
     const declared = this.declaredS(d);
     return { fresh_s: declared, fresh_basis: declared === null ? "unknown" : "declared" };
   }
@@ -1581,7 +1712,7 @@ export class Home {
       ...(doc.internal ? { internal: true } : {}),
       ...(doc.extensions ? { extensions: doc.extensions } : {}),
       // As its bridge gives them, absent where it gives none (GA-DESC-19). `hides-awaited-keys` leaves the first out.
-      ...(doc.awaited_keys && this.mutation !== "hides-awaited-keys" ? { awaited_keys: doc.awaited_keys } : {}),
+      ...(doc.awaited_keys && !this.mutant.hidesAwaitedKeys ? { awaited_keys: doc.awaited_keys } : {}),
       ...(doc.settings ? { settings: doc.settings } : {}),
       ...(doc.undescribed ? { undescribed: doc.undescribed.map((u) => ({ name: u.name, first_seen: new Date(u.first_seen).toISOString() })) } : {}),
       actions: doc.actions.map((a) => ({
@@ -1611,7 +1742,8 @@ export class Home {
    */
   private declarationOf(d: HeldDevice, a: DeviceDoc["actions"][number]): { tier: Tier; idempotent: boolean; stateless: boolean } {
     return {
-      tier: tierIn(this.owner, d.id, a.action, this.mutation === "keeps-a-tier-below-a-new-load", fingerprintOf(d.doc, a.action)),
+      tier: tierIn(this.owner, d.id, a.action, { ignoreLoad: this.mutant.keepsATierBelowANewLoad, fingerprint: fingerprintOf(d.doc, a.action),
+        requested: a.requested_tier, seen: this.seen, mutant: this.mutant }),
       idempotent: a.idempotent && !a.toggles && mayBeIdempotent(a.action),
       stateless: statelessOf(a.action, a.stateless),
     };
@@ -1711,28 +1843,3 @@ export class Home {
     return [...heard, ...left];
   }
 }
-
-/**
- * An action's `ack_within_s`: the owner's as given, floored only by twice the reach plus 10 where the
- * reach is known (GA-CFG-3; a reach may grow after the owner set it), else the default.
- */
-function ackWithinS(owner: number | undefined, cls: string | null, action: string, reachS: number | undefined): number {
-  if (owner === undefined) return defaultAckWithinS(cls, action, reachS);
-  return reachS === undefined ? owner : Math.max(owner, 2 * reachS + 10);
-}
-
-/** The bound every device starts a life with (`fresh_s: null`, `fresh_basis: unknown`). */
-const UNKNOWN_BOUND = "null/unknown";
-
-/** The key of a device's `open_loop` notice: said once while it is adopted. */
-const openLoopKey = (device: string) => `open_loop:${device}`;
-
-/** The `open_loop` notice (GA-ADOPT-6). */
-const openLoop = (d: HeldDevice): NoticeAsk => ({ cause: "open_loop", devices: [d.id],
-  text: `${d.id} is on a transport that can answer nothing: if it stops working, nothing will show. It stays live, and its commands end sent.` });
-
-/** The key of the `other_admin` notice a device's other admins stand under, until its `[]` or it is no longer adopted. */
-const adminKey = (device: string) => `other_admin:${device}`;
-
-/** The prefix of the keys of a bridge's device-fault notices. */
-const faultPrefix = (bridge: string) => `bridge_fault:${bridge}:`;

@@ -55,6 +55,13 @@ export const MUTATIONS = [
   "hides-awaited-keys", "drops-the-undescribed-event", "accepts-a-safety-rule-on-an-undeclared-key", "floors-message-expiry",
   // Proposed for 0.16 (proposed-rows.json): a restart forgets the undescribed names it announced.
   "forgets-announced-names",
+  // Applier 0.16: the owner lowers a tier to its floor (HS35), judged against the end state; a key's first value.
+  "keeps-an-owner-raise", "keeps-an-owner-raise-on-a-set", "keeps-a-manifest-kept-tier", "lowers-a-heater-below-the-table",
+  "keeps-a-table-tier-over-a-new-load",
+  "externalises-a-first-value", "externalises-a-snapshot-value", "externalises-a-rerouted-value", "devices-a-live-press",
+  // A hosted device's tiers, and a computer's proposal (applier, *Plugins' actions*); a replacement's tool hash and manifest (GA-DESC-11).
+  "extension-under-the-box", "sleeps-the-box-through-its-player", "sleeps-the-proposed-broker-host",
+  "forgets-a-tool-hash", "lowers-by-a-new-manifest", "keeps-a-lowered-tier",
 ] as const;
 export type Mutation = (typeof MUTATIONS)[number];
 
@@ -75,3 +82,21 @@ export function mutationFromEnv(env: NodeJS.ProcessEnv): Mutation | undefined {
   }
   return m as Mutation;
 }
+
+/** A mutation's name as a flag: `trusts-any-token` is `trustsAnyToken`, `speaks-only-2025` is `speaksOnly2025`. */
+type Flag<S extends string> = S extends `${infer H}-${infer T}` ? `${H}${Capitalize<Flag<T>>}` : S;
+
+/**
+ * The mutation as the build reads it: a frozen record of one flag per mutation, every flag false but
+ * the mutation's (`mutant.trustsAnyToken`). `start.ts` builds it once (`mutantOf`); production, and
+ * any host, runs on `Mutant.none`. The reach lint finds a mutation's sites by its flag.
+ */
+export type Mutant = Readonly<Record<Flag<Mutation>, boolean>>;
+
+/** The record for `mutation`: every flag false without one. (The reach lint reads no site in here.) */
+export function mutantOf(mutation?: Mutation): Mutant {
+  return Object.freeze(Object.fromEntries(MUTATIONS.map((m) => [m.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase()), m === mutation]))) as Mutant;
+}
+
+/** The record with no mutation: what production runs on. */
+export const Mutant = Object.freeze({ none: mutantOf() });

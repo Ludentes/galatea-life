@@ -4,7 +4,7 @@ import type { Clock } from "@ludentes/galatea-life-test-clock";
 import { principalOf, resolveCaller, boundEndpoints, maxRoleOf, lowerRole, type Caller, type Principal } from "./auth/principal.js";
 import { OutcomeUnknown, RequestError, StoreUnavailable } from "./core/errors.js";
 import { maskUrls, type Tx } from "./core/db.js";
-import { EventLog, HISTORY_CAP, SEQ_LIFE_GAP, type AppEvent, type Marked } from "./core/events.js";
+import { EventLog, HISTORY_CAP, SEQ_LIFE_GAP, type AppEvent, type Marked, type Readers } from "./core/events.js";
 import { SerialQueue } from "./core/queue.js";
 import { GATE_MS, getMeta, raiseMeta, RisingMeta, setMeta, within, type Store } from "./core/store.js";
 import { canonical, storable } from "./core/canonical.js";
@@ -13,15 +13,15 @@ import { mintToken } from "./confirm/token.js";
 import { atDispatch, docOf, KEY_RETENTION_MS, leaves, outcomeRank, REPEAT_WINDOW_MS, ruleDecision, type ApplyRecord, type Outcome } from "./dispatch/apply.js";
 import { occupancyOf, type Occupancy } from "./gate/occupancy.js";
 import { judge, leased, unplanned, type ApplierStep, type StewardStep } from "./gate/reasons.js";
-import { LEASE_EXEMPT, LeaseTable, leaseView, safetyRuleOf } from "./leases/table.js";
+import { LEASE_EXEMPT, LeaseTable, leaseView, safetyRuleOf, type Lease } from "./leases/table.js";
 import { NoticePump, type Notice } from "./notices/pump.js";
 import { resolveRequest, type Requested } from "./gate/resolve.js";
 import { brainMayDefine, deviceMarked } from "./house/brain.js";
-import { ifReadsOf, MODES, planDefine, readsOf, type Change } from "./house/define.js";
+import { hasNotifyChannel, ifReadsOf, MODES, notifyChannels, planDefine, readsOf, type Change } from "./house/define.js";
 import { groupOn } from "./house/group-state.js";
 import { deviceActions, startsOf, loadHouse, saveHouse, withFirstOwner, type Endpoint, type Group, type House, type Rule } from "./house/model.js";
 import type { View } from "./rules/conditions.js";
-import { RuleEngine } from "./rules/engine.js";
+import { EDGE_REPLAY_MS, RuleEngine } from "./rules/engine.js";
 import { afterOutcome, HELD_CAP, RETRY_SPACING_MS, RuleOutcomes, type Firing, type FiringStep } from "./rules/outcomes.js";
 import { compile, indexOf, stepIdOf, type ActionNode, type Node, type Program } from "./scenarios/program.js";
 import { outcomesOf, RUN_LIMIT_MS, settled, statusOf, tally, type Run, type RunEnd } from "./scenarios/run.js";
@@ -36,7 +36,10 @@ import { ApplierRefused, NotSent } from "./link/port.js";
 import type { Mutation } from "./mutations.js";
 import type { Role } from "./house/model.js";
 
-export const STANDARD_VERSION = "0.9";
+/** In `channelsTold`: the list's loss of its last adopted notify channel was told (GA-NOTE-4). */
+const NO_NOTIFY = "*notify";
+
+export const STANDARD_VERSION = "0.11";
 
 export type ToolResult = { ok: true; body: Record<string, unknown> } | { ok: false; error: string; message: string };
 
@@ -44,13 +47,34 @@ export type ToolResult = { ok: true; body: Record<string, unknown> } | { ok: fal
  * The standard's operations, with the annotations its *Operations* gives each (`readOnlyHint`, or
  * `destructiveHint` true or false).
  */
-export const TOOLS: { name: string; readOnly?: true; destructive?: boolean }[] = [
-  { name: "describe", readOnly: true }, { name: "state", readOnly: true }, { name: "plan", readOnly: true },
-  { name: "answer", destructive: true }, { name: "apply", destructive: true }, { name: "outcome", readOnly: true },
-  { name: "events", readOnly: true }, { name: "history", readOnly: true }, { name: "scenario_plan", readOnly: true },
-  { name: "scenario_run", destructive: true }, { name: "scenario_status", readOnly: true }, { name: "scenario_stop", destructive: true },
-  { name: "define", destructive: true }, { name: "narrow", destructive: true }, { name: "front_status", destructive: false },
-  { name: "speaking", destructive: false }, { name: "zone_sources", readOnly: true },
+/**
+ * The steward's operations (steward, *Operations*), as its MCP binding lists them, each with a
+ * one-line summary for a tool's description: a model reads it to pick the operation.
+ */
+export const TOOLS: { name: string; readOnly?: true; destructive?: boolean; summary: string }[] = [
+  { name: "describe", readOnly: true,
+    summary: "The house: rooms, targets, groups, endpoints, persons, scenarios, rules and schedules, at a revision" },
+  { name: "state", readOnly: true,
+    summary: "Current values of targets, with each room's occupancy, each group's state and each device's lease" },
+  { name: "plan", readOnly: true,
+    summary: "Plan actions on targets (by id or selector) for an endpoint; changes nothing, returns steps and any question to ask" },
+  { name: "answer", destructive: true,
+    summary: "Answer a plan's confirmation questions, yes or no per step, as spoken at an endpoint" },
+  { name: "apply", destructive: true,
+    summary: "Carry out a plan by its plan_id, or a request directly, under an idempotency key; returns the outcomes" },
+  { name: "outcome", readOnly: true, summary: "The current outcomes of an apply, by its apply_id" },
+  { name: "events", readOnly: true, summary: "Events since a cursor, waiting up to wait_s for one" },
+  { name: "history", readOnly: true, summary: "Past events between two times, optionally for some targets" },
+  { name: "scenario_plan", readOnly: true, summary: "Plan a scenario run for an endpoint; changes nothing" },
+  { name: "scenario_run", destructive: true, summary: "Start a scenario from its plan, under an idempotency key" },
+  { name: "scenario_status", readOnly: true, summary: "Whether a scenario run is running or ended, with its failed and unconfirmed steps" },
+  { name: "scenario_stop", destructive: true, summary: "Stop a scenario run by its run_id, as asked at an endpoint" },
+  { name: "define", destructive: true,
+    summary: "Change the house's definitions (rooms, targets, persons, rules, schedules...), or carry out a define's plan" },
+  { name: "narrow", destructive: true, summary: "Narrow what an endpoint listens for, or allow a follow-up, until a time" },
+  { name: "front_status", destructive: false, summary: "A voice front reports its models, clips and skills" },
+  { name: "speaking", destructive: false, summary: "A voice front says whether an endpoint is speaking" },
+  { name: "zone_sources", readOnly: true, summary: "Media targets reporting speech, and announcements, for a voice front" },
 ];
 /** What is built so far; the others are listed and answer `invalid_request` ("not built yet"). */
 const BUILT = new Set(["describe", "define", "plan", "state", "events", "history", "answer", "apply", "outcome", "scenario_plan", "scenario_run",
@@ -135,9 +159,12 @@ export const REASK_FOR_MS = 3_600_000;
 export const PARKED_CAP = 4096;
 /**
  * The bound on a latchless safety rule's lease, should its completion (`rule_fired`) never be read: past
- * every default ack bound (240 s, `power.wake`) and GA-SAFE-12's re-sends. The build's pick.
+ * every default ack bound (240 s, `power.wake`) and GA-SAFE-12's re-sends. Stated in `describe` as
+ * `safety_lease_s`; a lease runs no shorter than its device's ack bound plus the late-ack window (GA-LEASE-6).
  */
 export const LATCHLESS_SAFETY_MS = 15 * 60_000;
+/** The applier's late-ack window after a `failed(no_ack)` (applier GA-APPLY-11). */
+const LATE_ACK_WINDOW_MS = 60_000;
 /** The most of the applier's missed events one recovery takes (the link's, `RECOVERY_CAP`). */
 export { RECOVERY_CAP } from "./link/link.js";
 /** The answer a client's apply gets when its record's commit outlasts 10 s: nothing was sent, and nothing ever will be. */
@@ -245,6 +272,15 @@ export class Steward {
    * or a reset one, at the same number does.
    */
   private followed?: string;
+  /** Whether notices were held at the last look: no adopted channel offered `notify` (GA-NOTE-1). */
+  private heldBefore = true;
+  /**
+   * The channels whose loss a notice told (GA-NOTE-4), and `NO_NOTIFY` once the list's loss of its last
+   * adopted notify channel was told (or left so by define, whose answer says it); kept in `meta`.
+   */
+  private channelsTold = new Set<string>();
+  /** Told channel losses this life, so two in one millisecond have two notice ids. */
+  private channelNotices = 0;
   /** Whether a write of `followed` waits in the writer's line: one at a time, writing the latest. */
   private followedQueued = false;
   private lastPlanFailure?: string;
@@ -296,6 +332,12 @@ export class Steward {
    */
   private lastApplier?: { seq: number; timeMs: number; applier: string };
   /**
+   * How far the steward's clock was ahead of the applier's at the last event followed live (its time
+   * on relay less the applier's time for it); undefined until one is. A missed edge's applier time is
+   * moved by it onto the steward's clock (the code review, CR2).
+   */
+  private applierOffset?: number;
+  /**
    * The orphans (`orphans`) the last life held unrelayed when it stopped, by `seq`, with their time,
    * kept beside `applier_last` as `held`: the first sync reads the applier's history back to the oldest
    * and relays them, though behind the kept position (the code review, CR5). Cleared once read.
@@ -303,6 +345,12 @@ export class Steward {
   private heldBack = new Map<number, number>();
   /** A write of `lastApplier` alone waiting in the writer's line, with no event's row handed over after it (`saveLastApplier`). */
   private lastApplierAlone?: { value: string };
+  /** Each safety rule whose latchless lease the steward ended early: the devices, and the rules refused `safety` on each since (GA-LEASE-6). */
+  private readonly endedEarly = new Map<string, Map<string, Set<string>>>();
+  /** The timer letting each wait of `endedEarly` go, by safety rule and device (the code review, CR1). */
+  private readonly earlyTimers = new Map<string, number>();
+  /** Whether the gap being played is a restart's: its outside changes lease as a cursor_expired gap's do (GA-LEASE-2). */
+  private restartGap = false;
   /** While a gap is read: the rule firings' steps it ended, judged once the state is read (`recover`). */
   private settleLater?: [ApplyRecord, string][];
   /** The safety rules whose latch the steward saw set and not cleared, in this life (`latched`). */
@@ -332,20 +380,21 @@ export class Steward {
     this.log = new EventLog(o.store, o.clock);
     this.revision = new RisingMeta(o.store, "revision", () => this.rev);
     this.leases = new LeaseTable({ clock: o.clock, store: o.store, event: (body) => this.log.append("lease", body),
-      // A lease's end re-evaluates the level-triggered rules naming its device (GA-LEASE-4).
-      ended: (target) => this.rules.leaseEnded(target) });
+      // A lease's end re-evaluates the level-triggered rules it refused (GA-LEASE-4).
+      ended: (target, rules) => this.rules.leaseEnded(target, rules),
+      cameOff: (target, lease) => this.safetyEndedEarly(target, lease), mutation: o.mutation });
     this.notices = new NoticePump({ clock: o.clock, store: o.store, event: (body) => this.log.append("notice", body),
-      send: (batch, key) => this.sendNotice(batch, key) });
+      send: (batch, key) => this.sendNotice(batch, key), holding: () => !this.notifyChannel() });
     this.rules = new RuleEngine({ clock: o.clock, store: o.store, logger: (l) => this.say(l), mutation: o.mutation,
       rules: () => [...this.house.rules.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
       view: () => this.ruleView(), ready: () => this.synced, fire: (r, n, only) => this.fireRule(r, n, only), names: (r) => this.namesOf(r),
-      clean: () => this.log.lastStopClean, forget: (id) => this.after.forget(id) });
+      clean: () => this.log.lastStopClean, forget: (id) => this.after.forget(id), firedSince: (rule, applierMs) => this.log.firedSince(rule, applierMs) });
     this.after = new RuleOutcomes({ clock: o.clock, mutation: o.mutation, store: o.store, roomOf: (t) => this.house.targets.get(t)?.room ?? undefined, holds: (id) => this.rules.holds(id), episode: (id) => this.rules.episode(id),
       retry: (id, steps) => this.rules.retry(id, steps),
       // One waiting per rule and action, counted, carrying the latest outcome (ruled Q1).
       notice: (id, { text, ...doc }) => this.notices.own(id, "rule_failed", text, doc, `rule_failed:${doc.rule}:${doc.action}`) });
     this.schedules = new Schedules({ clock: o.clock, store: o.store, house: () => this.house, run: (s, at) => this.startScheduledRun(s, at),
-      busy: (s) => this.runningOf.has(s.scenario), event: (type, body) => this.log.append(type, body) });
+      busy: (s) => this.runningOf.has(s.scenario), event: (type, body) => this.log.append(type, body), mutation: o.mutation });
   }
 
   /** Loads what the store keeps, and makes the first owner on a store with no person; serves nothing before. */
@@ -374,7 +423,11 @@ export class Steward {
     await this.rules.load();
     await this.loadFirings();
     await this.leases.load();
+    // A firing a standing lease refused does not count as fired: the start's evaluation tries it again (GA-RULE-1).
+    this.rules.refusedAtStart(this.leases.refusedRules());
     await this.notices.load();
+    this.channelsTold = new Set(JSON.parse(await getMeta(this.o.store, "channels_told") ?? "[]") as string[]);
+    if (this.mutation === "forgets-an-unsent-notice") for (const n of this.notices.all()) this.notices.lose(n.notice_id);
     await this.loadPlans();
     await this.loadApplies();
     await this.loadRuns();
@@ -392,6 +445,8 @@ export class Steward {
     for (const t of this.reasks) this.o.clock.clear(t);
     this.reasks.clear();
     this.leases.stop();
+    for (const t of this.earlyTimers.values()) this.o.clock.clear(t);
+    this.earlyTimers.clear();
     this.notices.stop();
     this.rules.stop();
     this.after.stop();
@@ -485,6 +540,65 @@ export class Steward {
     this.sayShadowed();
     this.sayToggles();
     this.sayScheduleToggles();
+    this.channelsMoved();
+  }
+
+  /** Whether the home's channels have an adopted one offering `notify`: without one, notices are held (GA-NOTE-1). */
+  private notifyChannel(): boolean {
+    return hasNotifyChannel(this.house.home, this.defineContext(false));
+  }
+
+  /**
+   * After the house or the applier's model moved: when notices stop being held (a notify channel set,
+   * or adopted again), every notice held is tried at once (GA-NOTE-1).
+   */
+  private channelsMoved(byDefine = false): void {
+    const now = this.notifyChannel();
+    this.sayChannels(byDefine);
+    if (now && this.heldBefore) this.notices.retry();
+    this.heldBefore = !now;
+  }
+
+  /**
+   * GA-NOTE-4: a notice naming each channel of the list that leaves adoption, or offers neither `notify`
+   * nor `media.announce`, once per loss; and one when the list loses its last adopted channel offering
+   * `notify`. Each is delivered on the channels that remain, or held (GA-NOTE-1). A define moves only
+   * what was told (`byDefine`): a channel it drops from the list is forgotten, and a list it leaves
+   * with no notify channel is answered `no_notify_channel`, not noticed.
+   */
+  private sayChannels(byDefine: boolean): void {
+    if (!this.mirror.applier) return;
+    const before = canonical([...this.channelsTold].sort());
+    const list = this.house.home.notice_channels;
+    for (const id of [...this.channelsTold]) if (id !== NO_NOTIFY && !list.includes(id)) this.channelsTold.delete(id);
+    const quiet = byDefine || this.mutation === "keeps-a-dead-channel-quiet";
+    for (const id of list) {
+      const d = this.mirror.deviceView(id);
+      const why = !d ? "the applier no longer describes it" : !d.adopted ? "it is no longer adopted"
+        : !d.actions.includes("notify.notify") && !d.actions.includes("media.announce") ? "it offers neither notify nor media.announce" : undefined;
+      if (!why) {
+        this.channelsTold.delete(id);
+        continue;
+      }
+      if (this.channelsTold.has(id)) continue;
+      this.channelsTold.add(id);
+      if (quiet) continue;
+      const name = this.house.targets.get(id)?.name ?? (this.mirror.devices.get(id)?.label as string | undefined) ?? id;
+      this.notices.own(`steward:channel-lost:${id}:${Math.floor(this.o.clock.now())}:${this.channelNotices++}`, "channel_lost",
+        `notice channel ${name} (${id}) no longer carries notices: ${why}; set notice_channels again (GA-NOTE-4)`, { target: id });
+    }
+    if (this.notifyChannel() || !list.length) this.channelsTold.delete(NO_NOTIFY);
+    else if (!this.channelsTold.has(NO_NOTIFY)) {
+      this.channelsTold.add(NO_NOTIFY);
+      if (!quiet) {
+        this.notices.own(`steward:channel-lost:notify:${Math.floor(this.o.clock.now())}:${this.channelNotices++}`, "channel_lost",
+          "no notice channel offering notify is left: notices are held until one is set (GA-NOTE-4)");
+      }
+    }
+    if (canonical([...this.channelsTold].sort()) !== before) {
+      const value = JSON.stringify([...this.channelsTold].sort());
+      void this.o.store.write((tx) => setMeta(tx, "channels_told", value));
+    }
   }
 
   /**
@@ -509,7 +623,7 @@ export class Steward {
       this.shadowSaid.add(id);
       const text = `the applier now has a device ${id}, the id of group ${id}: a request naming it reaches the device; rename the group`;
       this.say(text);
-      this.notices.own(`steward:shadowed:${id}`, "group_shadowed", text);
+      this.notices.own(`steward:shadowed:${id}`, "group_shadowed", text, { group: id });
     }
   }
 
@@ -525,7 +639,8 @@ export class Steward {
       for (const id of [...new Set(readsOf(r, true))].sort()) {
         if (this.mirror.fresh(id) !== null) continue;
         this.notices.own(`steward:unbounded:${r.id}:${id}:${this.rev}`, "rule_unbounded",
-          `rule ${r.id} reads ${id}, whose fresh_s is not known: the rule can never hold on it until a bound is set (GA-RULE-2)`);
+          `rule ${r.id} reads ${id}, whose fresh_s is not known: the rule can never hold on it until a bound is set (GA-RULE-2)`,
+          { rule: r.id, target: id });
       }
     }
   }
@@ -540,7 +655,8 @@ export class Steward {
       for (const id of [...new Set(ifReadsOf(sc.steps))].sort()) {
         if (this.mirror.fresh(id) !== null) continue;
         this.notices.own(`steward:unbounded-if:${sc.id}:${id}:${this.rev}`, "scenario_unbounded",
-          `scenario ${sc.id} has an if reading ${id}, whose fresh_s is not known: the if can never hold on it until a bound is set (GA-RULE-2)`);
+          `scenario ${sc.id} has an if reading ${id}, whose fresh_s is not known: the if can never hold on it until a bound is set (GA-RULE-2)`,
+          { scenario: sc.id, target: id });
       }
     }
   }
@@ -607,7 +723,11 @@ export class Steward {
 
   /** A step: the `notices` of one of the applier's `events` answers (GA-NOTE-1). */
   onNotices(notices: Args[]): void {
+    const known = new Set(this.notices.all().map((n) => n.notice_id));
     this.notices.listed(notices);
+    if (this.mutation === "loses-an-early-notice" && !this.house.home.notice_channels.length) {
+      for (const n of notices) if (!known.has(String(n.notice_id))) this.notices.lose(String(n.notice_id));
+    }
   }
 
   /** The notices delivered that the next `events` call to the applier names in `notice_taken` (GA-NOTE-1). */
@@ -623,8 +743,8 @@ export class Steward {
    * ends `delivered`, or `sent` where it reports no receipt. Announcing channels are slice 9's.
    */
   private async sendNotice(batch: Notice[], key: string): Promise<void> {
-    const channels = [...this.house.home.notice_channels].sort()
-      .filter((id) => Array.isArray(this.mirror.devices.get(id)?.capabilities) && (this.mirror.devices.get(id)!.capabilities as string[]).includes("notify"));
+    // The adopted channels offering notify; held, while there is none (GA-NOTE-1).
+    const channels = notifyChannels(this.house.home, this.defineContext(false));
     if (!channels.length || !this.o.applierApply) return;
     const actions = batch.flatMap((n) => {
       const args = this.fromOf({ text: String(n.doc.text ?? ""), urgency: n.doc.cause === "safety_rule" ? "critical" : "warning" }, { notice: n.notice_id });
@@ -738,6 +858,8 @@ export class Steward {
     // An orphan the last life held unrelayed: the history is read back to just before it (CR5).
     const oldest = [...this.heldBack].sort((a, b) => a[0] - b[0])[0];
     if (this.lastApplier && oldest && oldest[0] <= this.lastApplier.seq) return { seq: oldest[0] - 1, timeMs: Math.min(oldest[1], this.lastApplier.timeMs) };
+    // The mutation reads back the replay bound's worth of events it already had, to replay their edges again.
+    if (this.lastApplier && this.mutation === "replays-a-fired-edge") return { seq: 0, timeMs: this.lastApplier.timeMs - EDGE_REPLAY_MS };
     return this.lastApplier ? { seq: this.lastApplier.seq, timeMs: this.lastApplier.timeMs } : undefined;
   }
 
@@ -775,20 +897,30 @@ export class Steward {
     if (dropped.length || older.count) {
       this.sayOnce("recovery-cap", `a gap held more than ${cap} of the applier's events: the oldest were not recorded`);
     }
-    if (!this.synced) this.mirror.setState(s, Math.floor(this.o.clock.now()));
+    const atStart = !this.synced;
+    if (atStart) this.mirror.setState(s, Math.floor(this.o.clock.now()));
+    // The mutation replays the edges of events it had before the gap, as a steward reading back an overlap would.
+    if (this.mutation === "replays-a-fired-edge" && last) {
+      for (const e of missed) {
+        const t = Date.parse(String(e.time));
+        if (typeof e.seq === "number" && e.seq <= last.seq && !Number.isNaN(t)) this.rules.replayEdge(e, this.onStewardClock(t), t);
+      }
+    }
     // A rule firing's step that ended in the gap is judged once the state is read, its conditions known then (GA-RULE-7).
     const later: [ApplyRecord, string][] = [];
     this.settleLater = later;
+    this.restartGap = atStart;
     try {
       for (const e of gap) this.relay(e, false, true);
     } finally {
       this.settleLater = undefined;
+      this.restartGap = false;
     }
     const named = [...dropped.map((e) => e.target), ...older.targets].filter((x): x is string => typeof x === "string");
     for (const t of [...new Set(named)].sort()) this.rules.replayed(t, true);
     this.onState(s);
     for (const [r, step] of later) this.ruleOutcome(r, step);
-    // An edge the gap held within five minutes fires now (ruled 2026-10-04; `EDGE_REPLAY_MS`).
+    // A state edge the gap held within `edge_replay_s` fires now, once (GA-RULE-1).
     this.rules.fireOwed();
     for (const w of [...this.waiting]) w.check();
   }
@@ -886,9 +1018,11 @@ export class Steward {
     // When it happened: now, or, missed in a gap, the applier's time for it.
     const now = Math.floor(this.o.clock.now());
     const at = recovered && !Number.isNaN(Date.parse(String(time))) ? Math.min(now, Date.parse(String(time))) : now;
+    if (!recovered && !Number.isNaN(Date.parse(String(time)))) this.applierOffset = now - Date.parse(String(time));
     // An outside change, or a load cap's, takes a person-precedence lease for the hold time; a device's own takes none (GA-LEASE-2).
     // One missed in a gap takes it for what is left of its hold, and never over a lease granted after it.
-    if (type === "state" && (e.cause === "external" || e.cause === "load_cap") && typeof e.target === "string" && this.mutation !== "ignores-leases") {
+    const forgot = recovered && this.restartGap && this.mutation === "forgets-a-restart-hand";
+    if (type === "state" && (e.cause === "external" || e.cause === "load_cap") && typeof e.target === "string" && this.mutation !== "ignores-leases" && !forgot) {
       const expiresMs = at + this.house.home.hold_time_s * 1000;
       const held = this.leases.of(e.target);
       if (expiresMs > now && !(recovered && held && held.sinceMs > at)) {
@@ -896,6 +1030,10 @@ export class Steward {
       }
     }
     this.safetyLeases(String(type), e, at);
+    // A device seen dead lets every wait on it go: its safety rules' completions may never come (the code review, CR1).
+    if (type === "liveness" && e.new === "dead" && typeof e.target === "string") {
+      for (const [rule, held] of [...this.endedEarly]) if (held.has(e.target)) this.letEarlyGo(rule, e.target);
+    }
     // A step that ends unreachable sent nothing: the lease it took ends (GA-LEASE-1).
     if (r && type === "outcome" && !verdict && e.outcome === "unreachable") this.leases.end(String(body.target), (l) => l.apply === r.apply_id);
     if (r && type === "outcome" && !verdict) {
@@ -911,10 +1049,14 @@ export class Steward {
     if (r?.firing && type === "late_ack") this.after.landed(r.firing, String(body.step_id));
     // A run's failed step that has its late ack while the run runs is no failure of it (steward, *Operations*).
     if (r?.run && type === "late_ack" && this.runs.get(r.run.id)?.status === "running") this.runs.get(r.run.id)!.lateAcked.add(String(body.step_id));
+    // A sensor's change may make its room's occupancy known (GA-RULE-8's coalesced notice).
+    const roomOfIt = typeof e.target === "string" && (type === "state" || type === "liveness") ? this.house.targets.get(e.target)?.room : undefined;
+    if (roomOfIt) this.sensorSeen(roomOfIt, e, recovered);
     // Missed in a gap: a level rule it made false counts as no longer fired; nothing acts on it now.
     if (recovered) {
       if (typeof e.target === "string" && (type === "state" || type === "liveness")) this.rules.replayed(e.target);
-      this.rules.replayEdge(e, at);
+      const t = Date.parse(String(time));
+      this.rules.replayEdge(e, Number.isNaN(t) ? now : this.onStewardClock(t), Number.isNaN(t) ? undefined : t);
       return;
     }
     // A `wait` on the device looks again (GA-SCN-10).
@@ -948,6 +1090,7 @@ export class Steward {
       // granted by an event before it, and one granted after it is not there yet. Never by comparing
       // the applier's time with the steward's: the two clocks differ (the code review, CR3).
       if (!this.latched(rule)) this.endSafety(rule);
+      this.safetyCompleted(rule);
       return;
     }
     const targets = type === "latch" ? this.latchDevices(rule, e.devices) : typeof e.target === "string" ? [e.target] : [];
@@ -980,13 +1123,68 @@ export class Steward {
   private grantSafety(rule: string, target: string, atMs: number): void {
     // A latchless rule's lease ends at its completion, or `LATCHLESS_SAFETY_MS` after it was granted should
     // that completion never be read (the milestone 7+10+11 review, I2); a latching rule's has no end of its own.
-    const expiresMs = this.latched(rule) ? null : atMs + LATCHLESS_SAFETY_MS;
+    const ackMs = this.mirror.longestAckS(target) * 1000;
+    const bound = this.mutation === "ends-a-safety-lease-early" ? ackMs : Math.max(LATCHLESS_SAFETY_MS, ackMs + LATE_ACK_WINDOW_MS);
+    const expiresMs = this.latched(rule) ? null : atMs + bound;
     const now = this.o.clock.now();
     if (expiresMs !== null && expiresMs <= now) return;
     // A lease of the rule past its end, beneath another rule's, is none: it does not stand in the way (the code review, CR4).
     const held = this.leases.safetyRules(target).find((l) => safetyRuleOf(l) === rule && (l.expiresMs === null || l.expiresMs > now));
     if (held && (held.expiresMs === null || expiresMs !== null)) return;
     this.leases.grant({ target, holder: { safety_rule: rule }, precedence: "safety_rule", sinceMs: held?.sinceMs ?? atMs, expiresMs });
+  }
+
+  /** An applier time on the steward's clock, by the offset last seen (none known: the clocks taken to agree), never past now. */
+  private onStewardClock(applierMs: number): number {
+    return Math.min(Math.floor(this.o.clock.now()), applierMs + (this.applierOffset ?? 0));
+  }
+
+  /**
+   * A lease came off `target`: a latchless safety rule's that ran out its time (`safety_lease_s`) before
+   * the rule's completion was read is an early end, and the rules the applier then refuses `safety`
+   * on the device wait for that completion (GA-LEASE-6).
+   */
+  private safetyEndedEarly(target: string, lease: Lease): void {
+    const rule = safetyRuleOf(lease);
+    if (rule === undefined || lease.expiresMs === null || this.o.clock.now() < lease.expiresMs) return;
+    const held = this.endedEarly.get(rule) ?? new Map<string, Set<string>>();
+    if (!held.has(target)) held.set(target, new Set());
+    this.endedEarly.set(rule, held);
+    // The wait is bounded: should the completion never be read, it goes the lease's own bound plus the
+    // late-ack window after the early end, and its rules are re-evaluated (the code review, CR1).
+    const k = `${rule}\u0000${target}`;
+    const t = this.earlyTimers.get(k);
+    if (t !== undefined) this.o.clock.clear(t);
+    this.earlyTimers.set(k, this.o.clock.setTimeout(() => this.letEarlyGo(rule, target), lease.expiresMs - lease.sinceMs + LATE_ACK_WINDOW_MS));
+  }
+
+  /** The waits of the safety rules whose lease on `target` the steward ended early, their completion not yet read. */
+  private earlyOn(target: string): Set<string>[] {
+    return [...this.endedEarly.values()].flatMap((held) => (held.has(target) ? [held.get(target)!] : []));
+  }
+
+  /** Lets `rule`'s wait on `target` go, re-evaluating the rules refused `safety` there meanwhile (GA-LEASE-6). */
+  private letEarlyGo(rule: string, target: string): void {
+    const held = this.endedEarly.get(rule);
+    const rules = held?.get(target);
+    if (!held || !rules) return;
+    held.delete(target);
+    if (!held.size) this.endedEarly.delete(rule);
+    const k = `${rule}\u0000${target}`;
+    const t = this.earlyTimers.get(k);
+    if (t !== undefined) this.o.clock.clear(t);
+    this.earlyTimers.delete(k);
+    if (rules.size) this.rules.leaseEnded(target, [...rules].sort());
+  }
+
+  /**
+   * Safety rule `rule`'s completion was relayed: each level-triggered rule the applier refused `safety`
+   * on a device whose lease of it the steward ended early is re-evaluated, and fires if it holds (GA-LEASE-6).
+   */
+  private safetyCompleted(rule: string): void {
+    const held = this.endedEarly.get(rule);
+    if (!held) return;
+    for (const target of [...held.keys()].sort()) this.letEarlyGo(rule, target);
   }
 
   /** Ends every lease safety rule `rule` holds, each a `lease` event and GA-LEASE-4's re-evaluation. */
@@ -1047,8 +1245,15 @@ export class Steward {
         this.waiters.add(done);
       });
     }
-    const base = { steward_id: this.o.stewardId, standard_version: STANDARD_VERSION, revision: this.rev,
+    // The bound on replaying an edge from a gap (GA-RULE-1).
+    const replay = this.mutation === "replays-undeclared" ? {} : { edge_replay_s: EDGE_REPLAY_MS / 1000 };
+    // The bound after which a latchless safety rule's lease may end before its completion is read (GA-LEASE-6).
+    const safety = this.mutation === "ends-a-safety-lease-undeclared" ? {} : { safety_lease_s: LATCHLESS_SAFETY_MS / 1000 };
+    const base = { steward_id: this.o.stewardId, standard_version: STANDARD_VERSION, revision: this.rev, ...replay, ...safety,
       ...(this.o.runId ? { test_run_id: this.o.runId } : {}) };
+    // The notices held, while no adopted channel offers notify (GA-NOTE-1).
+    const held = this.mutation === "hides-the-held-notices" || hasNotifyChannel(this.house.home, this.defineContext(false)) ? {}
+      : { held_notices: this.notices.held() };
     const empty = { scenarios: [], rules: [], schedules: [], groups: [], modes: [...MODES] };
     const applier = { applier_id: this.mirror.applier?.applier_id ?? "", levels: this.mirror.applier?.levels ?? [],
       ungoverned: this.mirror.applier?.ungoverned ?? [] };
@@ -1062,7 +1267,7 @@ export class Steward {
     }
     const ownersApp = this.isOwnersApp(caller);
     const shown = (id: string) => ownersApp || this.mirror.devices.get(id)?.internal !== true;
-    return { ...base, ...empty, applier, home: this.house.home, rooms: byId([...this.house.rooms.values()]),
+    return { ...base, ...held, ...empty, applier, home: this.house.home, rooms: byId([...this.house.rooms.values()]),
       rules: byId([...this.house.rules.values()]), scenarios: byId([...this.house.scenarios.values()]), schedules: byId([...this.house.schedules.values()]),
       // Each device as the applier describes it, with the steward's overlay (names, aliases, room) over it.
       targets: byId([...this.mirror.devices.values()].filter((d) => ownersApp || d.internal !== true).map((d) => {
@@ -1107,11 +1312,20 @@ export class Steward {
         throw new RequestError("stale_revision", `expected_revision ${a.expected_revision}, current ${this.rev}`);
       }
       const { draft, diff } = planDefine(this.house, a.changes as Change[], this.defineContext(false));
-      if (a.dry_run) return { diff: diff.length ? diff.join("\n") : "no change" };
-      if (!diff.length) return { revision: this.rev };
-      return this.commitDefine(draft, diff, p);
+      if (a.dry_run) return this.toldOfChannels({ diff: diff.length ? diff.join("\n") : "no change" }, draft);
+      if (!diff.length) return this.toldOfChannels({ revision: this.rev });
+      return this.toldOfChannels(await this.commitDefine(draft, diff, p));
     });
     return within(this.o.clock, GATE_MS, change, HELD);
+  }
+
+  /**
+   * A `define` answer, with `no_notify_channel: true` when the house after it (`house`, the current one
+   * unless a dry run's draft) has no adopted channel offering `notify` (GA-NOTE-1).
+   */
+  private toldOfChannels(answer: Record<string, unknown>, house: House = this.house): Record<string, unknown> {
+    if (this.mutation === "hides-no-notify-channel" || hasNotifyChannel(house.home, this.defineContext(false))) return answer;
+    return { ...answer, no_notify_channel: true };
   }
 
   /** What `define` reads of the applier and the run, and whether the change set is a brain's (GA-DEF-7). */
@@ -1170,7 +1384,7 @@ export class Steward {
       // Unanswered, nothing changes (GA-DEF-6); the plan is spent, kept so before the answer is read.
       const spent = this.o.store.write((tx) => tx.query("UPDATE plans SET applied = true WHERE plan_id = $1", [held.plan.plan_id]).then(() => undefined));
       await within(this.o.clock, GATE_MS, spent, SPENT_HELD);
-      return { revision: this.rev, skipped: "not_confirmed" };
+      return this.toldOfChannels({ revision: this.rev, skipped: "not_confirmed" });
     }
     const change = this.owners.run(async () => {
       try {
@@ -1178,8 +1392,8 @@ export class Steward {
           throw new RequestError("stale_revision", `the plan was made at revision ${held.plan.revision}, the house is at ${this.rev} (GA-DEF-2)`);
         }
         const { draft, diff } = planDefine(this.house, changes as Change[], this.defineContext(true));
-        if (!diff.length) return { revision: this.rev };
-        return await this.commitDefine(draft, diff, p, held.plan.plan_id);
+        if (!diff.length) return this.toldOfChannels({ revision: this.rev });
+        return this.toldOfChannels(await this.commitDefine(draft, diff, p, held.plan.plan_id));
       } catch (err) {
         // Judged and refused at its turn: nothing changed, and the plan is not spent.
         if (err instanceof RequestError) held.applied = false;
@@ -1220,12 +1434,14 @@ export class Steward {
     this.rules.changed();
     this.rev = Math.max(next, this.rev + 1);
     this.revision.schedule();
-    this.log.append("define", { revision: this.rev, endpoint: p.endpoint, person: p.person, ...(planId !== undefined ? { plan_id: planId } : {}), diff });
+    this.log.append("define", { revision: this.rev, endpoint: p.endpoint, person: p.person, ...(planId !== undefined ? { plan_id: planId } : {}), diff },
+      { readers: { endpoint: p.endpoint, ...(p.speaker !== undefined ? { speaker: p.speaker } : {}) } });
     this.sayUnbounded(before, draft);
     this.sayUnboundedIfs(before, draft);
     this.sayToggles((id) => canonical(before.rules.get(id) ?? null) !== canonical(draft.rules.get(id) ?? null));
     this.sayScheduleToggles((id) => canonical(before.schedules.get(id) ?? null) !== canonical(draft.schedules.get(id) ?? null));
     this.wakeWaiters();
+    this.channelsMoved(true);
     // The clock follows the model only once it is kept: a source set, or the start-up one when cleared.
     if (retime) {
       await this.o.retarget?.(source ?? null).catch((err: unknown) => {
@@ -1355,9 +1571,25 @@ export class Steward {
     const written = over.filter((x) => x.asked.length).map((x) => x.plan.plan_id);
     if (written.length && !this.o.store.down) void this.o.store.write((tx) => dropPlans(tx, written), { droppable: true });
     this.plans.set(held.plan.plan_id, held);
-    if (held.asked.length && this.mutation !== "skips-the-ask-event") {
-      this.log.append("ask", { plan_id: held.plan.plan_id, step_ids: held.asked, endpoint: held.askedAt });
-    }
+    if (held.asked.length && this.mutation !== "skips-the-ask-event") this.putAsk(held, held.asked);
+  }
+
+  /**
+   * The `ask` event for `ids` of `held` (GA-CONF-5): `{ plan_id, step_ids, steps, endpoint }`, a run's
+   * re-ask with its `run_id`; each step as the plan gives it, `{ step_id, target, action, args, tier,
+   * reason }`, a `confirm_define` step `{ step_id, reason, diff }`. Its readers kept beside it: the
+   * ask's endpoint and the plan's speaker (`servedTo`).
+   */
+  private putAsk(held: HeldPlan, ids: string[], runId?: string): void {
+    const steps = this.mutation === "asks-without-the-steps" ? undefined : ids.map((id) => {
+      const x = (held.plan.steps as (StewardStep | DefineStep)[]).find((y) => y.step_id === id)!;
+      return x.reason === "confirm_define" ? { step_id: x.step_id, reason: x.reason, diff: (x as DefineStep).diff }
+        : { step_id: x.step_id, target: (x as StewardStep).target, action: (x as StewardStep).action, args: (x as StewardStep).args,
+          tier: (x as StewardStep).tier, reason: x.reason };
+    });
+    this.log.append("ask", { plan_id: held.plan.plan_id, step_ids: ids, ...(steps ? { steps } : {}), endpoint: held.askedAt,
+      ...(runId !== undefined ? { run_id: runId } : {}) },
+    { readers: { endpoint: held.askedAt, ...(held.plan.speaker !== undefined ? { speaker: held.plan.speaker } : {}) } });
   }
 
   /** Where a plan's question is put: the endpoint's `confirm_on`, else its brain credential's, else the plan's endpoint (GA-CONF-5). */
@@ -1403,6 +1635,13 @@ export class Steward {
   private async answer(a: Args, caller: Extract<Caller, { kind: "credential" }>): Promise<StewardPlan> {
     this.forgetPlans();
     const held = this.plans.get(a.plan_id);
+    // A plan not held, never made or lost at a restart (one with no ask may be), is unknown (GA-PERSIST-2);
+    // the principal and its endpoint are judged first, so a credential that may not answer there meets
+    // the same error whether or not the plan exists (the code review, CR10).
+    if (!held) {
+      principalOf(this.house, caller.credential, a.endpoint, a.speaker, this.mutation);
+      throw new RequestError("unknown_plan", `no plan ${a.plan_id} is held`);
+    }
     const record = a.utterance as UtteranceRecord | undefined;
     const answers = a.answers as Record<string, Answer>;
     const p = judgeAnswer({ held: held?.asked.length || this.mutation === "answers-unasked-steps" ? held && this.asked(held) : undefined,
@@ -1684,6 +1923,15 @@ export class Steward {
     if (r.run) this.runs.get(r.run.id)?.settle?.();
     const o = r.firing ? r.outcomes.find((x) => x.step_id === step) : undefined;
     if (!o || outcomeRank(o.outcome) < 2) return;
+    // Refused `safety` on a device whose safety lease the steward ended early: no notice; the rule is
+    // re-evaluated when the safety rule's completion is relayed (GA-LEASE-6, GA-RULE-8).
+    const early = o.outcome === "refused" && o.reason === "safety" ? this.earlyOn(o.target) : [];
+    if (early.length) {
+      // Kept by each safety rule ended early on the device: the first completion read re-evaluates it.
+      if (this.mutation !== "forgets-a-safety-refusal") for (const rules of early) rules.add(r.firing!.rule);
+      this.trackFiring(r);
+      return;
+    }
     this.after.settled(r.firing!, step, o.outcome, o.reason);
     this.trackFiring(r);
   }
@@ -1793,6 +2041,7 @@ export class Steward {
    * left. A plan with no ask was never kept: an accepted loss.
    */
   private async loadPlans(): Promise<void> {
+    if (this.mutation === "forgets-an-asked-plan") return;
     const now = Math.floor(this.o.clock.now());
     const rows = await this.o.store.query<{ plan_id: string; credential: string; made_ms: number | string; expires_ms: number | string;
       forget_ms: number | string; asked: Record<string, number>; doc: StewardPlan; asked_at: string; answers: Record<string, Answer>; applied: boolean }>(
@@ -1923,7 +2172,7 @@ export class Steward {
         r.outcomes.push({ step_id, target: x.target, outcome: d.outcome, ...why, time });
         this.log.append("outcome", { apply_id: r.apply_id, step_id, target: x.target, outcome: d.outcome, ...why, cause });
         // A provisional lease that refused it re-evaluates the rule when it is lifted (GA-LEASE-4).
-        if (d.outcome === "refused" && d.reason === "leased") this.leases.refused(x.target);
+        if (d.outcome === "refused" && d.reason === "leased") this.leases.refused(x.target, rule.id);
         if (d.outcome === "refused") {
           this.log.append("refused", { rule: rule.id, apply_id: r.apply_id, step_id, target: x.target, action: x.action, reason: d.reason,
             ...(judged.holder !== undefined ? { holder: judged.holder } : {}), cause });
@@ -2065,10 +2314,34 @@ export class Steward {
     return room ? this.occupancyOfRoom(room) : "unknown";
   }
 
-  /** A room's occupancy, from the sensors the house puts in it (steward, *Occupancy*). */
+  /** A room's occupancy, from the sensors the house puts in it (steward, *Occupancy*); a read, changing nothing. */
   private occupancyOfRoom(room: string): Occupancy {
-    const ids = [...this.house.targets.values()].filter((t) => t.room === room).map((t) => t.id);
-    return occupancyOf(this.mirror.sensors(ids), Math.floor(this.o.clock.now()), this.house.home.occupancy_hold_s * 1000, this.mutation);
+    return occupancyOf(this.mirror.sensors(this.targetsIn(room)), Math.floor(this.o.clock.now()), this.house.home.occupancy_hold_s * 1000, this.mutation);
+  }
+
+  /** The house's targets by room, built once for each house (a define replaces it). */
+  private readonly byRoom = new WeakMap<House, Map<string, string[]>>();
+
+  private targetsIn(room: string): string[] {
+    let m = this.byRoom.get(this.house);
+    if (!m) {
+      m = new Map();
+      for (const t of this.house.targets.values()) if (t.room) m.set(t.room, [...(m.get(t.room) ?? []), t.id]);
+      this.byRoom.set(this.house, m);
+    }
+    return m.get(room) ?? [];
+  }
+
+  /**
+   * A sensor's event in `room`, followed or recovered from a gap: should it show the room's occupancy
+   * known, the next skipped(occupancy_unknown) in it is noticed again (GA-RULE-8). A mark is only made
+   * while the room is unknown, so a room known at a sensor's event went from unknown to known since it
+   * (the code review, CR8). One recovered counts as known when it reports someone there at its time;
+   * the room as it stands after the gap is judged too.
+   */
+  private sensorSeen(room: string, e: Args, recovered: boolean): void {
+    const there = (e.key === "motion" || e.key === "occupancy") && e.value === true;
+    if ((recovered && there) || this.occupancyOfRoom(room) !== "unknown") this.after.roomKnown(room);
   }
 
   /**
@@ -2099,11 +2372,11 @@ export class Steward {
    * withheld (`servedTo`), until the personal floor (slice 8). An `endpoint` and `speaker` are checked as for a request.
    */
   private async events(a: Args, caller: Extract<Caller, { kind: "credential" }>): Promise<Record<string, unknown>> {
-    if (a.endpoint !== undefined) principalOf(this.house, caller.credential, a.endpoint, a.speaker, this.mutation);
+    const reader = this.readerOf(a, caller);
     if (a.cursor === undefined) return { events: [], cursor: this.log.cursor() };
     const read = () => {
       const marked = this.log.readMarked(a.cursor);
-      const events = this.servedTo(caller, marked);
+      const events = this.servedTo(caller, marked, reader);
       return { events, cursor: marked.length ? String(marked[marked.length - 1]!.event.seq) : a.cursor };
     };
     const first = read();
@@ -2123,14 +2396,14 @@ export class Steward {
    * (slice 8; `servedTo`).
    */
   private async history(a: Args, caller: Extract<Caller, { kind: "credential" }>): Promise<Record<string, unknown>> {
-    if (a.endpoint !== undefined) principalOf(this.house, caller.credential, a.endpoint, a.speaker, this.mutation);
+    const reader = this.readerOf(a, caller);
     if (this.o.store.down) throw new StoreUnavailable("the store is unreachable: history is read from it");
     if (a.after_seq !== undefined && !Number.isSafeInteger(a.after_seq)) throw new RequestError("invalid_request", "after_seq is not an integer");
     // An applier's `latch` or `rule_fired` names its rule only: it matches the devices the rule actuates, as `describe` lists them (M4).
     const rules = a.targets === undefined ? [] : [...this.mirror.safetyRules].filter(([, r]) => r.devices.some((d) => a.targets.includes(d))).map(([id]) => id);
     const r = await within(this.o.clock, GATE_MS, this.log.history(Date.parse(a.from), Date.parse(a.to), a.targets, this.o.historyCap ?? HISTORY_CAP, a.after_seq ?? 0, rules),
       `the store did not answer within ${GATE_MS} ms: history is read from it`, false);
-    return { events: this.servedTo(caller, r.events), ...(r.more ? { more: true } : {}) };
+    return { events: this.servedTo(caller, r.events, reader), ...(r.more ? { more: true } : {}) };
   }
 
   /**
@@ -2139,14 +2412,54 @@ export class Steward {
    * a personal key's event goes to the owner only, its value withheld; every other caller gets none
    * (the maintainer, 2026-10-06, Q1). A mark not known counts as personal.
    */
-  private servedTo(caller: Extract<Caller, { kind: "credential" }>, marked: Marked[]): AppEvent[] {
+  private servedTo(caller: Extract<Caller, { kind: "credential" }>, marked: Marked[], reader?: Principal): AppEvent[] {
     const owner = this.isOwnersApp(caller);
     const out: AppEvent[] = [];
-    for (const { event, personal } of marked) {
-      if (personal === false) out.push(event);
-      else if (owner) out.push("value" in event ? { ...event, value: "withheld" } : event);
+    for (const { event, personal, readers } of marked) {
+      // A `define` kept with no readers (one the migration missed) is read as its endpoint's (the review, I2).
+      const kept = readers ?? (event.type === "define" ? { endpoint: String(event.endpoint ?? "") } : undefined);
+      const shown = kept ? this.forReader(event, kept, reader) : event;
+      if (personal === false) out.push(shown);
+      else if (owner) out.push("value" in shown ? { ...shown, value: "withheld" } : shown);
     }
     return out;
+  }
+
+  /**
+   * The reader of an `events` or `history` call, by the endpoint it names, or derives: an app's or a
+   * panel's one endpoint (GA-CONF-5, GA-STW-7). A brain naming no endpoint, and a front, derive none.
+   */
+  private readerOf(a: Args, caller: Extract<Caller, { kind: "credential" }>): Principal | undefined {
+    if (a.endpoint !== undefined) return principalOf(this.house, caller.credential, a.endpoint, a.speaker, this.mutation);
+    const c = caller.credential;
+    return (c.kind === "app" || c.kind === "panel") && c.endpoint !== undefined && this.house.endpoints.has(c.endpoint)
+      ? principalOf(this.house, c, c.endpoint, undefined, this.mutation) : undefined;
+  }
+
+  /**
+   * An `ask` event's `steps`, or a `define` event's `diff`, as `reader` may read them (GA-CONF-5, GA-STW-7):
+   * whole at the event's endpoint, to an owner's role and to the plan's speaker, a value setting a
+   * personal key withheld from a guest or a visitor (GA-AUTH-7); every other read gets the event without them.
+   */
+  private forReader(event: AppEvent, readers: Readers, reader: Principal | undefined): AppEvent {
+    const may = reader !== undefined && (reader.endpoint === readers.endpoint || reader.role === "owner"
+      || (readers.speaker !== undefined && reader.person === readers.speaker));
+    if (event.type === "define") {
+      if (may || this.mutation === "broadcasts-the-diff") return event;
+      const { diff: _d, ...rest } = event;
+      return rest as AppEvent;
+    }
+    if (!Array.isArray(event.steps)) return event;
+    if (!may && this.mutation !== "broadcasts-the-steps") {
+      const { steps: _s, ...rest } = event;
+      return rest as AppEvent;
+    }
+    if (reader === undefined || (reader.role !== "guest" && reader.role !== "visitor")) return event;
+    return { ...event, steps: (event.steps as Args[]).map((x) => {
+      const personal = this.mirror.devices.get(String(x.target))?.personal;
+      if (!Array.isArray(personal) || !x.args || typeof x.args !== "object") return x;
+      return { ...x, args: Object.fromEntries(Object.entries(x.args as Args).map(([k, v]) => [k, personal.includes(k) ? "withheld" : v])) };
+    }) };
   }
 
   /**
@@ -2263,8 +2576,8 @@ export class Steward {
     if (run.starterRole && p.role !== run.starterRole && lowerRole(p.role, run.starterRole) === p.role) {
       throw new RequestError("not_permitted", `a ${p.role} may not stop a run a ${run.starterRole} started (GA-SCN-9)`);
     }
-    // A run no person started is stopped by a member and up (ruled by the maintainer, 2026-10-05; proposed for the next steward revision).
-    if (!run.starterRole && (p.role === "guest" || p.role === "visitor")) {
+    // A run no person started is never a visitor's to stop (GA-SCN-9); nor, the build's choice, a guest's.
+    if (!run.starterRole && (p.role === "guest" || (p.role === "visitor" && this.mutation !== "visitor-stops-a-schedule"))) {
       throw new RequestError("not_permitted", `a ${p.role} may not stop a run no person started`);
     }
     this.endRun(run, "stopped");
@@ -2327,7 +2640,7 @@ export class Steward {
     for (const row of ignored.rows) {
       this.setRunKey(`${row.credential}\u0000${row.key}`, { run_id: row.run_id, body: row.body, atMs: Number(row.at_ms), ignored: true, ready: Promise.resolve() });
     }
-    // A run's lease outlives no run: every one the store held is released, re-evaluating the rules naming it (GA-LEASE-4).
+    // A run's lease outlives no run: every one the store held is released, re-evaluating the rules it refused (GA-LEASE-4).
     for (const l of this.leases.all()) if (typeof l.holder === "object" && "run" in l.holder) this.leases.end(l.target);
   }
 
@@ -2557,7 +2870,7 @@ export class Steward {
     held.answers = answers;
     held.askedMs = { ...held.askedMs, ...Object.fromEntries(stale.map((st) => [st, now])) };
     held.reopened = { steps: stale, untilMs: now + expiry };
-    this.log.append("ask", { plan_id: held.plan.plan_id, step_ids: stale, endpoint: held.askedAt, run_id: run.run_id });
+    this.putAsk(held, stale, run.run_id);
     await new Promise<void>((resolve) => {
       const done = () => {
         this.o.clock.clear(timer);

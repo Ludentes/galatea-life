@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "galatea": {
+      "type": "http",
+      "url": "${GALATEA_STEWARD_URL:-https://127.0.0.1:18444/mcp}",
+      "headers": { "Authorization": "Bearer ${GALATEA_BRAIN_CREDENTIAL}" }
+    }
+  }
+}

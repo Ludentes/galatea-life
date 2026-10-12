@@ -130,7 +130,7 @@ describe("plan", () => {
     expect(kept.rows.map((r) => [r.plan_id, Number(r.made_ms), r.asked])).toEqual([[plan.plan_id, made, { s1: made }]]);
     const events = (await ok(SECRETS.owner, "events", { cursor })).events;
     expect(events).toEqual([{ seq: expect.any(Number), time: new Date(clock.now()).toISOString(), type: "ask", plan_id: plan.plan_id,
-      step_ids: ["s1"], endpoint: "olga-app" }]);
+      step_ids: ["s1"], steps: [expect.objectContaining({ step_id: "s1", reason: "confirm_tier" })], endpoint: "olga-app" }]);
   });
 
   it("puts the question on the confirm_on that applies: the endpoint's, else its brain credential's", async () => {

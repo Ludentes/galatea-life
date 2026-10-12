@@ -33,6 +33,11 @@ export type Declarations = {
    * tier below the table falls back while its declarations differ, until the owner sets it again (GA-DESC-18).
    */
   tier_basis?: Record<string, string>;
+  /**
+   * Written only by the mutation `keeps-a-manifest-kept-tier`: a replacement's kept tier pinned beside
+   * the owner's value, so no delete lowers it (GA-DESC-11 stores it as the owner's value).
+   */
+  kept_tiers?: Record<string, Tier>;
 };
 
 /** A `heating` load's `max_on_s` where the owner set none (applier, *Loads*, *Constants*: ⚠️ a guess). */
@@ -44,8 +49,15 @@ const RANK: Record<Tier, number> = { reversible: 0, confirm: 1, no_voice: 2 };
 export const higher = (a: Tier, b: Tier): Tier => (RANK[a] >= RANK[b] ? a : b);
 export const below = (a: Tier, b: Tier): boolean => RANK[a] < RANK[b];
 
-/** What the default tiers read of a device. */
-export type TierFacts = { cls: string | null; load?: Load; infrastructure: boolean; opensWith: OpensWith };
+/**
+ * What the default tiers read of a device. `infrastructure` is the owner's flag, else, on a computer,
+ * its bridge's proposal (applier, *Devices*). `host` is there on a device a computer hosts: that
+ * computer's `infrastructure`, read the same way; `rows` and `floor` say whether its rows join a
+ * standard action's tier and its `infrastructure` an extension action's floor (both true but under the
+ * mutations `sleeps-the-box-through-its-player` and `extension-under-the-box`).
+ */
+export type TierFacts = { cls: string | null; load?: Load; infrastructure: boolean; opensWith: OpensWith;
+  host?: { infrastructure: boolean; rows: boolean; floor: boolean } };
 
 export const VALVES = new Set(["water_valve", "gas_valve"]);
 const GATES = new Set(["gate", "garage_door"]);
@@ -67,6 +79,9 @@ export const DEFAULT_TIERS: { row: string; matches: (f: TierFacts, action: strin
   { row: "computer: power.shutdown", matches: (f, a) => f.cls === "computer" && a === "power.shutdown", tier: "confirm" },
 ];
 
+/** The rows a hosting computer gives a standard action of a device it hosts (applier, *Plugins' actions*): its `infrastructure` and `computer` rows. */
+const HOST_ROWS = DEFAULT_TIERS.filter((r) => r.row.startsWith("infrastructure:") || r.row.startsWith("computer:"));
+
 /** The classes whose rows name only standard actions, and whose floor for an extension action is `no_voice` (applier, *Plugins' actions*). */
 const GUARDED = new Set(["door_lock", "water_valve", "gas_valve", "gate", "garage_door"]);
 
@@ -74,11 +89,13 @@ const GUARDED = new Set(["door_lock", "water_valve", "gas_valve", "gate", "garag
  * An extension action's floor (applier, *Plugins' actions*): the highest tier any row naming the
  * device's class, one of its flags or its load gives any action, whether or not the device offers
  * that action; `no_voice` on a `door_lock`, `water_valve`, `gas_valve`, `gate` or `garage_door`;
- * `reversible` where no such row names it. A plugin's `requested_tier` and a hosting computer's
- * `infrastructure` join it with the PC build.
+ * `reversible` where no such row names it; `no_voice` on a device whose host is an `infrastructure`
+ * computer. A plugin's `requested_tier` joins it in `floorTier`.
  */
 export function extensionFloor(f: TierFacts): Tier {
   if (GUARDED.has(f.cls ?? "")) return "no_voice";
+  // On a device an `infrastructure` computer hosts, `no_voice`: a plugin's own shutdown is never easier than the box's.
+  if (f.host?.infrastructure && f.host.floor) return "no_voice";
   let floor: Tier = "reversible";
   if (f.cls === "boiler" || f.cls === "computer") floor = higher(floor, "confirm");
   if (f.load === "heating") floor = higher(floor, "confirm");
@@ -87,13 +104,31 @@ export function extensionFloor(f: TierFacts): Tier {
 }
 
 /**
- * The tier the table gives `action` on a device (GA-DESC-3): the first row that matches, else
- * `reversible`; an extension action, a plugin's or a bridge's own, takes the extension row after every
- * class, flag and load row: `confirm`, or its floor where that is higher.
+ * An action's floor (applier, *Default tiers*, GA-DESC-3), below which no tier goes, the owner's
+ * included: a standard action's, the first row of the table that matches, else `reversible`, raised to
+ * its host's `infrastructure` and `computer` rows on a device a computer hosts, and on a plugin's
+ * device the higher of that and its `requested_tier` (the plugin standard tier); an extension
+ * action's, a plugin's or a bridge's own, the higher of its `requested_tier` and `extensionFloor` (the
+ * extension tier's floor).
  */
-export function defaultTier(f: TierFacts, action: string): Tier {
-  if (isExtension(action)) return higher("confirm", extensionFloor(f));
-  return DEFAULT_TIERS.find((r) => r.matches(f, action))?.tier ?? "reversible";
+export function floorTier(f: TierFacts, action: string, requested?: Tier): Tier {
+  let own = isExtension(action) ? extensionFloor(f) : DEFAULT_TIERS.find((r) => r.matches(f, action))?.tier ?? "reversible";
+  // A standard action on a hosted device: the higher of its own row and its host's `infrastructure` and `computer` rows.
+  if (!isExtension(action) && f.host?.rows) {
+    const host: TierFacts = { cls: "computer", infrastructure: f.host.infrastructure, opensWith: "onoff.turn_on" };
+    const row = HOST_ROWS.find((r) => r.matches(host, action));
+    if (row) own = higher(own, row.tier);
+  }
+  return requested ? higher(own, requested) : own;
+}
+
+/**
+ * The tier an action has where the owner set none (GA-DESC-3): its floor, except an extension
+ * action's, which is the higher of `confirm` and its floor (ruling 5).
+ */
+export function defaultTier(f: TierFacts, action: string, requested?: Tier): Tier {
+  const floor = floorTier(f, action, requested);
+  return isExtension(action) ? higher("confirm", floor) : floor;
 }
 
 /**

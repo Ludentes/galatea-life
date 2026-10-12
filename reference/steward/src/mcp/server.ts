@@ -2,6 +2,7 @@ import { createServer as createHttp, type IncomingMessage, type ServerResponse }
 import { createServer as createHttps } from "node:https";
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, legacyStatelessFallback, ProtocolError, ProtocolErrorCode, Server } from "@modelcontextprotocol/server";
+import { requestSchemaFor, type ToolInputSchema } from "@ludentes/galatea-life-schemas";
 import { TOOLS, type Steward } from "../steward.js";
 import { maskUrls, StoreError } from "../core/db.js";
 import { isLoopback } from "../net/loopback.js";
@@ -32,18 +33,27 @@ function logFailure(what: string, err: unknown): void {
   console.error(`${what}: ${maskUrls(detail)}`);
 }
 
+type ListedTool = { name: string; description: string; inputSchema: ToolInputSchema; annotations: { readOnlyHint?: boolean; destructiveHint?: boolean } };
+
+/**
+ * The tools as `tools/list` gives them: each operation's request schema, every `$ref` inlined since
+ * MCP clients resolve none, so a model sees each parameter's name and type. Throws when an
+ * operation has no request schema, so that the steward fails at start rather than list it untyped.
+ */
+export function toolList(tools: readonly { name: string; readOnly?: true; destructive?: boolean; summary: string }[]): ListedTool[] {
+  return tools.map((t) => ({
+    name: t.name,
+    description: t.summary,
+    inputSchema: requestSchemaFor("steward", t.name),
+    annotations: t.readOnly ? { readOnlyHint: true } : { destructiveHint: t.destructive === true },
+  }));
+}
+
 // The low-level Server, not McpServer: the tools are the standard's operations, validated inside
 // against @ludentes/galatea-life-schemas, and McpServer takes Standard Schema objects instead.
-function mcpServer(steward: Steward, bearer: string | undefined): Server {
+function mcpServer(steward: Steward, bearer: string | undefined, tools: ListedTool[]): Server {
   const server = new Server({ name: "galatea-reference-steward", version: "0.0.0" }, { capabilities: { tools: {} } });
-  server.setRequestHandler("tools/list", async () => ({
-    tools: TOOLS.map((t) => ({
-      name: t.name,
-      description: `The steward's ${t.name} (standard/steward.md, Operations)`,
-      inputSchema: { type: "object" as const },
-      annotations: t.readOnly ? { readOnlyHint: true } : { destructiveHint: t.destructive === true },
-    })),
-  }));
+  server.setRequestHandler("tools/list", async () => ({ tools }));
   server.setRequestHandler("tools/call", async (req) => {
     // The caller is resolved on every request, at every revision (GA-AUTH-4).
     let result;
@@ -72,7 +82,9 @@ Promise<{ url: string; close(): Promise<void> }> {
   const host = opts.host ?? "127.0.0.1";
   const loopback = isLoopback(host);
   if (!loopback && !opts.tls) throw new Error(`refusing to serve MCP on ${host} without TLS (GA-SEC-2)`);
-  const factory = (ctx: { requestInfo?: Request }) => mcpServer(steward, bearerOf(ctx.requestInfo));
+  // Built once, before listening: an operation without a request schema stops the start here.
+  const tools = toolList(TOOLS);
+  const factory = (ctx: { requestInfo?: Request }) => mcpServer(steward, bearerOf(ctx.requestInfo), tools);
   const mcp = steward.mutation === "speaks-only-2025"
     ? { fetch: legacyStatelessFallback(factory), close: async () => undefined }
     : createMcpHandler(factory);

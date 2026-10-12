@@ -1,29 +1,31 @@
 import { randomUUID } from "node:crypto";
-import type { Clock } from "@ludentes/galatea-life-test-clock";
+import type { Clock } from "../core/clock.js";
 import type { Bridge } from "../config/config.js";
-import type { Puback } from "../bus/client.js";
+import type { Puback } from "../bus/port.js";
 import type { Ack } from "../bus/wire.js";
 import { Keys, type KeyClaim } from "../core/keys.js";
+import { quiet, type Log } from "../core/log.js";
 import { GATE_MS, within, type Store } from "../core/store.js";
-import { argsFault, commandValue, sets, sideEffects, towards } from "../gate/actions.js";
-import { judge, tokenStands, type Gate, type GateDevice, type Requested, type Step } from "../gate/plan.js";
+import { commandValue, sets, sideEffects, towards } from "../gate/actions.js";
+import { judge, tokenStands, type Gate, type Requested, type Step } from "../gate/plan.js";
 import type { DispatchTarget } from "../model/home.js";
-import type { Mutation } from "../mutations.js";
+import { Mutant } from "../mutations.js";
 import {
   causeOf, clientOf, dropLate, dropWaiting, HELD_MS, loadRecords, pruneRecords, releaseToken, saveApply, saveAssumed, saveLate, saveWaiting, useToken,
   type ApplyCause, type Assumed, type HeldApply, type Late, type Outcome, type Waiting,
 } from "./records.js";
 import { uuidV5 } from "./command-id.js";
 import { onAck, onBound, onBridgeDead, type Final, type StepKind } from "./rules.js";
-
-/** The reasons judged before `declaration_changed` at dispatch: none of them hangs on the action's declarations. */
-const OUTRANKS_A_CHANGE = new Set<string>(["not_adopted", "safety", "latched", "dead"]);
+import { OUTRANKS_A_CHANGE, judgeOwn, ACK_GRACE_MS, LATE_ACK_MS, MAX_ATTEMPTS, REISSUE_GAP_MS, reissuable, setsOf, FINAL, tokenKey, iso, slotOf, ownRequest } from "./dispatch-helpers.js";
+export { judgeOwn, ACK_GRACE_MS, LATE_ACK_MS, MAX_ATTEMPTS, REISSUE_GAP_MS, reissuable } from "./dispatch-helpers.js";
 
 /** What the dispatcher asks of the applier around it. */
 export interface DispatchPorts {
   store: Store;
   clock: Clock;
-  mutation?: Mutation;
+  mutant: Mutant;
+  /** Where a dispatch no caller awaits logs a bug (default: nowhere). */
+  log?: Log;
   /** The install's namespace for derived ids (the maintainer's ruling 2): a UUID kept in `meta`, read once the store is loaded. */
   namespace(): string;
   /** The gate as it stands now for `client` (applier, *Reason order*). */
@@ -56,57 +58,9 @@ export interface DispatchPorts {
   ended?(target: string, action: string, outcome: Outcome["outcome"], dispatchedMs: number): void;
 }
 
-/**
- * A safety rule's actuation at dispatch (applier, *Safety rules*, *The applier's own actuations*): no
- * tier, token, `already` or request's refusal binds it, and it is always sent, never judged in place;
- * only what makes it impossible ends it first: a device or action gone, a device not adopted or dead,
- * args its device's declarations now refuse, which a client's step is refused for too, and an action
- * declared `toggles: true`, which the applier never sends on its own (GA-SAFE-13).
- */
-export function judgeOwn(r: Requested, d: GateDevice | undefined): { verdict: "op" | "skip" | "refuse"; reason?: string } {
-  const decl = d?.actions.get(r.action);
-  if (!d) return { verdict: "skip", reason: "unknown_target" };
-  if (!decl) return { verdict: "skip", reason: "unsupported_action" };
-  if (!d.adopted) return { verdict: "refuse", reason: "not_adopted" };
-  if (argsFault(r.action, r.args, decl.args, decl.confirmed_by) !== undefined) return { verdict: "refuse", reason: "invalid_args" };
-  if (decl.toggles) return { verdict: "refuse", reason: "toggle_only" };
-  if (d.liveness === "dead") return { verdict: "skip", reason: "dead" };
-  return { verdict: "op" };
-}
-
-/**
- * How long past its bound a step still takes an ack (GA-BUS-4: "within the 1 s after it", since a
- * bridge on MQTT 3.1.1 counts the time from receipt), kept under GA-APPLY-8's 1 s, so that a step
- * nothing answered is `failed(no_ack)` no later than 1 s after its bound.
- */
-export const ACK_GRACE_MS = 900;
-
-/** How long after a step's `failed(no_ack)` a report matching its action is still a `late_ack` (GA-APPLY-11). */
-export const LATE_ACK_MS = 60_000;
-
-/**
- * A step's attempts in all, its first dispatch and its reissues (GA-APPLY-6), and the time between the
- * end of one attempt's bound and the next: the per-step retry deployed dispatchers run, "up to 3 attempts"
- * with 500 ms between them, here only once each attempt's bound has passed (GA-BUS-4).
- */
-export const MAX_ATTEMPTS = 3;
-export const REISSUE_GAP_MS = 500;
-
-/**
- * Whether an action may be reissued at all (GA-APPLY-6): one whose effective declaration is idempotent,
- * on a closed device. An extension action never is, being declared not idempotent (GA-DESC-4).
- */
-export function reissuable(target: Pick<DispatchTarget, "idempotent" | "feedback">): boolean {
-  return target.idempotent && target.feedback === "closed";
-}
-
 /** A window in which a report on `key` moving towards the action is the apply's (applier, *Causes*). */
 type Window = { command_id: string; target: string; action: string; args: Record<string, unknown>; cause: ApplyCause;
   until: number; closed: boolean; confirmed_by?: Waiting["confirmed_by"] };
-
-/** What an action sets, as the step it is part of was dispatched with (GA-EVT-3). */
-const setsOf = (x: { action: string; args: Record<string, unknown>; confirmed_by?: Waiting["confirmed_by"] }) =>
-  sets(x.action, x.args, x.confirmed_by);
 
 /**
  * A waiting step as memory holds it: its timer, and what waits on its PUBACK; the action as asked,
@@ -124,9 +78,6 @@ type Reissue = { late: Late; asked: Requested; attempts: number; away: boolean; 
  * client, its record the apply id): the body it came with, and its apply once that is kept.
  */
 export type Claim = KeyClaim<string>;
-
-const FINAL = new Set<Outcome["outcome"]>(["skipped", "refused", "unreachable", "acked", "delivered", "sent", "unanswered", "failed"]);
-const tokenKey = (issuer: string, tokenId: string) => `${issuer}\u0000${tokenId}`;
 
 /**
  * Apply and dispatch (applier, *Apply and outcomes*): each step re-judged at dispatch, published in
@@ -189,7 +140,7 @@ export class Dispatcher {
    * (GA-BRIDGE-4). `draws-a-fresh-command-id`: a random one, as before slice 7b.
    */
   private idOf(name: string): string {
-    return this.o.mutation === "draws-a-fresh-command-id" ? randomUUID() : uuidV5(name, this.o.namespace());
+    return this.o.mutant.drawsAFreshCommandId ? randomUUID() : uuidV5(name, this.o.namespace());
   }
 
   /** The applier's clock in whole ms: a test clock's time is fractional, and the store keeps bigint ms. */
@@ -215,15 +166,15 @@ export class Dispatcher {
       if (a.pubs) a.pubs.forEach((n, i) => this.published.set(slotOf(a.apply_id, i), n));
       // Loaded oldest first: a key used again after its 3600 s names its latest apply.
       // `forgets-an-idempotency-key`: a key's apply is held, the key not.
-      if (a.idempotency_key !== undefined && a.body !== undefined && this.o.mutation !== "forgets-an-idempotency-key") {
+      if (a.idempotency_key !== undefined && a.body !== undefined && !this.o.mutant.forgetsAnIdempotencyKey) {
         this.keys.hold(a.client, a.idempotency_key, a.body, a.apply_id, a.created_ms);
       }
     }
     // `forgets-a-used-token`: the tokens used before the restart are not read back.
-    if (this.o.mutation !== "forgets-a-used-token") for (const u of r.used) this.used.set(tokenKey(u.issuer, u.token_id), u.until_ms);
+    if (!this.o.mutant.forgetsAUsedToken) for (const u of r.used) this.used.set(tokenKey(u.issuer, u.token_id), u.until_ms);
     for (const l of r.late) if (this.applies.has(l.apply_id)) this.late.set(l.command_id, l);
     // `sends-a-bare-setpoint`: the assumed state is not read back (applier, *Negative subjects*).
-    if (this.o.mutation !== "sends-a-bare-setpoint") for (const x of r.assumed) {
+    if (!this.o.mutant.sendsABareSetpoint) for (const x of r.assumed) {
       this.held(this.assumed, x.device).set(x.key, { value: x.value, basis_ms: x.basis_ms, seq: x.source_seq });
       this.seq = Math.max(this.seq, x.source_seq + 1);
     }
@@ -236,7 +187,7 @@ export class Dispatcher {
       }
     }
     // `forgets-an-ack-deadline`: the steps waiting before the restart are not read back.
-    this.loaded = this.o.mutation === "forgets-an-ack-deadline" ? [] : r.waiting;
+    this.loaded = this.o.mutant.forgetsAnAckDeadline ? [] : r.waiting;
   }
 
   /**
@@ -260,7 +211,7 @@ export class Dispatcher {
     }
     this.loaded = [];
     // `forgets-an-ack-deadline`: a step whose deadline is forgotten is never ended.
-    if (this.o.mutation === "forgets-an-ack-deadline") return;
+    if (this.o.mutant.forgetsAnAckDeadline) return;
     // A step still `dispatched` with no waiting row was published, or not, by a process that died before
     // its row landed: nothing says it acted, and nothing will answer it here (GA-APPLY-8, GA-PERSIST-1).
     const rows = new Set([...this.waiting.values()].map((w) => `${w.apply_id}\u0000${w.step_id}`));
@@ -359,7 +310,7 @@ export class Dispatcher {
     });
     try {
       // `uses-a-token-behind`: the apply and its tokens are written behind its dispatch, as a step's other records are.
-      if (this.o.mutation === "uses-a-token-behind") void kept.catch(() => undefined);
+      if (this.o.mutant.usesATokenBehind) void kept.catch(() => undefined);
       else await within(this.o.clock, GATE_MS, kept);
     } catch (err) {
       // Not kept in time: none of them is used, and the key is not held. A write that lands later only
@@ -403,7 +354,7 @@ export class Dispatcher {
     void (async () => {
       for (let i = 0; i < requested.length; i++) await this.dispatch(a, i, requested[i]!, undefined, true);
       this.save(a);
-    })().catch((err: unknown) => console.error(`applier bug: safety rule ${ruleId}'s dispatch threw: ${String(err)}`));
+    })().catch((err: unknown) => (this.o.log ?? quiet)(`applier bug: safety rule ${ruleId}'s dispatch threw: ${String(err)}`));
     return a;
   }
 
@@ -425,7 +376,7 @@ export class Dispatcher {
     this.save(a);
     const r = ownRequest(device, "onoff.turn_off", {}, { load_cap: device });
     void this.dispatch(a, 0, r, undefined, true).then(() => this.save(a))
-      .catch((err: unknown) => console.error(`applier bug: the heating cap's turn-off of ${device} threw: ${String(err)}`));
+      .catch((err: unknown) => (this.o.log ?? quiet)(`applier bug: the heating cap's turn-off of ${device} threw: ${String(err)}`));
     return a;
   }
 
@@ -442,7 +393,7 @@ export class Dispatcher {
     this.save(a);
     const r = ownRequest(action.target, action.action, action.args, { safety_rule: a.rule_id });
     void this.dispatch(a, i, r, undefined, true).then(() => this.save(a))
-      .catch((err: unknown) => console.error(`applier bug: safety rule ${a.rule_id}'s re-send threw: ${String(err)}`));
+      .catch((err: unknown) => (this.o.log ?? quiet)(`applier bug: safety rule ${a.rule_id}'s re-send threw: ${String(err)}`));
   }
 
   /**
@@ -492,11 +443,11 @@ export class Dispatcher {
     const mine = token && tokenKey(token.issuer, token.token_id);
     // `toggles-to-reach-a-state` is the planner's fault (GA-PLAN-8), which the manifest couples to no
     // other id: the judge at dispatch keeps the true rule.
-    const mutation = gate.mutation === "toggles-to-reach-a-state" ? undefined : gate.mutation;
+    const mutant = gate.mutant.togglesToReachAState ? Mutant.none : gate.mutant;
     // The applier's own actuation, a safety rule's or a heating cap's: no tier, token or request's refusal binds it.
     const own = a.rule_id !== undefined || a.load_cap !== undefined;
     const j: { verdict: string; reason?: string; tier?: string } = own ? judgeOwn(r, gate.device(r.target))
-      : judge(step.step_id, r, { ...gate, mutation, used: (issuer, id) => tokenKey(issuer, id) !== mine && gate.used(issuer, id) });
+      : judge(step.step_id, r, { ...gate, mutant, used: (issuer, id) => tokenKey(issuer, id) !== mine && gate.used(issuer, id) });
     const target = this.o.target(r.target, r.action);
     // A token is dispatched at most once, whatever the token check said (GA-TOKEN-4): one this step did
     // not reserve, and another holds, is no token for an action that needs one.
@@ -510,7 +461,7 @@ export class Dispatcher {
     // declarations could move (already, unsupported_action, toggle_only, the token), so a changed step is
     // never told as a success. Only what does not hang on them outranks it: not_adopted, safety, latched
     // and dead (the controller's ruling on the preflight's B1).
-    if (basis !== undefined && this.o.fingerprint?.(r.target, r.action) !== basis && this.o.mutation !== "dispatches-a-changed-step") {
+    if (basis !== undefined && this.o.fingerprint?.(r.target, r.action) !== basis && !this.o.mutant.dispatchesAChangedStep) {
       const d = gate.device(r.target);
       const first = j.verdict !== "op" && j.reason !== undefined && OUTRANKS_A_CHANGE.has(j.reason) ? undefined
         : d && !d.adopted ? { verdict: "refuse" as const, reason: "not_adopted" as const }
@@ -574,10 +525,10 @@ export class Dispatcher {
       const pending = w.pending;
       w.pending = undefined;
       if (pending) this.end(w, pending);
-      if (this.o.mutation === "reissues-inside-the-bound") this.o.clock.setTimeout(() => {
+      if (this.o.mutant.reissuesInsideTheBound) this.o.clock.setTimeout(() => {
         if (this.waiting.get(command_id)?.terminal === false) void send();
       }, 1000);
-      if (this.o.mutation === "resends-after-reconnect" && p.kind === "lost") this.resend.push(() => void send());
+      if (this.o.mutant.resendsAfterReconnect && p.kind === "lost") this.resend.push(() => void send());
       return;
     }
     // Nothing was delivered: unreachable, the token unused, and whatever it met before is no one's (GA-BUS-9).
@@ -595,15 +546,15 @@ export class Dispatcher {
   private command(commandId: string, now: number, device: string, action: string, args: Record<string, unknown>, target: DispatchTarget):
     { body: Record<string, unknown>; expiryS: number; state?: Record<string, unknown> } {
     const resultWithinMs = Math.round(target.ack_within_s * 1000);
-    const from = target.from || this.o.mutation === "sends-from-to-an-old-bridge";
+    const from = target.from || this.o.mutant.sendsFromToAnOldBridge;
     // `wraps-a-lone-argument`: an extension action's one argument goes as an object, which its bridge refuses.
-    const value = this.o.mutation === "wraps-a-lone-argument" ? commandValue(action, args, { from, declared: [...target.declared_args, ""] })
+    const value = this.o.mutant.wrapsALoneArgument ? commandValue(action, args, { from, declared: [...target.declared_args, ""] })
       : commandValue(action, args, { from, declared: target.declared_args });
     const state = target.whole_state ? this.frame(device, action, args, target.confirmed_by) : undefined;
     const body = { commandId, issuedAt: iso(now), resultWithinMs,
       value: { action, ...(value !== undefined ? { value } : {}), ...(state ? { state } : {}) } };
     // `floors-message-expiry` cuts a bound with a fraction short.
-    const whole = this.o.mutation === "floors-message-expiry" ? Math.floor(resultWithinMs / 1000) : Math.ceil(resultWithinMs / 1000);
+    const whole = this.o.mutant.floorsMessageExpiry ? Math.floor(resultWithinMs / 1000) : Math.ceil(resultWithinMs / 1000);
     return { body, expiryS: Math.max(1, whole), ...(state ? { state } : {}) };
   }
 
@@ -621,7 +572,7 @@ export class Dispatcher {
       from.set(key, x.seq);
     }
     // In dispatch order; an action in flight dispatched before the assumed value's own command is older than it.
-    if (this.o.mutation !== "sends-the-old-mode") {
+    if (!this.o.mutant.sendsTheOldMode) {
       for (const x of this.inflight.get(device) ?? []) {
         if ((from.get(x.key) ?? -1) > x.seq) continue;
         state[x.key] = x.value;
@@ -649,10 +600,10 @@ export class Dispatcher {
    * with the outcome.
    */
   private assume(w: Live, f: Final, took: boolean): Assumed[] {
-    const m = this.o.mutation;
+    const mutant = this.o.mutant;
     const failed = f.outcome === "failed" || f.outcome === "unreachable";
     const flying = this.inflight.get(w.target);
-    if (flying && !(failed && m === "keeps-a-failed-mode")) {
+    if (flying && !(failed && mutant.keepsAFailedMode)) {
       const rest = flying.filter((x) => x.command_id !== w.command_id);
       if (rest.length) this.inflight.set(w.target, rest);
       else this.inflight.delete(w.target);
@@ -661,12 +612,12 @@ export class Dispatcher {
     const own = setsOf(w);
     const now = this.now();
     if (failed) {
-      if (m === "assumes-a-failed-write" && own?.value !== undefined) this.held(this.shown, w.target).set(own.key, { value: own.value, basis_ms: now });
+      if (mutant.assumesAFailedWrite && own?.value !== undefined) this.held(this.shown, w.target).set(own.key, { value: own.value, basis_ms: now });
       return [];
     }
-    if (f.outcome === "unanswered" && m === "forgets-the-unanswered") return [];
+    if (f.outcome === "unanswered" && mutant.forgetsTheUnanswered) return [];
     if (f.outcome !== "sent" && f.outcome !== "unanswered") return [];
-    const values: Record<string, unknown> = w.state && m !== "forgets-what-the-frame-said" ? { ...w.state } : {};
+    const values: Record<string, unknown> = w.state && !mutant.forgetsWhatTheFrameSaid ? { ...w.state } : {};
     if (own?.value !== undefined) values[own.key] = own.value;
     const seq = w.seq ?? 0;
     const held = this.held(this.assumed, w.target);
@@ -714,19 +665,19 @@ export class Dispatcher {
     }
     if (w.bridge !== bridge) return [];
     if (w.bridge_device !== device) return [`an ack on devices/${device}/ack for a command sent to ${w.bridge_device}`];
-    const e = onAck(w.kind, ack, this.o.mutation === "acks-without-state");
+    const e = onAck(w.kind, ack, this.o.mutant.acksWithoutState);
     if (e.kind === "ignore") return [];
     // The first terminal ack is the one taken; a second is a duplicate (GA-BUS-6).
     if (w.terminal) return [];
     w.terminal = true;
-    if (ack.detail !== undefined && this.o.mutation !== "drops-the-ack-detail") w.detail = ack.detail;
+    if (ack.detail !== undefined && !this.o.mutant.dropsTheAckDetail) w.detail = ack.detail;
     if (e.kind === "wait") {
       this.keep(w);
       return e.fault ? [e.fault] : [];
     }
     if (!e.acted) this.closeWindow(w.command_id);
     this.end(w, e.final);
-    if (e.final.outcome === "unreachable" && w.token && this.o.mutation === "reuses-token-after-late-unreachable") this.releaseToken(w.token, true);
+    if (e.final.outcome === "unreachable" && w.token && this.o.mutant.reusesTokenAfterLateUnreachable) this.releaseToken(w.token, true);
     return [];
   }
 
@@ -831,11 +782,11 @@ export class Dispatcher {
     const l = x.late;
     const now = this.now();
     const gate = this.o.gate(clientOf(l.cause) ?? "");
-    const mutation = gate.mutation === "toggles-to-reach-a-state" ? undefined : gate.mutation;
+    const mutant = gate.mutant.togglesToReachAState ? Mutant.none : gate.mutant;
     // A safety rule's actuation is never reissued but under `reissues-on-timeout`, which ignores the verdict (GA-SAFE-5).
-    const j = clientOf(l.cause) === undefined ? judgeOwn(x.asked, gate.device(l.target)) : judge(l.step_id, x.asked, { ...gate, mutation });
+    const j = clientOf(l.cause) === undefined ? judgeOwn(x.asked, gate.device(l.target)) : judge(l.step_id, x.asked, { ...gate, mutant });
     const target = this.o.target(l.target, l.action);
-    const blind = this.o.mutation === "reissues-on-timeout";
+    const blind = this.o.mutant.reissuesOnTimeout;
     // Re-sent only where its declaration at dispatch and as it stands both say idempotent, and only on the
     // declarations it was dispatched on, so the bound, `already` and `confirmed_by` read here are its own (GA-DESC-18).
     const same = l.fingerprint === undefined || this.o.fingerprint?.(l.target, l.action) === l.fingerprint;
@@ -937,7 +888,7 @@ export class Dispatcher {
     w.timer = this.o.clock.setTimeout(() => {
       w.timer = undefined;
       if (this.waiting.get(w.command_id) !== w) return;
-      if (this.o.mutation === "never-fails-a-silent-ack" && w.kind.feedback === "closed") return;
+      if (this.o.mutant.neverFailsASilentAck && w.kind.feedback === "closed") return;
       this.end(w, onBound(w.kind));
     }, Math.max(0, w.bound_ms + ACK_GRACE_MS - this.now()));
   }
@@ -969,7 +920,7 @@ export class Dispatcher {
       // `reissues-on-timeout` is a naive retry: every step, its token and the gate's verdict ignored.
       // A safety rule's actuation is never reissued (GA-SAFE-5); GA-SAFE-12's re-send is the rule's own (slice 6b).
       const own = clientOf(w.cause) === undefined;
-      if (w.asked && (own ? this.o.mutation === "reissues-on-timeout" : !w.token || this.o.mutation === "reissues-on-timeout") && !w.away) {
+      if (w.asked && (own ? this.o.mutant.reissuesOnTimeout : !w.token || this.o.mutant.reissuesOnTimeout) && !w.away) {
         const x: Reissue = { late: l, asked: w.asked, attempts: 1, away: false };
         this.reissues.set(l.command_id, x);
         // Never inside the first command's bound (GA-BUS-4), though its bridge was found dead before it.
@@ -1058,16 +1009,4 @@ export class Dispatcher {
     this.used.delete(tokenKey(t.issuer, t.token_id));
     if (written) void this.o.store.write((tx) => releaseToken(tx, t.issuer, t.token_id));
   }
-}
-
-const iso = (ms: number) => new Date(Math.floor(ms)).toISOString();
-/** A held run's action slot, by apply id and index (`Dispatcher.published`). */
-const slotOf = (applyId: string, i: number) => `${applyId}\u0000${i}`;
-
-/**
- * The applier's own step (a safety rule's, a heating cap's) in a request's shape: `for` names its
- * cause, `{ safety_rule }` or `{ load_cap }`, which no client's `for` may, hence the one cast.
- */
-function ownRequest(target: string, action: string, args: Record<string, unknown> | undefined, cause: Record<string, string>): Requested {
-  return { target, action, args: args ?? {}, via: "app", brain: false, for: cause } as unknown as Requested;
 }

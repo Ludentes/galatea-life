@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Db } from "../src/core/db.js";
 import { Store } from "../src/core/store.js";
-import { blankDb, memoryDb } from "./db.js";
+import { blankDb, memoryDb, migrations } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 
 /** Everything a test could meet in the database: the catalogue of its schema, the roles and grants, and every row. */
@@ -42,7 +42,7 @@ async function snapshot(db: Db): Promise<Record<string, unknown>> {
 describe("memoryDb's template", () => {
   it("holds exactly what a fresh database and Store.open's migrations give", async () => {
     const fresh = await blankDb();
-    await Store.open(fresh, new FakeClock(), (err) => { throw err; });
+    await Store.open(fresh, new FakeClock(), (err) => { throw err; }, { migrations });
     const templated = await memoryDb();
     const expected = await snapshot(fresh);
     expect((expected.tables as string[]).length).toBeGreaterThan(1);

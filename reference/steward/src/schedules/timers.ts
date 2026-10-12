@@ -3,6 +3,7 @@ import { canonical } from "../core/canonical.js";
 import type { Tx } from "../core/db.js";
 import { GATE_MS, within, type Store } from "../core/store.js";
 import type { House, Schedule } from "../house/model.js";
+import type { Mutation } from "../mutations.js";
 import { dueSince, markAt, nextOccurrence, occurrenceOn, type Occurrence } from "./core.js";
 
 /**
@@ -33,6 +34,7 @@ export interface ScheduleDeps {
   busy(s: Schedule): boolean;
   /** Appends one of the steward's events. */
   event(type: "schedule_skipped" | "schedule_missed", body: Record<string, unknown>): void;
+  mutation?: Mutation;
 }
 
 /** Writes a schedule's mark as handled through `mark`, unless a later one is kept: safe to run twice, and in any order. */
@@ -217,10 +219,12 @@ export class Schedules {
     // one `schedule_skipped` (the milestone 5+6 review, M1, M2); a run still within it goes on.
     const due = mark !== undefined ? dueSince(s, this.d.house().home.timezone, mark, now) : { runs: [o], earlier: 0 };
     const runs = due.runs.length ? due.runs : [o];
-    const late = runs.filter((x) => now - x.at > LATE_MS);
+    // The mutation runs a date its timer reached late, the clock having jumped past it, as if on time.
+    const lateMs = this.d.mutation === "runs-a-stepped-schedule" ? Infinity : LATE_MS;
+    const late = runs.filter((x) => now - x.at > lateMs);
     late.forEach((x, i) => this.d.event(x.skipped ? "schedule_skipped" : "schedule_missed", { schedule: id, scenario: s.scenario, date: x.date,
       at: new Date(x.at).toISOString(), ...(i === 0 && due.earlier ? { earlier: due.earlier } : {}), cause: { schedule: id } }));
-    const current = runs.find((x) => now - x.at <= LATE_MS);
+    const current = runs.find((x) => now - x.at <= lateMs);
     if (late.length) this.markDone(id, late[late.length - 1]!);
     if (!current) return this.armOne(s);
     o = current;

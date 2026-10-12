@@ -2,7 +2,7 @@ import type { ApplierPlan } from "@ludentes/galatea-life-schemas";
 import type { ConfirmedBy, Constraint } from "../bus/wire.js";
 import { canonical } from "../core/canonical.js";
 import type { Tier } from "../model/declarations.js";
-import type { Mutation } from "../mutations.js";
+import type { Mutant } from "../mutations.js";
 import type { Liveness } from "../state/liveness.js";
 import { argsFault, holds } from "./actions.js";
 import { authorsOwn, tokenFault, type Asked } from "./token.js";
@@ -42,7 +42,7 @@ export interface Gate {
   key?: string;
   now: number;
   used(issuer: string, tokenId: string): boolean;
-  mutation?: Mutation;
+  mutant: Mutant;
 }
 
 /**
@@ -64,7 +64,7 @@ const REASONS: { reason: Reason; verdict: "skip" | "refuse"; applies: (j: Judged
   { reason: "dead", verdict: "skip", applies: (j) => j.d!.liveness === "dead" },
   { reason: "duplicate_route", verdict: "refuse", applies: (j) => j.d!.duplicateRoute },
   // Nothing a request asks undoes a running safety rule's action (GA-SAFE-2).
-  { reason: "safety", verdict: "refuse", applies: (j) => !!j.d!.guarded && j.g.mutation !== "lets-a-client-undo-safety" },
+  { reason: "safety", verdict: "refuse", applies: (j) => !!j.d!.guarded && !j.g.mutant.letsAClientUndoSafety },
   // A held latch's undo, and any extension action on a device its rule actuated (GA-SAFE-7).
   { reason: "latched", verdict: "refuse", applies: (j) => !!j.d!.latched?.(j.a.action, j.a.args as Record<string, unknown>) },
   { reason: "tier", verdict: "refuse", applies: (j) => j.decl!.tier === "no_voice" && (j.a.via === "voice" || j.a.brain) },
@@ -74,21 +74,21 @@ const REASONS: { reason: Reason; verdict: "skip" | "refuse"; applies: (j: Judged
   { reason: "toggle_only", verdict: "refuse", applies: (j) => j.decl!.toggles && togglesBlind(j) && !personsYes(j) },
   // A latch's undo, once it cleared, runs only with a token whose `for` has a person (GA-SAFE-7).
   { reason: "token", verdict: "refuse", applies: (j) => j.decl!.tier !== "reversible" && (!j.token() || (j.undo && !forsPerson(j.a.token)))
-    && j.g.mutation !== "applies-without-token" },
+    && !j.g.mutant.appliesWithoutToken },
 ];
 
 /** A toggle is blind on an open device, whose state is assumed; `asks-a-closed-loop-toggle` takes a closed one so too. */
 function togglesBlind(j: Judged): boolean {
-  return j.d!.feedback === "open" || j.g.mutation === "asks-a-closed-loop-toggle";
+  return j.d!.feedback === "open" || j.g.mutant.asksAClosedLoopToggle;
 }
 
 /** Whether the step carries a person's yes to its toggle: a token that stands and is no author's (GA-PLAN-8). */
 function personsYes(j: Judged): boolean {
-  if (j.g.mutation === "toggles-to-reach-a-state") return true;
+  if (j.g.mutant.togglesToReachAState) return true;
   if (!j.token()) return false;
   const f = (j.a.token as { for?: unknown }).for;
-  if (j.g.mutation === "answers-a-toggle-by-rule") return true;
-  if (j.g.mutation === "refuses-a-panel-toggle" && typeof f === "object" && f !== null && "run" in f && !("person" in f)) return false;
+  if (j.g.mutant.answersAToggleByRule) return true;
+  if (j.g.mutant.refusesAPanelToggle && typeof f === "object" && f !== null && "run" in f && !("person" in f)) return false;
   return !authorsOwn(f);
 }
 
@@ -101,7 +101,7 @@ function forsPerson(token: unknown): boolean {
 /** Whether a step's token stands (GA-TOKEN-2); `trusts-any-token` takes any token given. */
 export function tokenStands(a: Requested, g: Gate): boolean {
   if (a.token === undefined) return false;
-  if (g.mutation === "trusts-any-token") return true;
+  if (g.mutant.trustsAnyToken) return true;
   return tokenFault(a.token, a, { client: g.client, key: g.key, now: g.now, used: g.used }) === undefined;
 }
 

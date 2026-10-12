@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planSteps, type Gate, type GateDevice, type Requested } from "../src/gate/plan.js";
 import { proofOf } from "../src/gate/token.js";
-import type { Mutation } from "../src/mutations.js";
+import { type Mutation, mutantOf } from "../src/mutations.js";
 
 const KEY = "a-token-key-of-the-steward";
 const NOW = Date.parse("2030-01-01T08:00:00Z");
@@ -16,7 +16,7 @@ function device(extra: Partial<GateDevice> = {}): GateDevice {
 }
 
 function gate(devices: Record<string, GateDevice>, mutation?: Mutation): Gate {
-  return { device: (id) => devices[id], client: "steward", key: KEY, now: NOW, used: () => false, mutation };
+  return { device: (id) => devices[id], client: "steward", key: KEY, now: NOW, used: () => false, mutant: mutantOf(mutation) };
 }
 
 const ask = (target: string, action = "onoff.turn_on", extra: Partial<Requested> = {}): Requested =>

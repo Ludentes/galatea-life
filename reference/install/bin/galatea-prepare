@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Prepares the installation's files on the host, before `docker compose up` (the install-core
+# design, *Credentials*). A secret that exists is never changed; each new one is 32 random letters
+# and digits, in a file of yours alone (0600, in a 0700 directory):
+# - the store: a password for `postgres`, `reader` and every listed instance but a watcher (secrets/db/);
+# - the broker: a password for `applier`, each `bridge_*` line and each watcher (`watch`, or
+#   `watch-<n>`: a tool that only reads the broker), never the store's (secrets/broker/); no other
+#   build has a broker identity;
+# - MCP: with `applier` listed, the applier's owner credential (secrets/mcp/applier-owner); with
+#   `steward` listed, the steward's first owner credential (steward-owner), its credential at the
+#   applier (steward-at-applier) and the shared proof key (steward-token-key);
+# - the Zigbee bridge's data directory, when bridge_zigbee is listed: yours, closed to others, since
+#   it holds the network key, and Docker would make a missing one as root;
+# - the backups directory, and the secrets archive's (backups-secrets), yours and closed to others;
+# then the CA and the servers' certificates, through bin/galatea-certs.
+set -euo pipefail
+. "$(dirname "$(readlink -f "$0")")/lib.sh"
+
+secrets=$(resolve "${GALATEA_SECRETS:-./secrets}")
+instances=$(resolve "${GALATEA_INSTANCES:-./instances}")
+backups=$(resolve "${GALATEA_BACKUPS:-./backups}")
+archive=$(resolve "${GALATEA_SECRETS_BACKUPS:-./backups-secrets}")
+zigbee=$(resolve "${GALATEA_ZIGBEE_DATA:-./zigbee}")
+[ -f "$instances" ] || die "no instances file: $instances"
+# The services run as GALATEA_UID and read the files this account writes.
+[ "${GALATEA_UID:-$(id -u)}" = "$(id -u)" ] && [ "${GALATEA_GID:-$(id -g)}" = "$(id -g)" ] ||
+  die "GALATEA_UID and GALATEA_GID in $env_file are not this account's ($(id -u):$(id -g)): the services could not read its files"
+
+# Check every name before writing anything: a name is also a file name.
+names=$(instance_names "$instances")
+watcher() { case "$1" in watch | watch-*) return 0 ;; *) return 1 ;; esac; }
+for n in $names; do
+  if watcher "$n"; then
+    echo "$n" | grep -Eq '^watch(-[a-z0-9]{1,16})?$' ||
+      die "bad watcher name: $n (watch, or watch- and up to 16 lower-case letters and digits)"
+  else
+    echo "$n" | grep -Eq '^[a-z][a-z0-9_]{0,62}$' || die "bad instance name: $n"
+  fi
+done
+listed() { printf '%s\n' "$names" | grep -qx "$1"; }
+
+mkdir -p "$secrets/db" "$secrets/broker" "$secrets/mcp" "$backups" "$archive"
+chmod 700 "$secrets" "$secrets/db" "$secrets/broker" "$secrets/mcp" "$backups" "$archive"
+secret() {
+  [ -s "$1" ] && return 0
+  (umask 077 && head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | head -c 32 >"$1")
+  echo "galatea-prepare: wrote $1"
+}
+for n in postgres reader $names; do
+  watcher "$n" || secret "$secrets/db/$n"
+done
+for n in $names; do
+  case "$n" in applier | bridge_* | watch | watch-*) secret "$secrets/broker/$n" ;; esac
+done
+if listed applier; then
+  secret "$secrets/mcp/applier-owner"
+fi
+if listed steward; then
+  for f in steward-owner steward-at-applier steward-token-key; do secret "$secrets/mcp/$f"; done
+fi
+if listed bridge_zigbee; then
+  mkdir -p "$zigbee"
+  chmod 700 "$zigbee"
+fi
+
+"$here/bin/galatea-certs"

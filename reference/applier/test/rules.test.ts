@@ -6,8 +6,8 @@ const ack = (result: Ack["result"], reason?: string): Ack => ({ command_id: "c-1
 const kind = (feedback: "open" | "closed", stateless: boolean, confirms = feedback === "closed"): StepKind => ({ feedback, stateless, confirms });
 
 /** The effect, written short: `final:acked`, `final:failed(rejected)`, `wait`, `wait!` (with a fault), `ignore`. */
-function effect(k: StepKind, a: Ack, acksWithoutState = false): string {
-  const e = onAck(k, a, acksWithoutState);
+function effect(k: StepKind, a: Ack, appliedAcks = false): string {
+  const e = onAck(k, a, appliedAcks);
   if (e.kind === "final") return `final:${e.final.outcome}${e.final.reason ? `(${e.final.reason})` : ""}${e.acted ? "" : " not acted"}`;
   return e.kind === "wait" && e.fault ? "wait!" : e.kind;
 }

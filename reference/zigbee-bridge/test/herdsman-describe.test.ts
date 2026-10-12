@@ -1,11 +1,11 @@
 import { afterEach, describe as group, expect, it, vi } from "vitest";
 import { Binary, Enum, findByDevice, Numeric, Text, type Definition } from "zigbee-herdsman-converters";
 import { descriptionProblem } from "../src/description.js";
-import { boundOf, describe, NAMESPACE, pinRequiredOf, reachOf, slug, UNKNOWN_REACH_MS, versionOf } from "../src/herdsman/describe.js";
+import { boundOf, describe, isPlug, NAMESPACE, pinRequiredOf, reachOf, slug, UNKNOWN_REACH_MS, versionOf } from "../src/herdsman/describe.js";
 import { overrideFor, type Override } from "../src/herdsman/overrides.js";
 import { DRY_RUN_MS } from "../src/herdsman/recording.js";
 import { extensionProblems } from "../src/vocabulary.js";
-import { CLIMATE_SENSOR, CLIMATE_SENSOR_ROW, devices, LIGHT, LIGHT_ROW, LOCK, LOCK_ROW, PRESENCE, PRESENCE_ROW, PUSHER, PUSHER_ROW, row, SENSOR,
+import { CLIMATE_SENSOR, CLIMATE_SENSOR_ROW, devices, LIGHT, LIGHT_ROW, LOCK, LOCK_ROW, PLUG, PLUG_ROW, PRESENCE, PRESENCE_ROW, PUSHER, PUSHER_ROW, row, SENSOR,
   SENSOR_ROW,
   withAttributes } from "./zigbee-devices.js";
 
@@ -85,6 +85,56 @@ group("describe: the closed vocabulary where a definition matches it exactly", (
     expect(d.actions.find((a) => a.action === `${cap}.set_lower`)!.args).toEqual({ value: { min: 50, max: 100, step: 1 } });
     expect(d.actions.find((a) => a.action === `${cap}.set_reverse`)!.args).toEqual({ value: ["ON", "OFF"] });
     expect(extensionOf(d)!.keys!.map((k) => k.key.slice(cap.length + 1))).toEqual(["mode", "lower", "upper", "delay", "reverse", "touch"]);
+  });
+
+  it("proposes a metering plug a socket, from the model database's word for it (the plug rehearsal's F1)", async () => {
+    const { description: d, definition } = await described(PLUG, [PLUG_ROW]);
+    expect(definition.model).toBe("TS011F_plug_1");
+    expect(d.capabilities).toContain("onoff");
+    expect(d).toMatchObject({ proposedClass: "socket", classEvidence: "model_db" });
+  });
+
+  it("proposes a socket by a whitelabel's own description, which the converters put in the definition's", async () => {
+    const { description: d, definition } = await described("0x00000000000a0011",
+      [row(11, "0x00000000000a0011", "Router", "TS011F", "_TZ3210_jlf1nepw", "Mains (single phase)", [0, 3, 4, 5, 6, 0x702, 0xb04])]);
+    expect(definition.description).toBe("Smart Zigbee Socket");
+    expect(d).toMatchObject({ proposedClass: "socket", classEvidence: "model_db" });
+  });
+
+  it("proposes no class for an on/off relay, a socket-named relay module or the button pusher: evidence none, nothing found", async () => {
+    const relay = await described("0x00000000000a0012",
+      [row(12, "0x00000000000a0012", "Router", "TS0001", "_TZ3000_galatea1", "Mains (single phase)", [0, 3, 4, 5, 6])]);
+    expect(relay.definition.description).toBe("1 gang switch");
+    expect(relay.description).toMatchObject({ proposedClass: null, classEvidence: "none" });
+    const module = await described("0x00000000000a0013",
+      [row(13, "0x00000000000a0013", "Router", "TS011F", "_TZ3210_cjrngdr3", "Mains (single phase)", [0, 3, 4, 5, 6, 0x702, 0xb04])]);
+    expect(module.definition.description).toBe("Smart Socket Switch Module (with power monitoring)");
+    expect(module.description).toMatchObject({ proposedClass: null, classEvidence: "none" });
+    const pusher = await described(PUSHER);
+    expect(pusher.description).toMatchObject({ proposedClass: null, classEvidence: "none" });
+  });
+
+  it.each([
+    ["Smart plug (with power monitoring)", false, true],
+    ["Zigbee smart socket with power meter", false, true],
+    ["Smart wall outlet", false, true],
+    ["Plug-in smart switch", false, true],
+    ["Smart light socket", false, false],
+    ["Smart lamp plug", false, false],
+    ["Bulb socket adapter", false, false],
+    ["Smart Socket Switch Module (with power monitoring)", false, false],
+    ["Socket relay", false, false],
+    ["Socket relais 16A", false, false],
+    ["Thermostat outlet socket", false, false],
+    ["Thermostatic radiator plug", false, false],
+    ["Water valve socket", false, false],
+    ["Smart circuit breaker socket", false, false],
+    ["DIN rail smart socket", false, false],
+    ["1 gang switch", false, false],
+    ["Zigbee fingerbot plus", false, false],
+    ["Automatically generated definition: smart plug", true, false],
+  ])("takes %j (generated %s) as a plug: %s", (description, generated, plug) => {
+    expect(isPlug({ description, ...(generated ? { generated: true } : {}) } as unknown as Definition)).toBe(plug);
   });
 
   it("describes a lock as the lock capability, requiring a PIN until herdsman read that it does not, and never its PIN codes", async () => {

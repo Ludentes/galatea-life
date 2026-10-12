@@ -5,6 +5,7 @@ import { EventFeed, INTERRUPTED, type Interruption, interruption } from "../poll
 import { clean, jsonLine, shellQuote } from "../print.js";
 import { OWNER_APP, type Steward } from "../servers.js";
 import { askWindow, HISTORY_PAGES, openAskList } from "./reading.js";
+import { runAnswered } from "./scenario.js";
 
 /** How long `do` and `answer` wait for an apply's every step to have a final outcome (the controller's ruling). */
 export const OUTCOME_WITHIN_S = 60;
@@ -60,34 +61,35 @@ export function parseActionArgs(given: string[]): Record<string, unknown> {
 }
 
 /** Text from a server, cleaned for a plain line (review M6). */
-const t = (v: unknown): string => clean(String(v));
+export const t = (v: unknown): string => clean(String(v));
 
-/** A plan's step, as `do` prints it before anything happens: id, target, action, args, tier, verdict and reason, and an answer given. */
+/** A plan's step, as `do` prints it before anything happens: id, target, action, args, tier, verdict and reason, an answer given, and `conditional` for a scenario's step inside an `if`. */
 export function stepLine(s: Body): string {
   const verdict = `${t(s.verdict)}${s.reason ? ` (${t(s.reason)})` : ""}${s.answer ? `, answered ${t(s.answer)}` : ""}`;
   // A define's step (confirm_define) has no target: what it asks is its diff.
-  if (s.target === undefined && s.diff !== undefined) return [`  ${t(s.step_id)}`, "define", diffText(s.diff), verdict].join("  ");
-  return [`  ${t(s.step_id)}`, t(s.target), t(s.action), JSON.stringify(s.args ?? {}), `tier ${t(s.tier)}`, verdict].join("  ");
+  if (isDefineStep(s)) return [`  ${t(s.step_id)}`, "define", diffText(s.diff), verdict].join("  ");
+  // A scenario's step inside an `if` is planned as if its branch were taken (steward, *Scenario runs*).
+  return [`  ${t(s.step_id)}`, t(s.target), t(s.action), JSON.stringify(s.args ?? {}), `tier ${t(s.tier)}`, verdict, ...(s.conditional === true ? ["conditional"] : [])].join("  ");
 }
 
-/** A define's confirmation (`confirm_define`): no target, action, args or tier; what it asks is its diff. */
-const isDefineStep = (s: Body): boolean => s.reason === "confirm_define" || (s.target === undefined && s.diff !== undefined);
+/** A define's confirmation, told by its reason (`confirm_define`): no target, action, args or tier; what it asks is its diff. */
+const isDefineStep = (s: Body): boolean => s.reason === "confirm_define";
 
 /** A diff as a plain line shows it: a string (or `withheld`, GA-AUTH-7) cleaned, anything else as JSON, cleaned. */
 const diffText = (d: unknown): string => clean(typeof d === "string" ? d : JSON.stringify(d ?? null));
 
 /**
- * An asked step as an `ask` event carries it (the steward 0.11 draft, GA-CONF-5): no verdict, its
+ * An asked step as an `ask` event carries it (GA-CONF-5): no verdict, its
  * reason in brackets. A define's entry, `{ step_id, reason: "confirm_define", diff }`, shows as
  * `define <diff>`. Withheld args or diff values (GA-AUTH-7) print as the plan's step line prints them.
  */
-function askedStepLine(s: Body): string {
+export function askedStepLine(s: Body): string {
   if (isDefineStep(s)) return [`  ${t(s.step_id)}`, "define", diffText(s.diff), `(${t(s.reason ?? "confirm_define")})`].join("  ");
   return [`  ${t(s.step_id)}`, t(s.target), t(s.action), JSON.stringify(s.args ?? {}), `tier ${t(s.tier)}`, s.reason ? `(${t(s.reason)})` : ""].filter((x) => x).join("  ");
 }
 
 /** An outcome's line: step, target, outcome, reason and detail. */
-function outcomeLine(o: Body): string {
+export function outcomeLine(o: Body): string {
   return `  ${t(o.step_id)}  ${t(o.target)}  ${t(o.outcome)}${o.reason ? ` (${t(o.reason)})` : ""}${o.detail ? `: ${t(o.detail)}` : ""}`;
 }
 
@@ -95,7 +97,7 @@ function outcomeLine(o: Body): string {
 const dispatchable = (steps: Body[]): string[] => steps.filter((s) => s.verdict === "op" || s.verdict === "ask").map((s) => String(s.step_id));
 
 /** The line that answers `steps` of `plan`. */
-const answerLine = (plan: string, steps: string[], word = "yes"): string => ["galatea", "answer", plan, ...steps, word].map(shellQuote).join(" ");
+export const answerLine = (plan: string, steps: string[], word = "yes"): string => ["galatea", "answer", plan, ...steps, word].map(shellQuote).join(" ");
 
 /**
  * An answer sent to the steward: the plan as it returns it. A held answer (`pending: true`, its store
@@ -151,12 +153,33 @@ export async function doAction(ctx: Ctx, target: string | undefined, action: str
     ctx.say.err("galatea do: no step of the plan would be dispatched; nothing was applied");
     return 2;
   }
+  const settled = await settleAsks(ctx, steward, feed, plan, "do", yes);
+  if (settled !== undefined) return settled;
+  return applyAndWait(ctx, steward, feed, plan.plan_id, new Set(), dispatchable(steps));
+}
+
+/**
+ * A plan's asks, settled before anything is applied or started (the design, *Confirmations*), by `do`
+ * and `scenario run` alike. Where the question was put is read from the plan's `ask` event; one put
+ * elsewhere (a `confirm_on`) is said and left there, 1. `--yes` answers the steps asked for their tier
+ * (`confirm_tier`) and nothing else; a step asked for another reason is printed with it and left
+ * open with its `galatea answer` line, 0. Returns the command's exit when it ends here, else
+ * undefined: nothing waits for an answer any more.
+ */
+export async function settleAsks(ctx: Ctx, steward: Steward, feed: EventFeed, plan: Body, command: string, yes: boolean): Promise<Exit | undefined> {
+  const steps: Body[] = plan.steps ?? [];
   const asked = steps.filter((s) => s.verdict === "ask").map((s) => String(s.step_id));
   if (asked.length) {
-    // No ask event seen (a steward that puts none): taken as owner-app's, and the steward judges the answer (GA-CONF-1).
-    const where = (await askedAt(feed, plan.plan_id)) ?? OWNER_APP;
+    // GA-CONF-5 puts an ask event for every such plan; one not found in the read just after the plan (a
+    // missed read) is said, and the question taken as owner-app's: the steward judges the answer (GA-CONF-1).
+    let where = await askedAt(feed, plan.plan_id);
+    if (where === undefined) {
+      ctx.say.err(`galatea ${command}: no ask event was seen for ${plan.plan_id} in the read after the plan; `
+        + "the question is taken as owner-app's (the steward judges the answer)");
+      where = OWNER_APP;
+    }
     if (where !== OWNER_APP) {
-      ctx.say.err(`galatea do: the question is put on ${where}, not on owner-app (owner-app's confirm_on): answer it there; `
+      ctx.say.err(`galatea ${command}: the question is put on ${where}, not on owner-app (owner-app's confirm_on): answer it there; `
         + `the plan ${plan.plan_id} stays open until ${plan.expires_at}, and only this tool's credential can apply it`);
       return 1;
     }
@@ -187,7 +210,7 @@ export async function doAction(ctx: Ctx, target: string | undefined, action: str
       return 0;
     }
   }
-  return applyAndWait(ctx, steward, feed, plan.plan_id, new Set(), dispatchable(steps));
+  return undefined;
 }
 
 /**
@@ -276,37 +299,12 @@ async function applyWatched(ctx: Ctx, steward: Steward, feed: EventFeed, planId:
 }
 
 /**
- * The answers that stand for a plan's steps, from the `answer` events in the steward's history since
- * the plan was made (its `expires_at` less `ask_expiry_s`, a minute's margin) to a minute past now, a
- * later answer replacing an earlier one. Read only when the plan the steward returned does not mark
- * its answered steps; a read that fails leaves them as they were (still waiting).
- */
-async function earlierAnswers(ctx: Ctx, steward: Steward, plan: Body): Promise<Map<string, unknown>> {
-  const found = new Map<string, unknown>();
-  try {
-    const house = need(await steward.describe(), "steward", "describe");
-    const made = Date.parse(String(plan.expires_at)) - Number(house.home?.ask_expiry_s ?? 300) * 1000;
-    const range = { from: new Date(made - 60_000).toISOString(), to: new Date(ctx.now() + 60_000).toISOString() };
-    let after: number | undefined;
-    for (let page = 0; page < HISTORY_PAGES; page++) {
-      const hist = need(await steward.history({ ...range, ...(after !== undefined ? { after_seq: after } : {}) }), "steward", "history");
-      const got: Body[] = hist.events ?? [];
-      for (const e of got) if (e.type === "answer" && e.plan_id === plan.plan_id) for (const [id, w] of Object.entries(e.answers ?? {})) found.set(id, w);
-      if (hist.more !== true || !got.length) break;
-      after = Number(got.at(-1)!.seq);
-    }
-  } catch (err) {
-    ctx.say.err(`galatea answer: the earlier answers were not read (${err instanceof Error ? err.message : String(err)})`);
-  }
-  return found;
-}
-
-/**
  * `galatea answer <plan> <step>... yes|no` (the design, *Confirmations*): answers the named steps from
  * `owner-app` and prints the plan as `answer` returns it. A plan made at `owner-app` is the tool's own
  * (only its credential is bound there), so once nothing in it waits for an answer it applies it and
  * waits for the outcome, as `do` does; a step answered `no` is named and ends skipped(not_confirmed),
- * the rest applied (review M2). A plan made elsewhere is applied by whoever made it (GA-STW-5).
+ * the rest applied (review M2). A scenario's plan is started instead, and its run followed, as
+ * `scenario run` does (`runAnswered`). A plan made elsewhere is applied by whoever made it (GA-STW-5).
  */
 export async function answer(ctx: Ctx, positionals: string[]): Promise<Exit> {
   const word = positionals.at(-1);
@@ -318,24 +316,22 @@ export async function answer(ctx: Ctx, positionals: string[]): Promise<Exit> {
   const steward = await ctx.steward();
   const plan = await sendAnswer(steward, planId, steps, word);
   ctx.done = true;
-  // A step the steward returns without its `answer` (the field is the reference build's; the standard says "the plan, updated")
-  // counts as answered with what was just sent, so a steward that leaves it out still has its plan applied.
-  // Whether this steward marks answered steps: the steps just answered tell.
-  const marks = ((plan.steps ?? []) as Body[]).some((s) => steps.includes(s.step_id) && s.answer !== undefined);
-    let all: Body[] = ((plan.steps ?? []) as Body[]).map((s) => (s.answer === undefined && steps.includes(s.step_id) ? { ...s, answer: word } : s));
+  // The plan returned marks each asked step with the answer that stands for it (steward, *Steps*): the
+  // steps just answered among them. One without its mark is a malformed reply; the answer was taken.
+  const all: Body[] = plan.steps ?? [];
   if (ctx.json) ctx.say.out(jsonLine(plan));
-  else {
+  const unmarked = steps.filter((id) => all.find((s) => s.step_id === id)?.answer === undefined);
+  if (unmarked.length) {
+    throw new Error(`the steward's answer returned ${planId} with no answer on ${unmarked.join(", ")} (steward, Steps): `
+      + "the answer was taken; galatea asks shows the plan");
+  }
+  if (!ctx.json) {
     ctx.say.out(`answered ${word}: ${steps.join(", ")}`);
     for (const s of all.filter((x) => steps.includes(x.step_id))) ctx.say.out(stepLine(s));
   }
   if (plan.endpoint !== OWNER_APP) {
     if (!ctx.json) ctx.say.out(`the plan was made at ${plan.endpoint}: whoever made it applies it`);
     return 0;
-  }
-  // Without the field, a step answered in an earlier run is read from history's answer events (review M7).
-  if (!marks && all.some((s) => s.verdict === "ask" && s.answer === undefined)) {
-    const earlier = await earlierAnswers(ctx, steward, plan);
-    all = all.map((s) => (s.answer === undefined && earlier.has(String(s.step_id)) ? { ...s, answer: earlier.get(String(s.step_id)) } : s));
   }
   const asked = all.filter((s) => s.verdict === "ask");
   const waiting = asked.filter((s) => s.answer === undefined).map((s) => String(s.step_id));
@@ -351,9 +347,15 @@ export async function answer(ctx: Ctx, positionals: string[]): Promise<Exit> {
   // The owner declined the question, not the request: the plan is applied all the same, each declined
   // step ending skipped(not_confirmed) and the steps that needed no answer running (review M2).
   const declined = asked.filter((s) => s.answer === "no").map((s) => String(s.step_id));
-  if (declined.length) {
-    if (ctx.json) ctx.say.out(jsonLine({ galatea: "declined", plan_id: planId, step_ids: declined }));
-    else ctx.say.out(`declined: ${declined.join(", ")}; applied, so the plan is spent: each declined step ends skipped (not_confirmed)`);
+  // The line names only the steps this answer declined (review M3); an earlier no still counts as the owner's.
+  const declinedNow = declined.filter((id) => steps.includes(id));
+  // A scenario's plan is started with scenario_run, never applied (steward, *Scenario runs*); its run says
+  // what was declined once it has started.
+  const scenario = typeof plan.request?.scenario === "string" ? String(plan.request.scenario) : undefined;
+  if (scenario !== undefined) return runAnswered(ctx, steward, planId, scenario, new Set(declined), declinedNow);
+  if (declinedNow.length) {
+    if (ctx.json) ctx.say.out(jsonLine({ galatea: "declined", plan_id: planId, step_ids: declinedNow }));
+    else ctx.say.out(`declined: ${declinedNow.join(", ")}; applied, so the plan is spent: each declined step ends skipped (not_confirmed)`);
   }
   const feed = await EventFeed.start(steward, "steward");
   return applyAndWait(ctx, steward, feed, planId, new Set(declined), dispatchable(all));
@@ -363,34 +365,45 @@ export async function answer(ctx: Ctx, positionals: string[]): Promise<Exit> {
  * `galatea asks` (the design, *Confirmations*): the `ask` events put on `owner-app` in the steward's
  * history over the last `ask_expiry_s`, less the steps a later `answer` answered (as `status` counts
  * them); each with its plan, where and when it was put, until when it is open, the steps waiting, what
- * is asked when the event carries its steps (steward 0.11; the fields are looked for, the steward's
- * version is not), and the line that answers it. A plan applied or expired in the window is not seen.
+ * is asked (the event's `steps`, which GA-CONF-5 gives a read at the ask's endpoint: one entry per
+ * asked step), and the line that answers the steps shown. A waiting step the event shows nothing for
+ * (no `steps`, none for it, or an entry with no target that is not a define's) makes the event
+ * malformed: said on its line and on stderr, never offered in the answer line, the rest shown, ending 1.
+ * A plan applied or expired in the window is not seen.
  */
 export async function asks(ctx: Ctx): Promise<Exit> {
   const house = need(await (await ctx.steward()).describe(), "steward", "describe");
   const expiry = Number(house.home?.ask_expiry_s ?? 300);
   const window = await askWindow(ctx, expiry);
   const open = openAskList(window.events);
+  let malformed = false;
   for (const { event: e, waiting } of open) {
+    const carried = new Map<string, Body>((Array.isArray(e.steps) ? e.steps as Body[] : [])
+      .filter((s) => s && typeof s === "object" && (typeof s.target === "string" || isDefineStep(s)))
+      .map((s) => [String(s.step_id), s]));
+    const unshown = waiting.filter((id) => !carried.has(id));
+    const shown = waiting.filter((id) => carried.has(id));
+    if (unshown.length) {
+      malformed = true;
+      ctx.say.err(`galatea asks: the steward's ask event for ${t(e.plan_id)} is malformed: no step shown for ${unshown.map(t).join(", ")} (GA-CONF-5)`);
+    }
     const openUntil = typeof e.time === "string" ? new Date(Date.parse(e.time) + expiry * 1000).toISOString() : "unknown";
-    const line = answerLine(String(e.plan_id), waiting);
+    const line = shown.length ? answerLine(String(e.plan_id), shown) : undefined;
     if (ctx.json) {
       ctx.say.out(jsonLine({ galatea: "ask", plan_id: e.plan_id, ...(e.run_id !== undefined ? { run_id: e.run_id } : {}), waiting, endpoint: e.endpoint,
-        asked_at: e.time ?? null, open_until: openUntil, event: e }));
+        asked_at: e.time ?? null, open_until: openUntil, ...(unshown.length ? { not_shown: unshown } : {}), event: e }));
       continue;
     }
-    // A scenario's re-ask may name its run (the steward 0.11 draft).
+    // A scenario's re-ask may name its run (GA-CONF-5).
     const run = e.run_id !== undefined ? `, run ${t(e.run_id)}` : "";
     ctx.say.out(`plan ${t(e.plan_id)}  asked on ${t(e.endpoint)} at ${t(e.time ?? "an unknown time")}${run}, open until ${openUntil}  waiting: ${waiting.map(t).join(", ")}`);
-    const carried = Array.isArray(e.steps) ? (e.steps as Body[]).filter((s) => s && typeof s === "object" && (typeof s.target === "string" || isDefineStep(s))) : [];
-    if (carried.length) {
-      for (const s of carried) if (s.step_id === undefined || waiting.includes(s.step_id)) ctx.say.out(askedStepLine(s));
-    } else {
-      ctx.say.out("  what is asked: not carried by this steward's ask event (steward 0.11 carries it)");
+    for (const id of waiting) {
+      const s = carried.get(id);
+      ctx.say.out(s ? askedStepLine(s) : `  ${t(id)}: what is asked is missing from the steward's ask event (GA-CONF-5); not answerable here`);
     }
-    ctx.say.out(`  ${line}`);
+    if (line) ctx.say.out(`  ${line}`);
   }
   if (!open.length && !ctx.json) ctx.say.out("no ask waits on owner-app");
   if (window.partial) ctx.say.err(`galatea asks: read from the first ${HISTORY_PAGES} pages of history only; an ask past them is not shown`);
-  return 0;
+  return malformed ? 1 : 0;
 }

@@ -57,6 +57,11 @@ export const LOCK = "0x00000000000a0005";
 export const LOCK_ROW = device(6, LOCK, "Router", "test-lock", "galatea-test", "Mains (single phase)",
   endpoint([0, 0x101], [], { closuresDoorLock: { attributes: { numOfPinUsersSupported: 10 } } }));
 
+/** A metering smart plug, as the bench's TS011F (_TZ3210_ohifjqrm) was interviewed (2026-10-11): a mains router. */
+export const PLUG = "0x00000000000a0007";
+export const PLUG_ROW = device(8, PLUG, "Router", "TS011F", "_TZ3210_ohifjqrm", "Mains (single phase)",
+  endpoint([0, 3, 4, 5, 6, 0x702, 0xb04, 0xe000, 0xe001], [10, 25]));
+
 /** Opens a herdsman database holding `rows` and the coordinator, as herdsman's own models see it; `close` removes it. */
 export function devices(rows: Row[] = [SENSOR_ROW, PUSHER_ROW, LIGHT_ROW]): { get(ieee: string): Device; close(): void } {
   const dir = mkdtempSync(join(tmpdir(), "zigbee-devices-"));

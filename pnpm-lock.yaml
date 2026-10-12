@@ -27,8 +27,8 @@ importers:
   reference/applier:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.4
+        version: 0.1.4
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -52,8 +52,8 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@ludentes/galatea-life-harness':
-        specifier: ^0.1.4
-        version: 0.1.4(hono@4.13.9)
+        specifier: ^0.1.7
+        version: 0.1.7(hono@4.13.9)
       '@modelcontextprotocol/client':
         specifier: 2.2.0
         version: 2.2.0
@@ -61,13 +61,20 @@ importers:
         specifier: 8.23.1
         version: 8.23.1
 
-  reference/install: {}
+  reference/install:
+    devDependencies:
+      '@ludentes/galatea-life-sim':
+        specifier: ^0.1.2
+        version: 0.1.2(hono@4.13.9)
+      '@ludentes/galatea-life-test-clock':
+        specifier: ^0.1.0
+        version: 0.1.0
 
   reference/owner-tool:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.4
+        version: 0.1.4
       '@modelcontextprotocol/client':
         specifier: 2.2.0
         version: 2.2.0
@@ -79,11 +86,11 @@ importers:
         specifier: workspace:*
         version: link:../applier
       '@ludentes/galatea-life-harness':
-        specifier: ^0.1.4
-        version: 0.1.4(hono@4.13.9)
+        specifier: ^0.1.7
+        version: 0.1.7(hono@4.13.9)
       '@ludentes/galatea-life-sim':
-        specifier: ^0.1.1
-        version: 0.1.1(hono@4.13.9)
+        specifier: ^0.1.2
+        version: 0.1.2(hono@4.13.9)
       '@ludentes/galatea-life-steward':
         specifier: workspace:*
         version: link:../steward
@@ -96,12 +103,18 @@ importers:
       '@modelcontextprotocol/server':
         specifier: 2.2.0
         version: 2.2.0
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: 3.0.1
+        version: 3.0.1(ajv@8.20.0)
 
   reference/pc-bridge:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.4
+        version: 0.1.4
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -147,8 +160,8 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.4
+        version: 0.1.4
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -172,20 +185,23 @@ importers:
         specifier: 0.5.8
         version: 0.5.8
       '@ludentes/galatea-life-harness':
-        specifier: ^0.1.4
-        version: 0.1.4(hono@4.13.9)
+        specifier: ^0.1.7
+        version: 0.1.7(hono@4.13.9)
       '@ludentes/galatea-life-sim':
-        specifier: ^0.1.1
-        version: 0.1.1(hono@4.13.9)
+        specifier: ^0.1.2
+        version: 0.1.2(hono@4.13.9)
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
 
   reference/wake-relay:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.4
+        version: 0.1.4
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -196,8 +212,8 @@ importers:
   reference/zigbee-bridge:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.2
-        version: 0.1.2
+        specifier: ^0.1.4
+        version: 0.1.4
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -411,18 +427,18 @@ packages:
   '@ludentes/galatea-life-binding@0.1.0':
     resolution: {integrity: sha512-73TFhbnyZt8pLNk59L7y5mWEgUSC++b2HPqSZLcB4JS8uMZDmuR1r3WUZ9R9OSJv/L8FLXCvG5RYOYdAZAoVsA==}
 
-  '@ludentes/galatea-life-harness@0.1.4':
-    resolution: {integrity: sha512-cbAyHWbci6qkjkaeFR5SxL1SHxJw6FeYNBDgNFilrNh4O7F2Q/713Ceer9TjgUKgrpu4CHpHZpwBoYAcG5T9tA==}
+  '@ludentes/galatea-life-harness@0.1.7':
+    resolution: {integrity: sha512-RMj4ZSefV5Q/CLNqm/FHMBXSZiBqAcOK2KTnLEdvXwfTDllv0ri13Ihi05s8eGUMIgOooS2RYdFykCBET+OygQ==}
     hasBin: true
 
-  '@ludentes/galatea-life-schemas@0.1.1':
-    resolution: {integrity: sha512-IE9nIA01JPOPzODh9uBa/60FhrwSQfCsxLvldEVtrok3OA7tvwnId6d5Lc6gB3Q9jP5l2UQ5P+qHMgxTOzmn8g==}
+  '@ludentes/galatea-life-schemas@0.1.3':
+    resolution: {integrity: sha512-6kYs276srL5Q1i5u7Bb3+bK2qlukAKncmJSfESk8LK+wikUBLhC+o1juhJO3fCgS7tNqppAs6JqrtJYaSLJ6Ig==}
 
-  '@ludentes/galatea-life-schemas@0.1.2':
-    resolution: {integrity: sha512-FeHtL4+rUoC+F2iBXMf1qG3XNlV58Xv/KAEo9Of6nHhaeAZj07yZfZtIg58N632mmVVwq7G1UdY/kS82vYNBgw==}
+  '@ludentes/galatea-life-schemas@0.1.4':
+    resolution: {integrity: sha512-uSTUZAMzN+tV1ut0JQWhXqI7owEyezZfn6nyzFpbMjP4VeKUz5XA2rMBiZM834j4nZDI8P92g49ZFFWS8xxTgQ==}
 
-  '@ludentes/galatea-life-sim@0.1.1':
-    resolution: {integrity: sha512-M8gmlQ37b0Ax+Gkt1Qj0r6gP931arSk7RP5jSiROZDIHBMccwxxBpCVs2LHsAoieZ4ayjlPkTvSQ9KDG7G1t7A==}
+  '@ludentes/galatea-life-sim@0.1.2':
+    resolution: {integrity: sha512-fLp5u9r6zt5Lke02aP3lYJpGlus5JrNwoxxlnM1Vkq0qhxZ2dWwWzQgGFk4va/FIWKu9Act4OdLJ/VejRXvWdw==}
 
   '@ludentes/galatea-life-test-clock@0.1.0':
     resolution: {integrity: sha512-1+svmsegGVd7o3Oi5VjWRLCsvHGCBE2/sJukwtPdNeriPlvOKnJ123t2eIKgyC9+DLxwDKQXBKu2SXX/v9b1tw==}
@@ -1502,10 +1518,10 @@ snapshots:
 
   '@ludentes/galatea-life-binding@0.1.0': {}
 
-  '@ludentes/galatea-life-harness@0.1.4(hono@4.13.9)':
+  '@ludentes/galatea-life-harness@0.1.7(hono@4.13.9)':
     dependencies:
-      '@ludentes/galatea-life-schemas': 0.1.2
-      '@ludentes/galatea-life-sim': 0.1.1(hono@4.13.9)
+      '@ludentes/galatea-life-schemas': 0.1.3
+      '@ludentes/galatea-life-sim': 0.1.2(hono@4.13.9)
       '@ludentes/galatea-life-test-clock': 0.1.0
       '@modelcontextprotocol/client': 2.2.0
       mqtt: 5.16.0
@@ -1517,20 +1533,20 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@ludentes/galatea-life-schemas@0.1.1':
+  '@ludentes/galatea-life-schemas@0.1.3':
     dependencies:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
 
-  '@ludentes/galatea-life-schemas@0.1.2':
+  '@ludentes/galatea-life-schemas@0.1.4':
     dependencies:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
 
-  '@ludentes/galatea-life-sim@0.1.1(hono@4.13.9)':
+  '@ludentes/galatea-life-sim@0.1.2(hono@4.13.9)':
     dependencies:
       '@ludentes/galatea-life-binding': 0.1.0
-      '@ludentes/galatea-life-schemas': 0.1.1
+      '@ludentes/galatea-life-schemas': 0.1.3
       '@ludentes/galatea-life-test-clock': 0.1.0
       '@modelcontextprotocol/node': 2.1.0(@modelcontextprotocol/server@2.2.0)(hono@4.13.9)
       '@modelcontextprotocol/server': 2.2.0

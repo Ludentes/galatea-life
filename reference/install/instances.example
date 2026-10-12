@@ -2,7 +2,11 @@
 # Each gets a role and a schema of this name. The name is the id the build
 # has on the wire: lower case letters, digits and `_`, starting with a letter.
 # A build that can run more than once in a home gets one line per instance.
+# The applier and each `bridge_*` line also get a broker identity; no other build has one.
+# `watch`, or `watch-<n>` for each more at once, is a read-only broker identity for a tool that
+# only reads (README, *Watchers*): no role, no schema.
 applier
 steward
 # voice_kitchen
 # bridge_zigbee
+# watch

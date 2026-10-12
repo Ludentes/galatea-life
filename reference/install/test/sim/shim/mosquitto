@@ -1,0 +1,29 @@
+#!/bin/sh
+# Test only: runs where broker-init.sh ends (`exec mosquitto -c ...`), after it wrote the password
+# and access files. Adds:
+# - to bridge_sim, its test transport's topics, {root}/test/bridge_sim/#;
+# - a second identity, sim_control, the test's own client on those topics, its password from
+#   /run/sim-secrets/sim_control, hashed in a file of its own and appended, never on a command line.
+# A second `user` line naming bridge_sim adds to that identity's grants.
+set -eu
+RUN=/mosquitto/run
+ROOT="${GALATEA_ROOT:-galatea}"
+T="$ROOT/test/bridge_sim/#"
+[ -s /run/sim-secrets/sim_control ] || { echo "broker-sim: no /run/sim-secrets/sim_control" >&2; exit 1; }
+umask 077
+printf 'sim_control:%s\n' "$(cat /run/sim-secrets/sim_control)" >"$RUN/passwd.sim"
+mosquitto_passwd -U "$RUN/passwd.sim"
+cat "$RUN/passwd.sim" >>"$RUN/passwd"
+rm -f "$RUN/passwd.sim"
+{
+  echo
+  echo "# Test only (compose.sim.yaml): the simulated bridge's test transport."
+  echo "user bridge_sim"
+  echo "topic readwrite $T"
+  echo
+  echo "user sim_control"
+  echo "topic readwrite $T"
+} >>"$RUN/acl"
+chown -R mosquitto:mosquitto "$RUN"
+echo "broker-sim: the test transport's grants added (bridge_sim, sim_control)"
+exec /usr/sbin/mosquitto "$@"

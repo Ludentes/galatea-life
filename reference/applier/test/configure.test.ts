@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { Mutant, type Mutation, mutantOf } from "../src/mutations.js";
 import { emptyConfig, modelKey } from "../src/config/config.js";
 import { planChanges, tierIn, type Change, type DeviceInfo } from "../src/config/configure.js";
 
-const ctx = { levels: ["Act" as const], underHarness: true, ownerCredential: "owner-credential" };
+const ctx = { levels: ["Act" as const], underHarness: true, ownerCredential: "owner-credential", mutant: Mutant.none };
 /** A lamp as the model holds it: what configure must know of it. */
 const LAMP: DeviceInfo = { capabilities: ["onoff"], sensor_keys: [], actions: ["onoff.turn_on", "onoff.turn_off"], reach_s: 1,
   personal: [], self_changing: [], in_devices: true, stable_identifier: "test:lamp", bridge: "hall" };
@@ -152,8 +153,95 @@ describe("planChanges", () => {
     expect(moved.replaced).toEqual([{ device: "porch:lamp", replaces: "hall:lamp" }]);
     expect(moved.draft.previous.get("hall:lamp") ?? []).toEqual([]);
     // `replaces-without-rules`: the id alone.
-    expect(planChanges(held, [replace("hall:lamp-2")], { ...at, mutation: "replaces-without-rules" as const })
+    expect(planChanges(held, [replace("hall:lamp-2")], { ...at, mutant: mutantOf("replaces-without-rules") })
       .draft.declarations.get("hall:lamp")).toBeUndefined();
+  });
+
+  it("keeps a tier a replacement's manifest would lower, as the owner's value the owner may delete; a raise kept; a lowered tier on a changed tool falls back (GA-DESC-11)", () => {
+    const go = "org.galatea.test.box.go";
+    const pause = "media.pause";
+    const v1: DeviceInfo = { ...LAMP, capabilities: ["media"], actions: [pause, go], in_devices: false, stable_identifier: "plugin:box@1",
+      requested_tiers: { [pause]: "no_voice", [go]: "no_voice" }, fingerprints: { [pause]: "p1", [go]: "g1" } };
+    const v2: DeviceInfo = { ...v1, in_devices: true, stable_identifier: "plugin:box@2",
+      requested_tiers: { [pause]: "confirm", [go]: "reversible" }, fingerprints: { [pause]: "p2", [go]: "g2" } };
+    const at = { ...ctx, devices: new Map([["hall:box", v1], ["hall:box-2", v2]]) };
+    const adopt = (value: Record<string, unknown>): Change => ({ op: "upsert", kind: "adopt", value });
+    const held = planChanges(emptyConfig(), [adopt({ device: "hall:box", class: "player" })], at).draft;
+    expect([tierIn(held, "hall:box", pause, { fingerprint: "p1", requested: "no_voice" }), tierIn(held, "hall:box", go, { fingerprint: "g1", requested: "no_voice" })]).toEqual(["no_voice", "no_voice"]);
+    const r = planChanges(held, [adopt({ device: "hall:box-2", class: "player", replaces: "hall:box" })], at);
+    // Each keeps no_voice, stored as the owner's value, on its new declarations.
+    expect(r.draft.declarations.get("hall:box")).toEqual({ tiers: { [pause]: "no_voice", [go]: "no_voice" }, tier_basis: { [go]: "g2" } });
+    expect([tierIn(r.draft, "hall:box", pause, { fingerprint: "p2", requested: "confirm" }), tierIn(r.draft, "hall:box", go, { fingerprint: "g2", requested: "reversible" })])
+      .toEqual(["no_voice", "no_voice"]);
+    // Deleted by the owner, each takes the new manifest's formula: the standard action its floor, the extension action confirm.
+    const after = { ...ctx, devices: new Map([["hall:box", v2]]) };
+    const back = planChanges(r.draft, [{ op: "delete", kind: "tier", value: { device: "hall:box", action: pause } },
+      { op: "delete", kind: "tier", value: { device: "hall:box", action: go } }], after).draft;
+    expect([tierIn(back, "hall:box", pause, { fingerprint: "p2", requested: "confirm" }), tierIn(back, "hall:box", go, { fingerprint: "g2", requested: "reversible" })])
+      .toEqual(["confirm", "confirm"]);
+    // `keeps-a-manifest-kept-tier`: kept as a pin no delete reaches.
+    const pinned = planChanges(held, [adopt({ device: "hall:box-2", class: "player", replaces: "hall:box" })], { ...at, mutant: mutantOf("keeps-a-manifest-kept-tier") }).draft;
+    const stuck = planChanges(pinned, [{ op: "delete", kind: "tier", value: { device: "hall:box", action: pause } }], after).draft;
+    expect(tierIn(stuck, "hall:box", pause, { fingerprint: "p2", requested: "confirm" })).toBe("no_voice");
+    // A tier the owner set below the default on the old declarations falls back on the new tool; a raise is kept.
+    const v3: DeviceInfo = { ...v2, stable_identifier: "plugin:box@3", requested_tiers: { [pause]: "reversible", [go]: "reversible" },
+      fingerprints: { [pause]: "p3", [go]: "g3" } };
+    const v0: DeviceInfo = { ...v3, in_devices: false, stable_identifier: "plugin:box@0", fingerprints: { [pause]: "p0", [go]: "g0" } };
+    const low = { ...ctx, devices: new Map([["hall:box", v0], ["hall:box-3", v3]]) };
+    const lowered = planChanges(emptyConfig(), [adopt({ device: "hall:box", class: "player", declarations: { tiers: { [go]: "reversible", [pause]: "confirm" } } })], low).draft;
+    const swapped = planChanges(lowered, [adopt({ device: "hall:box-3", class: "player", replaces: "hall:box" })], low).draft;
+    expect([tierIn(swapped, "hall:box", go, { fingerprint: "g3", requested: "reversible" }), tierIn(swapped, "hall:box", pause, { fingerprint: "p3", requested: "reversible" })])
+      .toEqual(["confirm", "confirm"]);
+    // `keeps-a-lowered-tier`: the lowering set again on the new tool. `lowers-by-a-new-manifest`: the lower formula taken.
+    const kept = planChanges(lowered, [adopt({ device: "hall:box-3", class: "player", replaces: "hall:box" })], { ...low, mutant: mutantOf("keeps-a-lowered-tier") }).draft;
+    expect(tierIn(kept, "hall:box", go, { fingerprint: "g3", requested: "reversible" })).toBe("reversible");
+    const taken = planChanges(held, [adopt({ device: "hall:box-2", class: "player", replaces: "hall:box" })], { ...at, mutant: mutantOf("lowers-by-a-new-manifest") }).draft;
+    expect([tierIn(taken, "hall:box", pause, { fingerprint: "p2", requested: "confirm" }), tierIn(taken, "hall:box", go, { fingerprint: "g2", requested: "reversible" })])
+      .toEqual(["confirm", "confirm"]);
+  });
+
+  it("reads a hosted device's tiers through its host: the host's infrastructure, the owner's or else its bridge's proposal, re-derived when the flag changes (GA-DESC-3, GA-DESC-13)", () => {
+    const go = "org.galatea.test.box.go";
+    const PC: DeviceInfo = { ...LAMP, capabilities: ["power"], actions: ["power.sleep", "power.shutdown"], stable_identifier: "pc:1",
+      proposed_class: "computer" };
+    const BOX: DeviceInfo = { ...LAMP, capabilities: ["media", "power"], actions: ["media.pause", "power.shutdown", go],
+      stable_identifier: "plugin:box@1", host: "hall:pc", requested_tiers: { "power.shutdown": "reversible", [go]: "reversible" },
+      fingerprints: { [go]: "g1" } };
+    const devices = (pc: DeviceInfo) => new Map([["hall:pc", pc], ["hall:box", BOX]]);
+    const at = { ...ctx, devices: devices(PC) };
+    const up = (kind: string, value: Record<string, unknown>): Change => ({ op: "upsert", kind, value });
+    const adopted = planChanges(emptyConfig(), [up("adopt", { device: "hall:pc", class: "computer" }), up("adopt", { device: "hall:box", class: "player" })], at).draft;
+    const tiers = (c: typeof adopted, o: { pc?: DeviceInfo; mutation?: Mutation } = {}) => {
+      const read = { seen: devices(o.pc ?? PC), mutant: mutantOf(o.mutation) };
+      return [tierIn(c, "hall:box", "power.shutdown", { ...read, requested: "reversible" }), tierIn(c, "hall:box", go, { ...read, requested: "reversible" }),
+        tierIn(c, "hall:pc", "power.sleep", read)];
+    };
+    // A host neither set nor proposed infrastructure: the computer row for the box's shutdown, confirm for the extension action.
+    expect(tiers(adopted)).toEqual(["confirm", "confirm", "reversible"]);
+    // The owner sets it: the box's actions are re-derived in the same set; the box's extension action's floor is no_voice.
+    const infra = planChanges(adopted, [up("infrastructure", { device: "hall:pc", infrastructure: true })], at).draft;
+    expect(tiers(infra)).toEqual(["no_voice", "no_voice", "no_voice"]);
+    expect(() => planChanges(infra, [up("tier", { device: "hall:box", action: go, tier: "reversible" })], at))
+      .toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringContaining("floor is no_voice") }));
+    expect(() => planChanges(infra, [up("tier", { device: "hall:box", action: "power.shutdown", tier: "confirm" })], at))
+      .toThrow(expect.objectContaining({ code: "invalid_request" }));
+    // Judged against the state the set leaves: the flag cleared and the lowering taken, in either order.
+    for (const set of [[up("tier", { device: "hall:box", action: go, tier: "reversible" }), up("infrastructure", { device: "hall:pc", infrastructure: false })],
+      [up("infrastructure", { device: "hall:pc", infrastructure: false }), up("tier", { device: "hall:box", action: go, tier: "reversible" })]]) {
+      expect(tiers(planChanges(infra, set, at).draft)).toEqual(["confirm", "reversible", "reversible"]);
+    }
+    // The bridge's proposal stands for the owner's flag until the owner sets it, either way.
+    const proposed: DeviceInfo = { ...PC, proposed_infrastructure: true };
+    const p = { ...ctx, devices: devices(proposed) };
+    expect(tiers(adopted, { pc: proposed })).toEqual(["no_voice", "no_voice", "no_voice"]);
+    expect(() => planChanges(adopted, [up("tier", { device: "hall:pc", action: "power.sleep", tier: "reversible" })], p))
+      .toThrow(expect.objectContaining({ code: "invalid_request" }));
+    const declined = planChanges(adopted, [up("infrastructure", { device: "hall:pc", infrastructure: false })], p).draft;
+    expect(tiers(declined, { pc: proposed })).toEqual(["confirm", "confirm", "reversible"]);
+    // The mutations: each reads one fact less.
+    expect(tiers(infra, { mutation: "extension-under-the-box" })).toEqual(["no_voice", "confirm", "no_voice"]);
+    expect(tiers(infra, { mutation: "sleeps-the-box-through-its-player" })).toEqual(["reversible", "no_voice", "no_voice"]);
+    expect(tiers(adopted, { pc: proposed, mutation: "sleeps-the-proposed-broker-host" })).toEqual(["confirm", "confirm", "reversible"]);
   });
 
   it("forgets a device that left its bridge's devices, with its adoption, declarations and replaced identifiers; never one still listed (GA-ADOPT-1)", () => {
@@ -271,20 +359,77 @@ describe("declarations", () => {
     expect(() => planChanges(emptyConfig(), changes, at)).toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringMatching(why) }));
   const heater = () => planChanges(emptyConfig(), [adopt("hall:heater", "socket")], at).draft;
 
-  it("raises a tier, never lowers one, and refuses a tier for an action the device does not offer (GA-DESC-3)", () => {
+  it("sets any tier at or above the floor, lowers an owner's raise back to it, and refuses one below it or for an action not offered (GA-DESC-3, GA-DESC-14)", () => {
     const { draft, diff } = planChanges(emptyConfig(), [adopt("hall:gate", "gate"), up("tier", { device: "hall:gate", action: "cover.close", tier: "no_voice" })], at);
     expect(tierIn(draft, "hall:gate", "cover.close")).toBe("no_voice");
     expect(diff).toEqual(["+ adopt hall:gate (gate)", "~ tier hall:gate cover.close no_voice"]);
-    refused([adopt("hall:gate", "gate"), up("tier", { device: "hall:gate", action: "cover.close", tier: "reversible" })], /only raises/);
-    expect(() => planChanges(draft, [up("tier", { device: "hall:gate", action: "cover.close", tier: "confirm" })], at))
-      .toThrow(expect.objectContaining({ code: "invalid_request" }));
+    refused([adopt("hall:gate", "gate"), up("tier", { device: "hall:gate", action: "cover.close", tier: "reversible" })], /floor is confirm/);
+    // The owner's raise is the owner's to bring back down, to the floor.
+    const back = planChanges(draft, [up("tier", { device: "hall:gate", action: "cover.close", tier: "confirm" })], at);
+    expect([back.diff, tierIn(back.draft, "hall:gate", "cover.close")]).toEqual([["~ tier hall:gate cover.close confirm"], "confirm"]);
     refused([up("tier", { device: "hall:lamp", action: "lock.unlock", tier: "confirm" })], /offers no lock.unlock/);
-    refused([del("tier", { device: "hall:lamp", action: "onoff.turn_on" })], /never lowered/);
     // Equal to the floor: kept, so a later change of the floor does not lose it; a line only when what is kept changes.
     const kept = planChanges(heater(), [up("tier", { device: "hall:heater", action: "onoff.turn_off", tier: "reversible" })], at);
     expect(kept.draft.declarations.get("hall:heater")).toEqual({ tiers: { "onoff.turn_off": "reversible" } });
     expect(kept.diff).toEqual(["~ tier hall:heater onoff.turn_off reversible"]);
     expect(planChanges(kept.draft, [up("tier", { device: "hall:heater", action: "onoff.turn_off", tier: "reversible" })], at).diff).toEqual([]);
+  });
+
+  it("deletes the owner's raise of a standard action, back to its default; a delete of none changes nothing (GA-DESC-3, HS35)", () => {
+    const raised = planChanges(emptyConfig(), [adopt("hall:lamp", "light"), up("tier", { device: "hall:lamp", action: "onoff.turn_on", tier: "confirm" })], at).draft;
+    const back = planChanges(raised, [del("tier", { device: "hall:lamp", action: "onoff.turn_on" })], at);
+    expect([back.diff, tierIn(back.draft, "hall:lamp", "onoff.turn_on")]).toEqual([["- tier hall:lamp onoff.turn_on"], "reversible"]);
+    expect(planChanges(back.draft, [del("tier", { device: "hall:lamp", action: "onoff.turn_on" })], at).diff).toEqual([]);
+    // A heater's turn_on deleted back to the table's confirm, never below.
+    const heating = planChanges(heater(), [up("load", { device: "hall:heater", load: "heating" }),
+      up("tier", { device: "hall:heater", action: "onoff.turn_on", tier: "no_voice" })], at).draft;
+    expect(tierIn(planChanges(heating, [del("tier", { device: "hall:heater", action: "onoff.turn_on" })], at).draft, "hall:heater", "onoff.turn_on")).toBe("confirm");
+  });
+
+  it("judges every tier of a change set against the floor the whole set leaves, in any order (GA-DESC-14)", () => {
+    const heating = planChanges(heater(), [up("load", { device: "hall:heater", load: "heating" })], at).draft;
+    const lower = up("tier", { device: "hall:heater", action: "onoff.turn_on", tier: "reversible" });
+    const lighting = up("load", { device: "hall:heater", load: "lighting" });
+    for (const set of [[lower, lighting], [lighting, lower]]) {
+      expect(tierIn(planChanges(heating, set, at).draft, "hall:heater", "onoff.turn_on")).toBe("reversible");
+    }
+    // Raising the load and lowering the tier together is refused, whichever comes first, naming the tier's change.
+    const lit = planChanges(heater(), [up("load", { device: "hall:heater", load: "lighting" })], at).draft;
+    const heat = up("load", { device: "hall:heater", load: "heating" });
+    for (const [set, i] of [[[lower, heat], 0], [[heat, lower], 1]] as const) {
+      expect(() => planChanges(lit, [...set], at)).toThrow(expect.objectContaining({ code: "invalid_request",
+        message: expect.stringMatching(new RegExp(`^changes\\[${i}\\]: .*floor is confirm`)) }));
+    }
+    // A tier a later change of the set removed is not judged.
+    const undone = planChanges(lit, [lower, heat, del("tier", { device: "hall:heater", action: "onoff.turn_on" })], at).draft;
+    expect(tierIn(undone, "hall:heater", "onoff.turn_on")).toBe("confirm");
+  });
+
+  it("refuses the owner's lowering and delete under keeps-an-owner-raise-on-a-set and keeps-an-owner-raise, as 0.15 did", () => {
+    const set = (m: Mutation) => ({ ...at, mutant: mutantOf(m) });
+    const raised = planChanges(emptyConfig(), [adopt("hall:lamp", "light"), up("tier", { device: "hall:lamp", action: "onoff.turn_on", tier: "confirm" })], at).draft;
+    expect(() => planChanges(raised, [up("tier", { device: "hall:lamp", action: "onoff.turn_on", tier: "reversible" })], set("keeps-an-owner-raise-on-a-set")))
+      .toThrow(expect.objectContaining({ message: expect.stringMatching(/only raises/) }));
+    expect(planChanges(raised, [del("tier", { device: "hall:lamp", action: "onoff.turn_on" })], set("keeps-an-owner-raise-on-a-set")).diff).toHaveLength(1);
+    expect(() => planChanges(raised, [del("tier", { device: "hall:lamp", action: "onoff.turn_on" })], set("keeps-an-owner-raise")))
+      .toThrow(expect.objectContaining({ message: expect.stringMatching(/never lowered/) }));
+    expect(planChanges(raised, [up("tier", { device: "hall:lamp", action: "onoff.turn_on", tier: "reversible" })], set("keeps-an-owner-raise")).diff).toHaveLength(1);
+  });
+
+  it("accepts a heater's turn_on below its floor under lowers-a-heater-below-the-table, clamped there", () => {
+    const heating = planChanges(heater(), [up("load", { device: "hall:heater", load: "heating" })], at).draft;
+    const lower = [up("tier", { device: "hall:heater", action: "onoff.turn_on", tier: "reversible" })];
+    expect(() => planChanges(heating, lower, at)).toThrow(expect.objectContaining({ code: "invalid_request" }));
+    const r = planChanges(heating, lower, { ...at, mutant: mutantOf("lowers-a-heater-below-the-table") });
+    expect(tierIn(r.draft, "hall:heater", "onoff.turn_on")).toBe("confirm");
+  });
+
+  it("drops a socket's turn_on to its new default when its load leaves heating, the owner having set nothing; keeps-a-table-tier-over-a-new-load pins it (GA-DESC-13)", () => {
+    const heating = planChanges(heater(), [up("load", { device: "hall:heater", load: "heating" })], at).draft;
+    const lighting = [up("load", { device: "hall:heater", load: "lighting" })];
+    expect(tierIn(planChanges(heating, lighting, at).draft, "hall:heater", "onoff.turn_on")).toBe("reversible");
+    const pinned = planChanges(heating, lighting, { ...at, mutant: mutantOf("keeps-a-table-tier-over-a-new-load") }).draft;
+    expect(tierIn(pinned, "hall:heater", "onoff.turn_on")).toBe("confirm");
   });
 
   it("lowers an extension action to its floor, never below it, refused with nothing changed and never clamped; deletes the owner's tier back to the table (GA-DESC-3, GA-DESC-14)", () => {
@@ -307,13 +452,13 @@ describe("declarations", () => {
       .toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringMatching(/floor is no_voice/) }));
     expect(() => set([adopt("hall:heater", "socket", { load: "heating", tiers: { [go]: "reversible" } })]))
       .toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringMatching(/floor is confirm/) }));
-    // A standard action is still never lowered.
-    expect(() => set([del("tier", { device: "hall:box", action: "onoff.turn_on" })], plain)).toThrow(expect.objectContaining({ message: expect.stringMatching(/never lowered/) }));
+    // A standard action's delete with no owner's value changes nothing.
+    expect(set([del("tier", { device: "hall:box", action: "onoff.turn_on" })], plain).diff).toEqual([]);
   });
 
   it("accepts a door lock's extension action below its floor under lowers-a-lock-extension, clamped there", () => {
     const go = "org.galatea.test.box.go";
-    const at2 = { ...ctx, devices: new Map([["hall:lock", { ...LAMP, actions: [go] }]]), mutation: "lowers-a-lock-extension" as const };
+    const at2 = { ...ctx, devices: new Map([["hall:lock", { ...LAMP, actions: [go] }]]), mutant: mutantOf("lowers-a-lock-extension") };
     const lock = planChanges(emptyConfig(), [adopt("hall:lock", "door_lock")], at2).draft;
     const r = planChanges(lock, [up("tier", { device: "hall:lock", action: go, tier: "confirm" })], at2);
     expect(tierIn(r.draft, "hall:lock", go)).toBe("no_voice");
@@ -335,8 +480,8 @@ describe("declarations", () => {
       up("infrastructure", { device: "hall:heater", infrastructure: true })], at).draft;
     expect(tierIn(heating, "hall:heater", "onoff.turn_on")).toBe("confirm");
     expect(tierIn(heating, "hall:heater", "onoff.turn_off")).toBe("no_voice");
-    expect(tierIn(heating, "hall:heater", "onoff.turn_off", true)).toBe("no_voice");
-    expect(tierIn(heating, "hall:heater", "onoff.turn_on", true)).toBe("reversible");
+    expect(tierIn(heating, "hall:heater", "onoff.turn_off", { ignoreLoad: true })).toBe("no_voice");
+    expect(tierIn(heating, "hall:heater", "onoff.turn_on", { ignoreLoad: true })).toBe("reversible");
     const cleared = planChanges(heating, [del("infrastructure", { device: "hall:heater" })], at).draft;
     expect(tierIn(cleared, "hall:heater", "onoff.turn_off")).toBe("confirm");
   });
@@ -382,7 +527,7 @@ describe("declarations", () => {
     expect(tierIn(draft, "hall:lamp", "onoff.turn_on")).toBe("confirm");
     expect(diff).toEqual(["+ adopt hall:lamp (water_valve)\n~ opens_with hall:lamp onoff.turn_off\n~ tier hall:lamp onoff.turn_on confirm\n~ fresh_s hall:lamp 600"]);
     refused([adopt("hall:lamp", "light", { opens_with: "onoff.turn_off" })], /only on a water or gas valve/);
-    refused([adopt("hall:gate", "gate", { tiers: { "cover.close": "reversible" } })], /only raises/);
+    refused([adopt("hall:gate", "gate", { tiers: { "cover.close": "reversible" } })], /floor is confirm/);
     // A Safe field is not_claimed on an applier claiming only Act, before the schema is read (GA-LVL-1).
     expect(() => planChanges(emptyConfig(), [adopt("hall:lamp", "light", { max_on_s: 3600 })], at))
       .toThrow(expect.objectContaining({ code: "not_claimed", message: expect.stringMatching(/max_on_s/) }));

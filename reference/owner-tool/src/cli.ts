@@ -4,6 +4,7 @@ import { configure, define } from "./commands/changes.js";
 import { adopt, close, join, remove } from "./commands/pairing.js";
 import { answer, asks, doAction } from "./commands/confirm.js";
 import { devices, events, history, status } from "./commands/reading.js";
+import { list as scenarioList, runScenario, status as scenarioStatus, stopRun } from "./commands/scenario.js";
 import { type Ctx, type Deps, type Exit, FileProblem, Held, Refusal, Usage } from "./context.js";
 import { BadUrl, Lost, NotTaken, Unreachable } from "./link.js";
 import { jsonLine } from "./print.js";
@@ -14,7 +15,8 @@ export const USAGE = `galatea <command> [flags] [--json] [--install DIR] [--appl
   devices [--all]                         the applier's devices, with the steward's names and rooms
   register bridge <id> [--identity I]     registers a bridge with the applier
   credential <id> --kind K [--endpoint E] [--confirm-on E2]
-                                          defines a credential at the steward, its secret from secrets/mcp/<id>
+                                          defines a credential at the steward, whole: its secret from secrets/mcp/<id>,
+                                          and a flag left out clears its field
   configure <file|-> [--dry-run]          any applier change set
   define <file|-> [--dry-run]             any steward change set, at owner-app
   join [--transport T] [--for S] [--no-wait]
@@ -30,6 +32,12 @@ export const USAGE = `galatea <command> [flags] [--json] [--install DIR] [--appl
   answer <plan> <step>... yes|no          answers an ask; applies the tool's own plan once nothing in it waits
   events [--cursor C] [--follow]          the steward's events from now (or after C); --follow until Ctrl-C
   history [<target>] [--from T] [--to T]  what happened, and why; T is RFC 3339 with an offset, or a span ago (2h, 7d)
+  scenario list                           the scenarios the steward holds: id, name, mode, steps (defined with define)
+  scenario run <id> [--yes]               plans a run at owner-app, prints its steps, answers its tier's asks with --yes,
+                                          starts it and prints each step's outcome as it lands, for up to 120 s;
+                                          without --yes an asked plan is left open, as do leaves one
+  scenario status <run>                   a run: running or ended, its failed and unwitnessed steps
+  scenario stop <run>                     stops a run at owner-app
 
 Exit: 0 done, 1 failed under way, 2 refused before anything was done.`;
 
@@ -58,6 +66,7 @@ const FLAGS = {
   answer: {},
   events: { cursor: { type: "string" }, follow: { type: "boolean" } },
   history: { from: { type: "string" }, to: { type: "string" } },
+  scenario: { yes: { type: "boolean" } },
 } as const;
 
 type Command = keyof typeof FLAGS;
@@ -123,10 +132,23 @@ export async function run(argv: string[], deps: Deps): Promise<Exit> {
       case "history":
         if (p.length > 1) throw new Usage("galatea history takes at most one target");
         return await history(ctx, p[0], { from: v.from, to: v.to });
+      case "scenario": return await scenario(ctx, p, v.yes === true);
     }
   } catch (err) {
     return failed(ctx, command, err);
   }
+}
+
+/** `galatea scenario list|run|status|stop`: each takes at most its one argument, and only `run` takes `--yes`. */
+function scenario(ctx: Ctx, p: string[], yes: boolean): Promise<Exit> {
+  const [sub, arg, ...extra] = p;
+  const usage = "galatea scenario list | run <id> [--yes] | status <run> | stop <run>";
+  if (sub !== "list" && sub !== "run" && sub !== "status" && sub !== "stop") throw new Usage(usage);
+  if (extra.length || (sub === "list" && arg !== undefined)) throw new Usage(`${usage}: too many arguments`);
+  if (yes && sub !== "run") throw new Usage(`--yes is run's alone: ${usage}`);
+  if (sub === "list") return scenarioList(ctx);
+  if (sub === "run") return runScenario(ctx, arg, yes);
+  return sub === "status" ? scenarioStatus(ctx, arg) : stopRun(ctx, arg);
 }
 
 function none(p: string[], command: string): undefined {

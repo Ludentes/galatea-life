@@ -435,8 +435,8 @@ describe("scenario_run and a run's steps", () => {
     clock.advance(300_000);
     const st = await until(again.run_id, "ended(done)");
     expect(st.failed_steps.map((x: Body) => `${x.step_id} ${x.outcome}(${x.reason})`)).toEqual(["s1 skipped(not_confirmed)"]);
-    // No longer open: the plan was run (not_permitted) or, past its keeping, forgotten (invalid_request).
-    expect(["not_permitted", "invalid_request"]).toContain(await error(SECRETS.olga, "answer", { plan_id: again.plan.plan_id, endpoint: "olga-app", answers: { s1: "yes" } }));
+    // No longer open: the plan was run (not_permitted) or, past its keeping, forgotten (unknown_plan).
+    expect(["not_permitted", "unknown_plan"]).toContain(await error(SECRETS.olga, "answer", { plan_id: again.plan.plan_id, endpoint: "olga-app", answers: { s1: "yes" } }));
     // Within ask_expiry_s of the yes: no new ask.
     const before = (await eventsSince(ok, cursor, "ask")).length;
     const soon = await start("soon", { answers: { s1: "yes" } });

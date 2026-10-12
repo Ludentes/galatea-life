@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-import { clockFromEnv } from "@ludentes/galatea-life-test-clock";
+import { clockFromEnv, TestClock } from "@ludentes/galatea-life-test-clock";
 import { Bus } from "./bus/client.js";
-import { connectPg, maskUrls } from "./core/db.js";
+import { MIGRATIONS_DIR, migrationsFrom } from "./adapters/migrations.js";
+import { connectPg } from "./adapters/pg.js";
+import { maskUrls } from "./core/db.js";
 import { settingsFromEnv } from "./entry.js";
 import { serveMcp } from "./mcp/server.js";
 import { startApplier } from "./start.js";
@@ -14,11 +16,23 @@ if ("refused" in settings) {
   process.exit(2);
 }
 const clock = await clockFromEnv(process.env);
+const log = (line: string): void => console.error(line);
 const fatal = (message: string): never => {
   console.error(message);
   process.exit(1);
 };
-const applier = await startApplier(settings.value, { clock, connectPg, bus: (o) => new Bus(o), serveMcp, fatal })
+let migrations;
+try {
+  migrations = migrationsFrom(MIGRATIONS_DIR);
+} catch (err) {
+  fatal(`the applier's migrations could not be read: ${err instanceof Error ? err.message : String(err)}`);
+}
+// The harness's `time_source` moves its clock; any other clock refuses it.
+const retarget = async (source: string): Promise<void> => {
+  if (!(clock instanceof TestClock)) throw new Error("started without GALATEA_TIME_SOURCE");
+  await clock.retarget(source);
+};
+const applier = await startApplier(settings.value, { clock, connectPg, bus: (o) => new Bus(o), serveMcp, migrations: migrations!, retarget, log, fatal })
   .catch((err: unknown) => fatal(`the applier could not start: ${maskUrls(err instanceof Error ? err.message : String(err))}`));
 console.log(`ready on ${applier.url}`);
 

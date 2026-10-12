@@ -1,7 +1,7 @@
 import { canonical } from "../core/canonical.js";
 import { RequestError } from "../core/errors.js";
 import type { Home } from "../model/home.js";
-import type { Mutation } from "../mutations.js";
+import { Mutant } from "../mutations.js";
 import { Discovery, type Listed } from "./discovery.js";
 
 /** The operations of *Provisioning*, in the text's order. */
@@ -22,7 +22,7 @@ type Args = Record<string, any>;
  * Provision, its `bridgeType` matched with `connect: true`, else `not_claimed`; the address the listed
  * one exactly, present where it has one and absent where it has none, else `invalid_request`.
  */
-export function opFor(a: Args, home: HomeView, listed: () => Listed[] = () => [], mutation?: Mutation):
+export function opFor(a: Args, home: HomeView, listed: () => Listed[] = () => [], mutant: Mutant = Mutant.none):
 { op: string; bridge: string; wire: Record<string, unknown> } {
   const named = OPS.filter((o) => a[o] !== undefined);
   if (named.length !== 1) throw new RequestError("invalid_request", "provision names exactly one operation");
@@ -82,16 +82,16 @@ export function opFor(a: Args, home: HomeView, listed: () => Listed[] = () => []
       const facts = home.bridgeFacts(v.bridge);
       // `connects-to-the-wrong-bridge`: a match saying connect: false is taken too.
       const takes = facts !== undefined && facts.levels.includes("Provision")
-        && c.matches.some((m) => m.bridge_type === facts.bridge_type && (m.connect || mutation === "connects-to-the-wrong-bridge"));
+        && c.matches.some((m) => m.bridge_type === facts.bridge_type && (m.connect || mutant.connectsToTheWrongBridge));
       if (!takes) throw new RequestError("not_claimed", `bridge ${v.bridge} cannot take candidate ${v.candidate}`);
-      const same = mutation === "ignores-the-address" || (c.address === undefined ? v.address === undefined
+      const same = mutant.ignoresTheAddress || (c.address === undefined ? v.address === undefined
         : v.address !== undefined && canonical(v.address) === canonical(c.address));
       if (!same) {
         throw new RequestError("invalid_request", c.address === undefined ? `candidate ${v.candidate} has no address`
           : `the address is not candidate ${v.candidate}'s as listed now`);
       }
       // `ignores-the-address`: the list's current address is sent instead of the owner's.
-      const address = mutation === "ignores-the-address" ? c.address : v.address;
+      const address = mutant.ignoresTheAddress ? c.address : v.address;
       return { op, bridge: v.bridge, wire: { ...(address !== undefined ? { address } : {}), keys: c.keys } };
     }
   }

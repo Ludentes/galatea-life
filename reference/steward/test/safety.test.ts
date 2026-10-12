@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SECRETS, up } from "./house.js";
-import { describeOf, DEVICES, eventsSince, LAMP, on, setup } from "./setup.js";
+import { describeOf, DEVICES, eventsSince, judgeAction, LAMP, on, setup } from "./setup.js";
 import { LATCHLESS_SAFETY_MS } from "../src/steward.js";
 
 type Body = Record<string, any>;
@@ -193,6 +193,113 @@ describe("a latchless safety rule's lease bounded (the milestone 7+10+11 review,
   });
 });
 
+describe("a latchless safety lease ended early (GA-LEASE-6: steward 0.11)", () => {
+  /** The valve declaring a 1200 s ack bound, and a latchless rule `shut` closing it. */
+  const SLOW_VALVE = SAFE_DEVICES.map((d: Body) => (d.id === VALVE ? { ...d, actions: d.actions.map((a: Body) => ({ ...a, ack_within_s: 1200 })) } : d));
+  const SHUT = { id: "shut", trigger: {}, actions: [{ target: VALVE, action: "valve.close" }] };
+  const slowSetup = async (mutation?: Parameters<typeof setup>[0] extends infer O ? O extends { mutation?: infer M } ? M : never : never) => {
+    const s = await safeSetup({ devices: SLOW_VALVE, mutation });
+    s.steward.onDescribe({ ...describeOf(SLOW_VALVE, 3), safety_rules: [...RULES, SHUT] });
+    return s;
+  };
+  const rulesFired = (s: { applier: { applies: Body[] } }, rule: string) => s.applier.applies.filter((a) => String(a.idempotency_key).startsWith(`rule:${rule}:`)).length;
+
+  it("states safety_lease_s, 900, in describe; leaves it out under ends-a-safety-lease-undeclared", async () => {
+    expect((await (await safeSetup()).ok(SECRETS.owner, "describe")).safety_lease_s).toBe(LATCHLESS_SAFETY_MS / 1000);
+    expect(await (await safeSetup({ mutation: "ends-a-safety-lease-undeclared" })).ok(SECRETS.owner, "describe")).not.toHaveProperty("safety_lease_s");
+  });
+
+  it("holds the lease no shorter than its device's ack bound plus the late-ack window; at the ack bound under ends-a-safety-lease-early", async () => {
+    for (const [mutation, ms] of [[undefined, 1_260_000], ["ends-a-safety-lease-early", 1_200_000]] as const) {
+      const s = await slowSetup(mutation);
+      fire(s.applier, "shut", VALVE, "open", false, false);
+      await s.pump();
+      expect((await leasesOf(s.ok))[VALVE].expires).toBe(new Date(s.clock.now() + ms).toISOString());
+    }
+  });
+
+  it("re-evaluates a level rule the applier refused safety, once the safety rule's completion is relayed, raising no notice; not under forgets-a-safety-refusal", async () => {
+    for (const [mutation, want] of [[undefined, 2], ["forgets-a-safety-refusal", 1]] as const) {
+      const s = await slowSetup(mutation);
+      let running = true;
+      s.applier.planner = (a: Body) => (a.target === VALVE && running ? { verdict: "refuse", reason: "safety" } : judgeAction(a));
+      fire(s.applier, "shut", VALVE, "open", false, false);
+      await s.pump();
+      s.clock.advance(1_260_000);
+      await vi.waitFor(async () => expect(await leasesOf(s.ok)).toEqual({}));
+      await s.define([up("rule", { id: "reopen", name: "Открыть", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }],
+        actions: [{ target: VALVE, action: "valve.open", args: {} }] })]);
+      const { cursor } = await s.ok(SECRETS.owner, "events");
+      s.applier.emit({ type: "state", target: LAMP, key: "on", value: true, basis_time: new Date(s.clock.now()).toISOString(), cause: "device" });
+      await s.pump();
+      await vi.waitFor(() => expect(rulesFired(s, "reopen")).toBe(1));
+      await vi.waitFor(async () => expect((await eventsSince(s.ok, cursor, "outcome")).filter((e) => e.cause?.rule === "reopen")
+        .map((e) => `${e.outcome}(${e.reason})`)).toEqual(["refused(safety)"]));
+      running = false;
+      s.applier.emit({ type: "rule_fired", rule_id: "shut", outcomes: [{ step_id: "s1", target: VALVE, outcome: "acked" }], notice: null });
+      await s.pump();
+      if (want === 2) await vi.waitFor(() => { s.clock.advance(0); expect(rulesFired(s, "reopen")).toBe(2); });
+      else {
+        for (let i = 0; i < 5; i++) { s.clock.advance(0); await new Promise((r) => setTimeout(r, 0)); }
+        expect(rulesFired(s, "reopen")).toBe(1);
+      }
+      s.clock.advance(120_000);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(s.applier.applies.filter((a) => String(a.idempotency_key).startsWith("notices:")).map((a) => JSON.stringify(a.request.actions))
+        .filter((x) => !x.includes("fresh_s is not known"))).toEqual([]);
+    }
+  });
+});
+
+describe("the wait after an early end, bounded and kept per safety rule (the code review, CR1)", () => {
+  const SLOW_VALVE = SAFE_DEVICES.map((d: Body) => (d.id === VALVE ? { ...d, actions: d.actions.map((a: Body) => ({ ...a, ack_within_s: 1200 })) } : d));
+  const SHUT = { id: "shut", trigger: {}, actions: [{ target: VALVE, action: "valve.close" }] };
+  const fired = (s: { applier: { applies: Body[] } }) => s.applier.applies.filter((a) => String(a.idempotency_key).startsWith("rule:reopen:")).length;
+  const told = (s: { applier: { applies: Body[] } }) => s.applier.applies.filter((a) => String(a.idempotency_key).startsWith("notices:"))
+    .flatMap((a) => (a.request.actions as Body[]).map((x) => String(x.args.text))).filter((t) => t.includes("reopen"));
+  /** shut's lease on the valve ended early, then a level rule reopening the valve refused safety by the applier, waiting. */
+  async function waiting() {
+    const s = await safeSetup({ devices: SLOW_VALVE });
+    s.steward.onDescribe({ ...describeOf(SLOW_VALVE, 3), safety_rules: [...RULES, SHUT] });
+    const flags = { running: true };
+    s.applier.planner = (a: Body) => (a.target === VALVE && flags.running ? { verdict: "refuse", reason: "safety" } : judgeAction(a));
+    fire(s.applier, "shut", VALVE, "open", false, false);
+    await s.pump();
+    s.clock.advance(1_260_000);
+    await vi.waitFor(async () => expect(await leasesOf(s.ok)).toEqual({}));
+    const endedAt = s.clock.now();
+    await s.define([up("rule", { id: "reopen", name: "Открыть", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }],
+      actions: [{ target: VALVE, action: "valve.open", args: {} }] })]);
+    s.applier.emit({ type: "state", target: LAMP, key: "on", value: true, basis_time: new Date(s.clock.now()).toISOString(), cause: "device" });
+    await s.pump();
+    await vi.waitFor(() => expect(fired(s)).toBe(1));
+    return { ...s, flags, endedAt };
+  }
+  const settle = async (s: { clock: { advance(ms: number): void }; pump(): Promise<void> }) => {
+    for (let i = 0; i < 5; i++) { s.clock.advance(0); await s.pump(); }
+  };
+
+  it("lets the wait go at the latchless bound plus the late-ack window after the early end, re-evaluating its rules, a refusal then noticed", async () => {
+    const s = await waiting();
+    s.clock.advance(1_260_000 + 60_000 - (s.clock.now() - s.endedAt) - 1);
+    await settle(s);
+    expect(fired(s)).toBe(1);
+    s.clock.advance(1);
+    await vi.waitFor(() => { s.clock.advance(0); expect(fired(s)).toBe(2); });
+    await vi.waitFor(() => { s.clock.advance(60_000); expect(told(s).length).toBeGreaterThan(0); });
+  });
+
+  it("lets the wait go when the device is seen dead, re-evaluating its rules", async () => {
+    const s = await waiting();
+    s.flags.running = false;
+    s.applier.emit({ type: "liveness", target: VALVE, old: "live", new: "dead" });
+    await s.pump();
+    s.applier.emit({ type: "liveness", target: VALVE, old: "dead", new: "live" });
+    await s.pump();
+    await vi.waitFor(() => { s.clock.advance(0); expect(fired(s)).toBe(2); });
+  });
+});
+
 describe("a latchless rule's lease past its end, beneath another rule's (the code review, CR4)", () => {
   it("grants the rule again though its expired lease lies beneath, so the device keeps it when the other rule's ends", async () => {
     const s = await safeSetup();
@@ -228,5 +335,42 @@ describe("a latch as applier 0.14 gives it, naming no devices (the milestone 7+1
     const { ok, steward } = await safeSetup();
     steward.onState({ targets: {}, transports: [], latches: [{ rule_id: "leak", since: "2030-01-01T07:00:00.000Z" }] });
     expect(await leasesOf(ok)).toEqual({ [VALVE]: { holder: { safety_rule: "leak" }, precedence: "safety_rule", expires: "safety_rule" } });
+  });
+});
+
+describe("a latchless lease ended early over another rule's (the code review, CR4)", () => {
+  it("records the early end when the lease beneath comes back, so a refusal after that one ends waits for the completion", async () => {
+    const s = await safeSetup();
+    const guard = { id: "guard", trigger: {}, actions: [{ target: LAMP, action: "onoff.turn_on" }], latch: { condition: {} } };
+    s.steward.onDescribe({ ...describeOf(SAFE_DEVICES, 3), safety_rules: [...RULES, guard] });
+    let night = true;
+    s.applier.planner = (a: Body) => (a.target === LAMP && night ? { verdict: "refuse", reason: "safety" } : judgeAction(a));
+    fire(s.applier, "guard", LAMP, "on", true, true);
+    await s.pump();
+    fire(s.applier, "night", LAMP, "on", true, false);
+    await s.pump();
+    expect(holder((await leasesOf(s.ok))[LAMP].holder)).toBe("night");
+    // night's lease runs out, its completion not read: guard's comes back; then guard's latch clears.
+    s.clock.advance(LATCHLESS_SAFETY_MS + 1);
+    await vi.waitFor(async () => expect(holder((await leasesOf(s.ok))[LAMP].holder)).toBe("guard"));
+    s.applier.emit({ type: "latch", rule_id: "guard", latch: "cleared", devices: [LAMP] });
+    await s.pump();
+    await vi.waitFor(async () => expect(await leasesOf(s.ok)).toEqual({}));
+    await s.define([up("rule", { id: "lit", name: "Свет", conditions: [{ target: VALVE, key: "open", op: "eq", value: false }],
+      actions: [{ target: LAMP, action: "onoff.turn_on", args: {} }] })]);
+    const fired = () => s.applier.applies.filter((a) => String(a.idempotency_key).startsWith("rule:lit:")).length;
+    const { cursor } = await s.ok(SECRETS.owner, "events");
+    s.applier.emit({ type: "state", target: VALVE, key: "open", value: false, basis_time: new Date(s.clock.now()).toISOString(), cause: "device" });
+    await s.pump();
+    await vi.waitFor(async () => expect((await eventsSince(s.ok, cursor, "outcome")).filter((e) => e.cause?.rule === "lit")
+      .map((e) => `${e.outcome}(${e.reason})`)).toEqual(["refused(safety)"]));
+    night = false;
+    s.applier.emit({ type: "rule_fired", rule_id: "night", outcomes: [{ step_id: "s1", target: LAMP, outcome: "acked" }], notice: null });
+    await s.pump();
+    await vi.waitFor(() => { s.clock.advance(0); expect(fired()).toBe(2); });
+    s.clock.advance(120_000);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(s.applier.applies.filter((a) => String(a.idempotency_key).startsWith("notices:")).map((a) => JSON.stringify(a.request.actions))
+      .filter((x) => !x.includes("fresh_s is not known"))).toEqual([]);
   });
 });

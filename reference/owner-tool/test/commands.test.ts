@@ -4,6 +4,9 @@ import { HISTORY_PAGES, openAsks } from "../src/commands/reading.js";
 import { Lost, NotTaken, Unreachable } from "../src/link.js";
 import { DEVICES, fakeDeps, noSecretIn, ok, refused, SECRETS } from "./fakes.js";
 
+/** The line under a define's answer that says `no_notify_channel` (steward 0.11, GA-NOTE-1). */
+const NO_CHANNEL = "  no notify channel: notices are held until notice_channels names a device that offers notify";
+
 describe("the command line", () => {
   it("says the usage, 2 with no command and 0 when asked", async () => {
     const a = fakeDeps();
@@ -93,9 +96,28 @@ describe("credential", () => {
     expect(await run(["credential", "brain_agent", "--kind", "brain", "--confirm-on", "owner-app"], a.deps)).toBe(0);
     expect(a.secretReads).toEqual(["brain_agent"]);
     expect(a.steward.calls[1]).toEqual({ tool: "define", args: { changes: [{ op: "upsert", kind: "credential",
-      value: { id: "brain_agent", kind: "brain", secret: SECRETS.brain_agent, confirm_on: "owner-app" } }], expected_revision: 10, dry_run: false } });
+      value: { id: "brain_agent", kind: "brain", secret: SECRETS.brain_agent, endpoint: null, confirm_on: "owner-app" } }], expected_revision: 10, dry_run: false } });
     expect(a.out).toEqual(["defined the brain credential brain_agent at the steward: revision 11"]);
     expect(noSecretIn(a.all())).toBe(true);
+  });
+
+  it("defines the credential whole under the steward's merge (GA-DEF-14): a flag left out clears its field (review I1, probe P3)", async () => {
+    const a = fakeDeps();
+    expect(await run(["credential", "brain_agent", "--kind", "brain", "--confirm-on", "owner-app"], a.deps)).toBe(0);
+    expect(a.steward.item("credential", "brain_agent")).toMatchObject({ confirm_on: "owner-app" });
+    // Sending the brain's questions back to its own satellites: no --confirm-on now means none.
+    expect(await run(["credential", "brain_agent", "--kind", "brain"], a.deps)).toBe(0);
+    expect(a.steward.item("credential", "brain_agent")).not.toHaveProperty("confirm_on");
+    expect(a.steward.calls.at(-1)!.args.changes[0].value).toMatchObject({ endpoint: null, confirm_on: null });
+    // An app credential re-kinded to a brain keeps no endpoint.
+    expect(await run(["credential", "brain_agent", "--kind", "app", "--endpoint", "owner-chat"], a.deps)).toBe(0);
+    expect(a.steward.item("credential", "brain_agent")).toMatchObject({ kind: "app", endpoint: "owner-chat" });
+    expect(a.steward.calls.at(-1)!.args.changes[0].value).toMatchObject({ confirm_on: null });
+    expect(await run(["credential", "brain_agent", "--kind", "front"], a.deps)).toBe(0);
+    const front = a.steward.item("credential", "brain_agent");
+    expect(front).toMatchObject({ kind: "front" });
+    expect(front).not.toHaveProperty("endpoint");
+    expect(front).not.toHaveProperty("confirm_on");
   });
 
   it("refuses the flags the steward would refuse, before reading any file", async () => {
@@ -151,6 +173,18 @@ describe("configure and define", () => {
     const b = fakeDeps({ inputs: { "home.json": home } });
     expect(await run(["configure", "home.json", "--dry-run", "--json"], b.deps)).toBe(0);
     expect(b.out).toEqual(['{"diff":"adopt: x"}']);
+  });
+
+  it("says a define that leaves the house with no notify channel, dry run or not (steward 0.11, GA-NOTE-1)", async () => {
+    const a = fakeDeps({ inputs: { "home.json": home } });
+    a.steward.queue("define", ok({ revision: 11, no_notify_channel: true }), ok({ diff: "home: x", no_notify_channel: true }));
+    expect(await run(["define", "home.json"], a.deps)).toBe(0);
+    expect(await run(["define", "home.json", "--dry-run"], a.deps)).toBe(0);
+    expect(a.out).toEqual(["the steward's define: revision 11", NO_CHANNEL, "the steward's define, a dry run:", "  home: x", NO_CHANNEL]);
+    const b = fakeDeps();
+    b.steward.queue("define", ok({ revision: 11, no_notify_channel: true }));
+    expect(await run(["credential", "brain_agent", "--kind", "brain"], b.deps)).toBe(0);
+    expect(b.out).toEqual(["defined the brain credential brain_agent at the steward: revision 11", NO_CHANNEL]);
   });
 
   it("says a dry run that changes nothing as such, as both servers answer it (review M10)", async () => {
@@ -307,7 +341,7 @@ describe("devices", () => {
 describe("devices' names (review M10)", () => {
   it("shows a name only when the owner gave one, not the bridge's label or the id the steward defaults to", async () => {
     const a = fakeDeps();
-    a.steward.queue("describe", ok({ steward_id: "steward", standard_version: "0.10", revision: 10, home: {}, targets: [
+    a.steward.queue("describe", ok({ steward_id: "steward", standard_version: "0.11", revision: 10, home: {}, targets: [
       { ...DEVICES[0], label: "Notifier", name: "Notifier", room: null },
       { ...DEVICES[1], label: "Lamp 1", name: "Торшер", room: "kitchen" }] }));
     expect(await run(["devices"], a.deps)).toBe(0);
@@ -363,7 +397,7 @@ describe("status", () => {
     expect(a.out).toEqual([
       "applier applier: reached, standard 0.15, revision 4",
       "  transport sim-bridge (zigbee): up, state up, bridge sim-bridge",
-      "steward steward: reached, standard 0.10, revision 10",
+      "steward steward: reached, standard 0.11, revision 10",
       "  not live: sim-bridge:channel (stale)",
       "  open asks on owner-app: 1",
     ]);
@@ -371,6 +405,16 @@ describe("status", () => {
     expect(a.steward.calls.find((c) => c.tool === "state")!.args).toEqual({ targets: ["sim-bridge:channel"] });
     const h = a.steward.calls.find((c) => c.tool === "history")!.args;
     expect(h).toEqual({ from: "2026-10-07T11:55:00.000Z", to: "2026-10-07T12:01:00.000Z" });
+  });
+
+  it("shows the notices the steward holds while no channel offers notify (steward 0.11, GA-NOTE-1)", async () => {
+    const a = fakeDeps();
+    a.steward.heldNotices = 2;
+    expect(await run(["status"], a.deps)).toBe(0);
+    expect(a.out).toContain("  notices held: 2 (no notify channel: notice_channels names no device that offers notify)");
+    const b = fakeDeps();
+    expect(await run(["status"], b.deps)).toBe(0);
+    expect(b.out.join("\n")).not.toMatch(/notices held/);
   });
 
   it("shows the server it reached when the other is not, and ends 2", async () => {
@@ -390,7 +434,7 @@ describe("status", () => {
     const a = fakeDeps();
     a.steward.queue("history", () => { throw new Lost("the steward's history: the store is unreachable"); });
     expect(await run(["status"], a.deps)).toBe(1);
-    expect(a.out).toContain("steward steward: reached, standard 0.10, revision 10");
+    expect(a.out).toContain("steward steward: reached, standard 0.11, revision 10");
     expect(a.out).toContain("  open asks on owner-app: not read (the steward's history: the store is unreachable)");
     expect(a.out[0]).toMatch(/^applier applier: reached/);
     const b = fakeDeps();

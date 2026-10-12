@@ -33,7 +33,9 @@ export async function registerBridge(ctx: Ctx, id: string | undefined, identity:
 /**
  * `galatea credential <id> --kind K [--endpoint E] [--confirm-on E2]`: the steward's `define` of a
  * credential, its secret read from `secrets/mcp/<id>`. `--endpoint` for an app or a panel only (and
- * needed there); `--confirm-on` for a brain only. The secret leaves only inside the define.
+ * needed there); `--confirm-on` for a brain only. The secret leaves only inside the define. The
+ * credential is defined whole: the steward's upsert merges (GA-DEF-14), so every field the kind does not
+ * take, and a flag left out, is sent as null, and no earlier `endpoint` or `confirm_on` survives (review I1).
  */
 export async function credential(ctx: Ctx, id: string | undefined, o: { kind?: string; endpoint?: string; confirmOn?: string }): Promise<Exit> {
   if (!id) throw new Usage("galatea credential <id> --kind K [--endpoint E] [--confirm-on E2]: name the credential");
@@ -46,7 +48,7 @@ export async function credential(ctx: Ctx, id: string | undefined, o: { kind?: s
   if (o.confirmOn && o.kind !== "brain") throw new Usage("--confirm-on is for a brain credential only");
   const secret = ctx.secret(id);
   if (secret.length < MIN_SECRET) throw new Usage(`secrets/mcp/${id} is shorter than ${MIN_SECRET} characters (galatea-secret ${id} makes one)`);
-  const value = { id, kind: o.kind, secret, ...(o.endpoint ? { endpoint: o.endpoint } : {}), ...(o.confirmOn ? { confirm_on: o.confirmOn } : {}) };
+  const value = { id, kind: o.kind, secret, endpoint: appLike ? o.endpoint : null, confirm_on: o.kind === "brain" ? o.confirmOn ?? null : null };
   const body = await sendAtRevision(ctx, "steward", "define", [{ op: "upsert", kind: "credential", value }], { dryRun: false });
   if (ctx.json) ctx.say.out(jsonLine(body));
   else for (const l of changeLines(body, `defined the ${o.kind} credential ${id} at the steward`)) ctx.say.out(l);
