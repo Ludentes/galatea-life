@@ -57,6 +57,11 @@ export interface Run {
   lost: Set<string>;
   /** The devices it leased, `owned` expanded (GA-SCN-2). */
   leased: string[];
+  /**
+   * The owned devices a guest's hold covered at its start, the owner's run taking its lease on each
+   * when that hold ends leaving the device none (GA-LEASE-10). In memory only, as a run is.
+   */
+  waiting?: string[];
   /** Whether every step of its program was reached: it ends once its dispatched steps are final. */
   programDone: boolean;
   /** The index of the action step last sent, kept in the run's record, which commits before the step is sent while the store is up. */

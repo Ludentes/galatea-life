@@ -5,6 +5,8 @@ import { OCCURRENCE_REPEAT_MS, UNDESCRIBED_MAX, ZigbeeBridge, type Mutation } fr
 import type { Description } from "../src/port.js";
 import { FakeClock, FakeDoer, FakeWire, lamp, MemoryStore, settle } from "./fakes.js";
 
+/** The device statuses that carry a reading: the start's bare status (no reading, reachable) left out. */
+const readingStatuses = (wire: FakeWire) => wire.all(STATUS).filter((p) => Object.keys(p.payload).some((k) => !["deviceId", "timestamp", "available"].includes(k)));
 const ROOT = "home";
 const BASE = `${ROOT}/bridges/zigbee`;
 const BED = "0x00124b0029a1c2d3";
@@ -35,14 +37,15 @@ afterEach(async () => {
   for (const b of bridges.splice(0)) await b.stop();
 });
 
-async function bridge(opts: { mutation?: Mutation; store?: MemoryStore; clock?: FakeClock; description?: Description } = {}) {
+async function bridge(opts: { mutation?: Mutation; unmarked?: boolean; store?: MemoryStore; clock?: FakeClock; description?: Description } = {}) {
   const clock = opts.clock ?? new FakeClock();
   const wire = new FakeWire();
   const doer = new FakeDoer(clock);
   doer.initial = [opts.description ?? sensor()];
   const store = opts.store ?? new MemoryStore();
   const b = new ZigbeeBridge({ bridgeId: "zigbee", instanceId: randomUUID(), root: ROOT, clock, doer, wire, store,
-    ...(opts.mutation ? { runId: "run-1", mutation: opts.mutation } : {}) });
+    ...(opts.mutation ? { runId: "run-1", mutation: opts.mutation } : {}),
+    ...(opts.unmarked ? { runId: "run-1", leavesReadingsUnmarked: true } : {}) });
   bridges.push(b);
   await b.start();
   return { b, clock, wire, doer, store };
@@ -60,7 +63,7 @@ describe("extensions and kinds", () => {
     expect(validate("bridge/devices.json", wire.last(`${BASE}/devices`)!.payload)).toEqual([]);
     expect(entry.extensions).toEqual(sensor().extensions);
     expect(entry.personal).toEqual([`${NS}.vibration`]);
-    expect(entry.selfChanging).toEqual([`${NS}.sensitivity`]);
+    expect(entry.selfChanging).toEqual(["battery", `${NS}.sensitivity`]);
   });
 
   it("does not count a key an action confirms as selfChanging", async () => {
@@ -69,7 +72,7 @@ describe("extensions and kinds", () => {
     const ext = sensor().extensions![0]!;
     const { wire } = await bridge({ description: sensor({ actions: [setSensitivity],
       extensions: [{ ...ext, actions: [{ action: setSensitivity.action, description: "Sets it", schema: { type: "integer" } }] }] }) });
-    expect(entryOf(wire).selfChanging).toBeUndefined();
+    expect(entryOf(wire).selfChanging).toEqual(["battery"]);
     expect(entryOf(wire).actions).toEqual([setSensitivity]);
   });
 
@@ -166,7 +169,7 @@ describe("occurrences (GA-BRIDGE-75)", () => {
     expect(e!.payload).toMatchObject({ seq: 1, type: "occurrence", device: BED, key: `${NS}.vibration`, value: true,
       timestamp: new Date(at).toISOString() });
     expect(typeof e!.payload.instanceId).toBe("string");
-    expect(wire.all(STATUS)).toHaveLength(0);
+    expect(readingStatuses(wire)).toEqual([]);
     // When the occurrence reached the bridge, not the device's stamp (GA-BRIDGE-37).
     expect(status(wire).devices[0].lastCheckIn).toBe(new Date(clock.now()).toISOString());
   });
@@ -397,7 +400,7 @@ describe("the port's times", () => {
     const { wire, doer, clock } = await bridge();
     await doer.observe(BED, { battery: 80 }, Number.NaN);
     await doer.occur(BED, `${NS}.vibration`, true, "f1", Number.NaN);
-    expect(wire.all(STATUS)).toHaveLength(0);
+    expect(readingStatuses(wire)).toEqual([]);
     expect(occurrences(wire)).toEqual([]);
     const before = wire.all(`${BASE}/status`).length;
     await clock.advance(10_000);
@@ -451,5 +454,42 @@ describe("the mutations", () => {
     await b.start();
     await doer.observe(lamp().hardwareId, { on: true, dp108: 3 });
     expect(wire.last(`${BASE}/devices/${lamp().hardwareId}/status`)!.payload.dp108).toBeUndefined();
+  });
+});
+
+describe("a sensor's readings are its own (FL-GAP-2)", () => {
+  const RADAR = "org.galatea.zigbee.zg_204zv";
+  /** A presence sensor as the bench's ZG-204ZV is described: three sensor keys, and a setting its action confirms. */
+  const presence = () => sensor({ model: { vendor: "HOBEIAN", model: "ZG-204ZV" }, sensorKeys: ["occupancy", "illuminance", "battery"],
+    settings: [`${RADAR}.fading_time`], personal: [],
+    actions: [{ action: `${RADAR}.set_fading_time`, idempotent: true, stateless: false, confirms: true,
+      args: { value: { min: 0, max: 28_800 } }, confirmedBy: { key: `${RADAR}.fading_time`, value: { arg: "value" } } }],
+    extensions: [{ capability: RADAR, description: "The radar's settings",
+      actions: [{ action: `${RADAR}.set_fading_time`, description: "Sets it", schema: { type: "object" } }],
+      keys: [{ key: `${RADAR}.fading_time`, description: "How long presence lasts", schema: { type: "number" } }] }] });
+
+  it("declares every sensor key selfChanging, never its setting, in a valid devices document", async () => {
+    const { wire } = await bridge({ description: presence() });
+    expect(entryOf(wire).selfChanging).toEqual(["occupancy", "illuminance", "battery"]);
+    expect(validate("bridge/devices.json", wire.last(`${BASE}/devices`)!.payload)).toEqual([]);
+  });
+
+  it("keeps a switch's `on` out, so a person's press still leases it", async () => {
+    const { wire } = await bridge({ description: lamp({ hardwareId: BED, stableIdentifier: BED }) });
+    expect(entryOf(wire)).not.toHaveProperty("selfChanging");
+  });
+
+  it("leaves the sensor keys unmarked under `leaves-a-reading-unmarked`, and only under a run", async () => {
+    const { wire } = await bridge({ description: presence(), unmarked: true });
+    expect(entryOf(wire)).not.toHaveProperty("selfChanging");
+    const clock = new FakeClock();
+    const off = new FakeWire();
+    const doer = new FakeDoer(clock);
+    doer.initial = [presence()];
+    const b = new ZigbeeBridge({ bridgeId: "zigbee", instanceId: randomUUID(), root: ROOT, clock, doer, wire: off, store: new MemoryStore(),
+      leavesReadingsUnmarked: true });
+    bridges.push(b);
+    await b.start();
+    expect(entryOf(off).selfChanging).toEqual(["occupancy", "illuminance", "battery"]);
   });
 });

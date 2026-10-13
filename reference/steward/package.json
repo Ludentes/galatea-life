@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@ludentes/galatea-life-binding": "^0.1.0",
-    "@ludentes/galatea-life-schemas": "^0.1.4",
+    "@ludentes/galatea-life-schemas": "^0.1.5",
     "@ludentes/galatea-life-test-clock": "^0.1.0",
     "@modelcontextprotocol/client": "2.2.0",
     "@modelcontextprotocol/node": "2.1.0",
@@ -39,8 +39,8 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
-    "@ludentes/galatea-life-harness": "^0.1.7",
-    "@ludentes/galatea-life-sim": "^0.1.2",
+    "@ludentes/galatea-life-harness": "^0.1.8",
+    "@ludentes/galatea-life-sim": "^0.1.3",
     "@types/pg": "8.23.1",
     "ajv": "8.20.0"
   }

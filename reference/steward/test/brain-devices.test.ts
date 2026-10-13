@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { MUTATIONS, type Mutation } from "../src/mutations.js";
 import { resolveRequest } from "../src/gate/resolve.js";
 import { planDefine } from "../src/house/define.js";
-import { context, furnished, SECRETS, up } from "./house.js";
+import { context, furnished, OWNER_CHAT, SECRETS, up } from "./house.js";
 import { DEVICES, DIMMER, eventsSince, heardAt, LAMP, quiet, setup } from "./setup.js";
 
 type Body = Record<string, any>;
 const STATE = { targets: Object.fromEntries(DEVICES.map((d) => [d.id, { liveness: "live", values: d.id === LAMP || d.id === DIMMER
   ? [{ key: "on", value: false, basis_time: "2030-01-01T08:00:00.000Z" }] : [] }])), transports: [], latches: [] };
-const OWNER_CHAT = up("endpoint", { id: "owner-chat", name: "Чат владельца", type: "app", room: null, person: "owner", served_by: "brain" });
 const devices = new Map(DEVICES.map((d) => [d.id, d as Body]));
 
 /** A steward whose owner wrote a rule that turns on what `on` names once the lamp turns on; `byBrain` defines through the brain. */

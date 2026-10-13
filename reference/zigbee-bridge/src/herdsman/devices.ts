@@ -4,6 +4,7 @@ import type { Zh } from "zigbee-herdsman-converters/lib/types";
 import type { Description, DoerEvents, HardwareId } from "../port.js";
 import { CONFIGURE_RETRY_MS, CONFIGURE_TRIES, runConfigure } from "./configure.js";
 import { configures, configureVersion, type Described, describe } from "./describe.js";
+import { active, Availability, type AvailabilityMutation, POLL_RETRY_MS } from "./availability.js";
 import { answering, type ConfigureMethod, eventExchange, type Exchange, type Gate, guard } from "./guard.js";
 import { redact } from "./log.js";
 import { type Override, overrideFor } from "./overrides.js";
@@ -26,7 +27,9 @@ import { poll, POLL_MS } from "./polling.js";
  * admitted anew is configured again, as zigbee2mqtt does at a join: herdsman's record of an earlier
  * configure outlives the device's leave, and the device may have been reset. The devices described as
  * polled are read POLL_MS after they were last heard or polled, one at a time, outside the queue, at
- * the doer's health exchanges (`pollDue`, the design's *Freshness*).
+ * the doer's health exchanges (`pollDue`, the design's *Freshness*). A device the rule covers (a mains
+ * device, `availability.ts`) is told unavailable once its polls or its commands go unanswered in a
+ * row, and available again, before anything else of it, at the next frame heard from it.
  */
 
 /** A device as the doer knows it: its definition, how it was described, and the settings it was described for. */
@@ -66,6 +69,8 @@ export interface DevicesOptions {
   noActions?: boolean;
   /** The coordinator's endpoint, the target of a `configure`'s binds, while a controller is up. */
   coordinator?(): Zh.Endpoint | undefined;
+  /** The build's own mutation of the availability rule, only under a run (`availability.ts`). */
+  mutation?: AvailabilityMutation;
 }
 
 export class HerdsmanDevices {
@@ -100,6 +105,10 @@ export class HerdsmanDevices {
   private readonly unanswered = new Set<HardwareId>();
   /** Whether a round of polls is under way: one round, and one poll, at a time. */
   private polling = false;
+  /** The rows of unanswered polls and commands of the devices the rule covers (`availability.ts`). */
+  private readonly availability: Availability;
+  /** Each covered device's poll retry, due POLL_RETRY_MS after a poll it did not answer: its timer. */
+  private readonly retries = new Map<HardwareId, number>();
 
   constructor(private readonly o: DevicesOptions) {
     this.definitionOf = o.definitionOf ?? ((d) => findByDevice(d, true));
@@ -110,6 +119,23 @@ export class HerdsmanDevices {
       exposesChanged: (hw) => this.then(async () => this.redescribe(hw)),
       ...(o.noActions ? {} : { answers: true }),
     });
+    this.availability = new Availability({ covers: (hw) => this.covers(hw), now: () => this.o.clock.now(),
+      tell: (hw, available) => {
+        const events = this.o.events();
+        events?.availability(hw, available, this.o.clock.now());
+        return events !== undefined;
+      } });
+  }
+
+  /**
+   * Whether the availability rule covers the device: what it is (`active`), never whether it is
+   * polled; under `marks-a-battery-device-dead`, whether it is polled.
+   */
+  private covers(hw: HardwareId): boolean {
+    const k = this.known.get(hw);
+    if (!k) return false;
+    if (this.o.mutation === "marks-a-battery-device-dead") return k.described.description.basis === "poll";
+    return active(k.model);
   }
 
   /**
@@ -171,6 +197,8 @@ export class HerdsmanDevices {
   /** A device's message, read through the pipeline and told to the core. */
   heard(m: Message): Promise<void> {
     return this.then(async () => {
+      // A frame heard from it: a device told unavailable is available again, before what the frame says.
+      this.availability.heard(m.device.ieeeAddr);
       const h = await this.pipeline.message(m);
       if (h) await this.tell(h);
       if (!h?.checkIn) return;
@@ -184,6 +212,8 @@ export class HerdsmanDevices {
   /** herdsman's announce of a device: its converters' `deviceAnnounce`. */
   announced(device: Zh.Device): Promise<void> {
     return this.then(async () => {
+      // An announce is a frame heard from it: a device plugged back in sends one.
+      this.availability.heard(device.ieeeAddr);
       const k = this.known.get(device.ieeeAddr);
       if (!k) return;
       const ex = this.exchange("deviceAnnounce");
@@ -231,6 +261,8 @@ export class HerdsmanDevices {
       this.lastHeard.delete(hw);
       this.lastPolled.delete(hw);
       this.unanswered.delete(hw);
+      this.availability.forget(hw);
+      this.cancelRetry(hw);
     });
   }
 
@@ -238,6 +270,8 @@ export class HerdsmanDevices {
   clear(): Promise<void> {
     return this.then(async () => {
       for (const hw of [...this.known.keys()]) await this.forget(hw);
+      // A retry belongs to the controller whose link it would use.
+      for (const hw of [...this.retries.keys()]) this.cancelRetry(hw);
     });
   }
 
@@ -272,8 +306,13 @@ export class HerdsmanDevices {
     try {
       for (let hw = this.nextPoll(); hw !== undefined; hw = this.nextPoll()) {
         const k = this.known.get(hw)!;
-        this.lastPolled.set(hw, this.o.clock.now());
-        const p = await poll(k.model);
+        const since = this.o.clock.now();
+        this.lastPolled.set(hw, since);
+        // A device told unavailable is read on its first endpoint where none lists genBasic, so that it can come back.
+        const p = await poll(k.model, { anyEndpoint: this.availability.isGone(hw) });
+        // Counted in the queue, in order with the device's messages (its answer among them).
+        if (p.answered) void this.then(async () => this.availability.heard(hw));
+        else if (p.noAnswer && this.covers(hw)) this.retryLater(hw, k.model, since);
         if (!p.answered && !this.unanswered.has(hw)) {
           this.unanswered.add(hw);
           console.error(`zigbee: ${hw}: its poll was not answered: ${p.detail}; read again every ${POLL_MS} ms`);
@@ -286,13 +325,56 @@ export class HerdsmanDevices {
     }
   }
 
+  /**
+   * What a command carried out on the device, begun at `since`, came to (`reachOf`): an answer starts
+   * its rows again, and a command with no answer counts towards its going unavailable, unless the
+   * device was heard after it began. Counted in the queue, in order with the device's messages.
+   */
+  commanded(hw: HardwareId, reach: "answered" | "unanswered" | undefined, since: number): Promise<void> {
+    if (reach === undefined) return Promise.resolve();
+    return this.then(async () => (reach === "answered" ? this.availability.heard(hw) : this.availability.missed(hw, "command", since)));
+  }
+
+  /**
+   * A covered device's poll went unanswered: read once more POLL_RETRY_MS later, with herdsman's
+   * recovery, as zigbee2mqtt's ping does; the poll counts as a miss only when that read goes
+   * unanswered too, and the device was not heard since the poll began.
+   */
+  private retryLater(hw: HardwareId, model: Zh.Device, since: number): void {
+    // Only for the device the poll read, on the controller it read it through: a poll that returns
+    // after `clear()` (the controller closed, or the doer stopped) sets no timer, and none crosses to
+    // the next controller's model.
+    if (this.retries.has(hw) || this.known.get(hw)?.model !== model) return;
+    this.retries.set(hw, this.o.clock.setTimeout(() => {
+      this.retries.delete(hw);
+      void this.retry(hw, model, since);
+    }, POLL_RETRY_MS));
+  }
+
+  private async retry(hw: HardwareId, model: Zh.Device, since: number): Promise<void> {
+    const k = this.known.get(hw);
+    if (!k || k.model !== model || this.o.noActions) return;
+    // The cadence stays the poll's: the next poll is POLL_MS after it, not after its retry.
+    const p = await poll(k.model, { recovery: true, anyEndpoint: this.availability.isGone(hw) });
+    if (p.answered) void this.then(async () => this.availability.heard(hw));
+    else if (p.noAnswer) void this.then(async () => this.availability.missed(hw, "poll", since));
+  }
+
+  private cancelRetry(hw: HardwareId): void {
+    const h = this.retries.get(hw);
+    if (h === undefined) return;
+    this.o.clock.clear(h);
+    this.retries.delete(hw);
+  }
+
   /** The polled device that has waited longest since it was heard or polled, if one has waited POLL_MS. */
   private nextPoll(): HardwareId | undefined {
     const now = this.o.clock.now();
     let next: HardwareId | undefined;
     let nextAt = Number.POSITIVE_INFINITY;
     for (const [hw, k] of this.known) {
-      if (k.described.description.basis !== "poll") continue;
+      // A covered device told unavailable is read whatever its basis, so that it can come back.
+      if (k.described.description.basis !== "poll" && !this.availability.isGone(hw)) continue;
       const last = Math.max(this.lastHeard.get(hw) ?? Number.NEGATIVE_INFINITY, this.lastPolled.get(hw) ?? Number.NEGATIVE_INFINITY);
       if (now - last < POLL_MS || last >= nextAt) continue;
       next = hw;

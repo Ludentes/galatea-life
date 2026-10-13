@@ -22,7 +22,7 @@
       }
     },
     "leases": {
-      "description": "Each leased device's lease (steward, Leases): its holder, its precedence and when it ends; a device with none is absent (the reference steward's design, Standards fixes this build shows)",
+      "description": "Each leased device's lease (steward, Leases): its holder, its precedence and when it ends; a device with none is absent (the reference steward's design, Standards fixes this build shows). A person's hold's `expires` is the time it would end as of now, which presence may move later and which is never before the ack floor (GA-LEASE-7)",
       "type": "object",
       "additionalProperties": {
         "type": "object",

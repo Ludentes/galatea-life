@@ -4,7 +4,7 @@ import { ZigbeeBridge } from "./bridge.js";
 import { connectPg, maskUrls } from "./db.js";
 import { brokerFromEnv, coordinatorFromEnv, databaseUrlWithPassword, endUnannounced, noActionsFromEnv, privateDirProblem, readPins, readSecret } from "./entry.js";
 import { ensureStateDir, InstanceError, InstanceLock } from "./instance-lock.js";
-import { mutationFromEnv } from "./mutation.js";
+import { bridgeMutationOptions, mutationFromEnv } from "./mutation.js";
 import type { DoerPort } from "./port.js";
 import { ScriptedDoer } from "./scripted-doer.js";
 import { Store } from "./store.js";
@@ -31,7 +31,7 @@ const withheld = noActionsFromEnv(env.GALATEA_ZIGBEE_NO_ACTIONS);
 if ("refused" in withheld) fail(`refusing to start: ${withheld.refused}`);
 const runId = env.GALATEA_TEST_RUN_ID;
 // A negative subject's mutation, only under a run: one without a run, or a name this build does not implement, is refused.
-const asked = mutationFromEnv(env);
+const asked = mutationFromEnv(env, Boolean(controlTopic));
 if ("refused" in asked) fail(`refusing to start: ${asked.refused}`);
 const mutation = asked.mutation;
 // A broker that is no URL is a configuration error, said plainly before anything is opened.
@@ -156,10 +156,11 @@ if (controlTopic) {
   // herdsman only resume, which writes nothing to the coordinator, and the process's end closes its link.
   const { HerdsmanDoer } = await import("./herdsman/doer.js");
   doer = new HerdsmanDoer({ clock, coordinator: zigbee!.coordinator, dataDir: env.GALATEA_STATE_DIR, ...linkMutation,
-    ...(withheld.noActions ? { noActions: true } : {}) });
+    ...(withheld.noActions ? { noActions: true } : {}),
+    ...(mutation === "marks-a-battery-device-dead" ? { availabilityMutation: mutation } : {}) });
 }
 bridge = new ZigbeeBridge({ bridgeId, instanceId, root, clock, doer, wire, store, ...(runId ? { runId } : {}),
-  ...(mutation ? { mutation } : {}) });
+  ...bridgeMutationOptions(mutation) });
 for (const [deviceId, pin] of pins) bridge.setPin(deviceId, pin);
 if (scripted) await scripted.serve(doerWire!, controlTopic!);
 await bridge.start();

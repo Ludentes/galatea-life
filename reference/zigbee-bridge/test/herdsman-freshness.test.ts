@@ -111,7 +111,7 @@ group("polling: which devices, at what cadence, with what bound", () => {
     stub.answer((f) => reply(f, "readRsp", [{ attrId: 0, status: Zcl.Status.UNSUPPORTED_ATTRIBUTE }]));
     expect(await poll(db.get(LIGHT))).toEqual({ answered: true });
     stub.answer(() => responseTimeout());
-    expect(await poll(db.get(LIGHT))).toEqual({ answered: false, detail: "the device did not answer in time" });
+    expect(await poll(db.get(LIGHT))).toEqual({ answered: false, detail: "the device did not answer in time", noAnswer: true });
   });
 });
 
@@ -319,7 +319,7 @@ group("HerdsmanDevices: polls, and configured reports at a sleeping device's nex
     }
     stub.answer(answersAll);
     await l.pollDue();
-    const logged = errors.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("poll"));
+    const logged = errors.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("its poll"));
     expect(logged).toEqual([`zigbee: ${LIGHT}: its poll was not answered: the device did not answer in time; read again every ${POLL_MS} ms`,
       `zigbee: ${LIGHT}: its poll is answered again`]);
   });

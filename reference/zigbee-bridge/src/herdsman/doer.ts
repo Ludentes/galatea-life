@@ -4,6 +4,7 @@ import type { Clock } from "@ludentes/galatea-life-test-clock";
 import { Zdo } from "zigbee-herdsman";
 import type { DoerEvents, DoerPort, HardwareId, ProtocolResult } from "../port.js";
 import { Link, type LinkMutation } from "../transport.js";
+import { type AvailabilityMutation, reachOf } from "./availability.js";
 import { HerdsmanDevices, type Target } from "./devices.js";
 import { resultOf, runGet, runSet } from "./execute.js";
 import { redact } from "./log.js";
@@ -89,6 +90,8 @@ export interface HerdsmanDoerOptions {
   definitionOf?: ConstructorParameters<typeof HerdsmanDevices>[0]["definitionOf"];
   /** When the coordinator's backup was last written, on the doer's clock, or undefined for none; the file's own time unless given. */
   backupTakenAt?: () => Promise<number | undefined>;
+  /** The build's own mutation of the availability rule, only under a run (`availability.ts`). */
+  availabilityMutation?: AvailabilityMutation;
 }
 
 /**
@@ -170,7 +173,8 @@ export class HerdsmanDoer implements DoerPort {
     if (!o.noActions) this.closeOwed = Number.POSITIVE_INFINITY;
     this.devices = new HerdsmanDevices({ clock: o.clock, events: () => (this.stopped ? undefined : this.events),
       coordinator: () => (this.stack && !this.stopped ? this.stack.coordinatorEndpoint() : undefined),
-      ...(o.definitionOf ? { definitionOf: o.definitionOf } : {}), ...(o.noActions ? { noActions: true } : {}) });
+      ...(o.definitionOf ? { definitionOf: o.definitionOf } : {}), ...(o.noActions ? { noActions: true } : {}),
+      ...(o.availabilityMutation ? { mutation: o.availabilityMutation } : {}) });
     this.readNetwork = o.readNetwork ?? readNetworkFile;
     this.predict = o.predict ?? ((c, n, b) => readCoordinator(c, n, b));
     this.makeStack = o.makeStack ?? herdsmanStack;
@@ -249,7 +253,8 @@ export class HerdsmanDoer implements DoerPort {
 
   /**
    * Carries an action out (the design, *Command results*): its converter's set, run on the device
-   * live (`execute.ts`), the arguments made the converter's value by the description's map. The
+   * live (`execute.ts`), the arguments made the converter's value by the description's map. Whether
+   * the device answered counts towards its going unavailable (`availability.ts`). The
    * owner's PIN, which the core gives with a lock's unlock, is never handed to the lock (PIN_WITHHELD):
    * the command is not sent at all. The core gives none while the doer withholds them
    * (`withholdsPins`); this is the second wall. Under the owner's switch nothing is sent.
@@ -262,8 +267,13 @@ export class HerdsmanDoer implements DoerPort {
     const map = t.described.actions.get(action);
     if (!decl || !map) return { kind: "notSent", reason: "unreachable", detail: `${action} is not offered` };
     if (pin !== undefined) return { kind: "notSent", reason: "unreachable", detail: PIN_WITHHELD };
+    const since = this.o.clock.now();
     const run = await runSet(t.definition, t.model, map.property, map.value(args), { now: () => this.o.clock.now(), deadline,
       once: !decl.idempotent, ...(t.override?.options ? { options: t.override.options } : {}), state: t.state });
+    // Whether the device answered counts towards its availability (`availability.ts`); the ack is the run's
+    // alone. A command sent once, without herdsman's recovery, counts only when answered.
+    const reach = reachOf(run);
+    void this.devices.commanded(hardwareId, reach === "unanswered" && !decl.idempotent ? undefined : reach, since);
     return resultOf(run);
   }
 

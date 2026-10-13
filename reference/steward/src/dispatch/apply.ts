@@ -1,6 +1,7 @@
 import type { ApplierOutcome } from "@ludentes/galatea-life-schemas";
 import type { Answer } from "../confirm/answer.js";
 import { unplanned, type StewardStep } from "../gate/reasons.js";
+import type { HoldState } from "../leases/hold.js";
 import type { Holder } from "../leases/table.js";
 import type { Mutation } from "../mutations.js";
 import type { Firing } from "../rules/outcomes.js";
@@ -79,13 +80,18 @@ export function atDispatch(s: StewardStep, answer: Answer | undefined, inline: b
   return { send: true, token: asked !== undefined };
 }
 
+/** The asks authored work turns into the matching skip (GA-SCN-4). */
+const MATCHING_SKIPS = new Set(["occupancy_unknown", "in_use", "in_use_unknown", "toggle_only"]);
+
 /**
  * What a rule's firing does with one step judged as authored work (steward, *Rules*; GA-SCN-4): an op
- * is sent, a `confirm` or `no_voice` one with an authored token; an ask the author cannot answer
- * becomes the matching skip, a toggle's `skipped(toggle_only)` whatever its tier, never answered by the
- * authored token; the steward's own refusals (`leased`, `conflict`, `role`, `tier`) and an occupied
- * room stand; the applier's own skips and refusals are sent, the applier judging them again, once
- * the lease and the room as they are now (`found`) let them, but never one the steward could not plan;
+ * is sent, a `confirm` or `no_voice` one with an authored token; an `ask(occupancy_unknown)`,
+ * `ask(in_use)` or `ask(in_use_unknown)` becomes the matching skip, a toggle's `skipped(toggle_only)`
+ * whatever its tier, never answered by the authored token; any other ask, which authored work never
+ * meets and no one can answer, is `skipped(not_confirmed)` (GA-APPLY-3); the steward's own refusals
+ * (`leased`, `conflict`, `role`, `tier`) and an occupied room stand; the applier's own skips and
+ * refusals are sent, the applier judging them again, once the lease and the room as they are now
+ * (`found`) let them, but never one the steward could not plan;
  * an applier's `skip(already)` is the steward's own `skipped(already)`, nothing to do.
  * `authors-a-toggle` sends the toggle with the authored token.
  */
@@ -93,7 +99,8 @@ export function ruleDecision(s: StewardStep, mutation?: Mutation, found: Found =
   if (s.verdict === "op") return { send: true, token: s.tier !== "reversible" };
   if (s.verdict === "ask") {
     if (s.reason === "toggle_only" && mutation === "authors-a-toggle") return { send: true, token: true };
-    return { send: false, outcome: "skipped", reason: s.reason! };
+    if (MATCHING_SKIPS.has(s.reason ?? "")) return { send: false, outcome: "skipped", reason: s.reason! };
+    return { send: false, outcome: "skipped", reason: "not_confirmed" };
   }
   if (s.reason === "leased" || OWN.has(s.reason ?? "")) return { send: false, outcome: "refused", reason: s.reason! };
   if (s.reason === "occupied") return { send: false, outcome: "skipped", reason: "occupied" };
@@ -146,8 +153,12 @@ export interface ApplyRecord {
   done: Promise<void>;
   /** When it was dispatched: the leases its steps take run from then (GA-LEASE-1). */
   dispatchMs?: number;
-  /** The steps that laid a provisional lease on their device at dispatch, until the applier answers. */
-  laid?: { step: string; target: string }[];
+  /**
+   * The steps that laid a provisional lease on their device at dispatch, until the applier answers:
+   * each with its action and args, which give its hold's direction, and the apply's derived role,
+   * kept with the hold (GA-LEASE-7, GA-LEASE-10).
+   */
+  laid?: { step: string; target: string; action: string; args: Record<string, unknown>; role?: HoldState["role"] }[];
   /** The steps of an inline request whose caller-set `from` the steward overwrote, marked on their outcomes (GA-NOTE-2). */
   fromReplaced?: string[];
   /** The key the applier call carries when it is not the apply's id: a rule firing's `rule:<id>:<n>` (GA-STW-10). */

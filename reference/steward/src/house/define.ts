@@ -4,7 +4,7 @@ import { RequestError } from "../core/errors.js";
 import { digest } from "../core/secret.js";
 import type { Mutation } from "../mutations.js";
 import { markBrain } from "./brain.js";
-import { copyHouse, deviceActions, HOME_DEFAULTS, startsOf, TABLES, type Credential, type Endpoint, type Group, type House, type HomeSettings, type Rule,
+import { copyHouse, deviceActions, HOLD_DEFAULTS, HOME_DEFAULTS, startsOf, TABLES, type Credential, type Endpoint, type Group, type House, type HoldPolicy, type HomeSettings, type Rule,
   type Scenario, type ScenarioStep, type Schedule, type ScheduleException, type TargetOverlay, type VoiceRecord } from "./model.js";
 
 /** A change of a `define` change set, as the applier's `configure` envelope (the design, *The house model and `define`*). */
@@ -50,7 +50,7 @@ export function planDefine(house: House, changes: Change[], ctx: DefineContext):
     if (!storable(c.value)) throw invalid(`${at}: a string holds U+0000 or a lone surrogate`);
     // A delete names its item by its key alone (GA-DEF-14); an upsert is checked against its kind's shape (GA-DEF-13).
     const schema = c.op === "delete" ? "steward/define.delete.json" : `steward/define.${c.kind}.json`;
-    const errors = validate(schema, c.value ?? {})
+    const errors = validate(schema, pressUnchecked(c, ctx) ?? c.value ?? {})
       .filter((e) => !(ctx.mutation === "takes-a-short-secret" && c.kind === "credential" && /secret/.test(e)));
     if (errors.length) throw invalid(`${at}: ${errors.join("; ")}`);
     const v = c.value as Args;
@@ -62,6 +62,18 @@ export function planDefine(house: House, changes: Change[], ctx: DefineContext):
   checkGone(house, draft, ctx);
   if (ctx.brain) markBrain(house, draft);
   return { draft, diff: diffOf(house, draft) };
+}
+
+/**
+ * `press-on-liveness`: a rule's value with its trigger's `press` left out, so the schema never sees the
+ * mark on a trigger that is not an occurrence one (GA-DEF-13, GA-LEASE-9); undefined otherwise.
+ */
+function pressUnchecked(c: Change, ctx: DefineContext): Args | undefined {
+  const v = c.value as Args | undefined;
+  const event = v?.trigger?.event;
+  if (ctx.mutation !== "press-on-liveness" || c.kind !== "rule" || !event || typeof event !== "object" || !("press" in event)) return undefined;
+  const { press: _p, ...rest } = event as Args;
+  return { ...v, trigger: { ...v!.trigger, event: rest } };
 }
 
 /** Whether the item an upsert's value names exists: the upsert updates it, rather than creating it (GA-DEF-14). */
@@ -138,8 +150,26 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       if (v.time_source !== undefined && v.time_source !== null && !ctx.underHarness) {
         throw invalid(`${at}: time_source is accepted only while the applier reports a test_run_id (GA-HARN-2)`);
       }
+      const hold = v.hold as Record<string, unknown> | null | undefined;
+      if (hold?.schedule_ends === true) {
+        if (ctx.mutation === "refuses-a-flag-unnamed") throw invalid(`${at}: hold: this steward does not implement it`);
+        throw new RequestError("invalid_request", `${at}: hold.schedule_ends: this steward does not end a hold at a schedule's step (GA-LEASE-8)`, { field: "schedule_ends" });
+      }
+      // The mutation: an owner's short windows refused, though GA-LEASE-8 bounds them by the schema's minimum only.
+      if (ctx.mutation === "refuses-a-short-hold" && hold && ["on_s", "off_s", "other_s", "fixed_s"].some((f) => typeof hold[f] === "number" && (hold[f] as number) < 60)) {
+        throw invalid(`${at}: hold windows under 60 s are refused`);
+      }
       const home = h.home as unknown as Args;
       for (const [k, x] of Object.entries(v)) {
+        if (k === "hold") {
+          const next = x === null ? structuredClone(HOLD_DEFAULTS) : { ...h.home.hold };
+          if (x !== null) for (const [f, y] of Object.entries(x as Record<string, unknown>)) {
+            (next as unknown as Record<string, unknown>)[f] = y === null
+              ? (ctx.mutation === "null-keeps-the-window" ? (next as unknown as Record<string, unknown>)[f] : HOLD_DEFAULTS[f as keyof HoldPolicy]) : y;
+          }
+          h.home.hold = next;
+          continue;
+        }
         if (x === null) {
           if (k === "time_source") delete home[k];
           else home[k] = structuredClone((HOME_DEFAULTS as unknown as Args)[k]);

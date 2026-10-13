@@ -6,8 +6,8 @@
 // brain's plan asking; the ask put on the owner's app through confirm_on; the brain's own answer
 // refused not_permitted; the owner's yes; a token minted; the applier dispatching, the simulated lamp
 // on, and the outcome relayed. Then a rule over the same chain (HS3's night light, slice 3b): «the lamp
-// on for 10 s → off», refused by the person's lease, firing again when the lease ends (a five-minute
-// hold), the applier dispatching and the simulated lamp off. Then what a rule's outcome does (slice 4):
+// on for 10 s → off», refused by the person's lease, firing again when the lease ends (a 20 s
+// hold window), the applier dispatching and the simulated lamp off. Then what a rule's outcome does (slice 4):
 // «while the lamp is off → turn it on», the simulated lamp rejecting the command, and the steward's
 // notice of the failure delivered on the channel. Then a person's scene (slice 5): the lamp on, 30 s, off.
 // Then a scheduled scene (slice 6): the lamp on at a time of day two minutes on, its confirm step sent with
@@ -24,6 +24,7 @@ import { freshDatabase } from "@ludentes/galatea-life-harness/database";
 import { SubjectProcess } from "@ludentes/galatea-life-harness";
 import { brokerUrl, fixtureDevices, freePort, SimBridge, startBroker, TimeServer } from "@ludentes/galatea-life-sim";
 import { TestClock } from "@ludentes/galatea-life-test-clock";
+import { RUN_HOLD, holdOps, judgeSet, setOps } from "./first-light-hold.mjs";
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repo = join(here, "..", "..");
@@ -37,6 +38,8 @@ if (!admin) {
 const cleanup = [];
 const steps = [];
 let failed = false;
+/** Puts back the hold policy the run changed (set once the run has recorded it). */
+let restoreHold = async () => {};
 /** One step of the walk: its name, and whether it held. */
 function step(n, what, ok, detail = "") {
   steps.push(`${ok ? "PASS" : "FAIL"} ${n} ${what}${detail ? `: ${detail}` : ""}`);
@@ -147,9 +150,34 @@ try {
   };
   const up = (kind, value) => ({ op: "upsert", kind, value });
   const del = (kind, value) => ({ op: "delete", kind, value });
+  // The hold policy: read first and recorded, then set one field per define to the run's 20 s windows (a
+  // refusal naming a field stops the run), and put back field by field in the finally below, never with null.
+  const recordedSettings = { hold: structuredClone((await ownerTool.callOk("describe")).home?.hold) };
+  if (!recordedSettings.hold) throw new Error("describe shows no home.hold to record before the run");
+  const setFields = [];
+  restoreHold = async () => {
+    if (setFields.length === 0) return;
+    const tool = await McpSeam.connect(stewardUrl, owner);
+    try {
+      for (const op of holdOps(recordedSettings.hold, setFields)) {
+        const { revision } = await tool.callOk("describe");
+        okOf(await tool.call("define", { endpoint: "owner-app", changes: [op], expected_revision: revision, dry_run: false }), "restoring the recorded hold");
+      }
+    } finally {
+      await tool.close();
+    }
+  };
+  for (const op of setOps()) {
+    const [field] = Object.keys(op.value.hold);
+    const { revision } = await ownerTool.callOk("describe");
+    const r = await ownerTool.call("define", { endpoint: "owner-app", changes: [op], expected_revision: revision, dry_run: false });
+    const verdict = judgeSet(r);
+    if (verdict.kind === "refused") throw new Error(`the steward refused hold.${verdict.field}: ${verdict.message}; the run stops, restoring what it set`);
+    if (verdict.kind === "failed") throw new Error(`setting hold.${field} returned ${verdict.error}: ${verdict.message}`);
+    setFields.push(field);
+  }
   await define([
-    // A five-minute hold, so the night light's rule meets the person's lease and outlives it within the run.
-    up("home", { timezone: "Europe/Moscow", notice_channels: [CHANNEL], hold_time_s: 300 }),
+    up("home", { timezone: "Europe/Moscow", notice_channels: [CHANNEL] }),
     up("room", { id: "kitchen", name: "Кухня" }),
     up("target", { id: LAMP, room: "kitchen" }),
     up("endpoint", { id: "kitchen-voice", name: "Кухня", type: "voice", room: "kitchen", person: null, served_by: "brain", confirm_on: "owner-app" }),
@@ -223,7 +251,8 @@ try {
   await define([up("rule", { id: "night", name: "Ночник гаснет сам", trigger: { held: { target: LAMP, key: "on", op: "eq", value: true, for_s: 10 } },
     actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }] })]);
   // Past the lease's end in five-second steps, the bridge reporting at each, so the lamp stays live throughout.
-  for (let t = 0; t < 310_000; t += 5_000) {
+  // Past the lease: the hold window and ten seconds more.
+  for (let t = 0; t < RUN_HOLD.fixed_s * 1000 + 10_000; t += 5_000) {
     await bridge.publishStatus();
     await time.advance(5_000, { chunkMs: 5_000 });
   }
@@ -382,6 +411,10 @@ try {
   failed = true;
   console.error(err instanceof Error ? err.message : String(err));
 } finally {
+  await restoreHold().catch((err) => {
+    failed = true;
+    console.error(`the recorded hold was not restored: ${err instanceof Error ? err.message : String(err)}`);
+  });
   while (cleanup.length) await Promise.resolve(cleanup.pop()()).catch(() => undefined);
 }
 process.exit(failed ? 1 : 0);

@@ -30,13 +30,15 @@ export const RECOVERY_PAGE_MS = 3_600_000;
 
 /**
  * Whether a missed event is one the recovery cap never drops (the milestone 7+10+11 review, I2): what
- * grants or ends a lease, a safety rule's actuation, latch and completion (GA-LEASE-6), and an outside
- * or a load cap's change (GA-LEASE-2).
+ * grants or ends a lease, a safety rule's actuation, latch and completion (GA-LEASE-6), an outside or a
+ * load cap's change (GA-LEASE-2), and the gap's presence, a `motion` or `occupancy` report or a
+ * liveness, over which a hold is judged (GA-LEASE-2, GA-LEASE-7, GA-PERSIST-2; R-56).
  */
 export function mustRecover(e: Body): boolean {
-  if (e.type === "latch" || e.type === "rule_fired") return true;
+  if (e.type === "latch" || e.type === "rule_fired" || e.type === "liveness") return true;
   if (e.type === "outcome" && typeof e.rule_id === "string") return true;
   if (e.type !== "state") return false;
+  if (e.key === "motion" || e.key === "occupancy") return true;
   return e.cause === "external" || e.cause === "load_cap" || (typeof e.cause === "object" && e.cause !== null && typeof e.cause.safety_rule === "string");
 }
 
@@ -46,7 +48,8 @@ export type Dropped = { count: number; targets: string[] };
 /** What the link hands the steward, each call one synchronous step of the steward's. */
 export interface LinkSteps {
   describe(d: Body): void;
-  state(s: Body): void;
+  /** The applier's `state`; on a sync, with the sync's events `cursor`, the position a gap is read from when no event came yet (R-52). */
+  state(s: Body, cursor?: string): void;
   events(events: Body[]): void;
   /** The `notices` of every `events` response, the sync's and an empty batch's included (GA-NOTE-1). */
   notices?(notices: Body[]): void;
@@ -214,7 +217,7 @@ export class ApplierLink {
     this.connected = true;
     this.o.steps.describe(d);
     if (missed && this.o.steps.recover) this.o.steps.recover(missed.events, s, cursor, missed.dropped);
-    else this.o.steps.state(s);
+    else this.o.steps.state(s, cursor);
     this.o.steps.notices?.(notices ?? []);
     this.lastError = undefined;
     this.backoffMs = FIRST_BACKOFF_MS;

@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "steward/event.lease.json",
+  "title": "The steward's lease event (steward, Leases; How a person's hold ends, Explained; GA-LEASE-7): a lease granted, replaced or ended, and why a person's hold ended",
+  "type": "object",
+  "required": [
+    "seq",
+    "time",
+    "type",
+    "target",
+    "change",
+    "holder",
+    "precedence",
+    "expires"
+  ],
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "time": {
+      "$ref": "../common.json#/$defs/time"
+    },
+    "type": {
+      "const": "lease"
+    },
+    "target": {
+      "type": "string"
+    },
+    "change": {
+      "enum": [
+        "granted",
+        "replaced",
+        "ended"
+      ]
+    },
+    "holder": {
+      "$ref": "../common.json#/$defs/principal"
+    },
+    "precedence": {
+      "enum": [
+        "safety_rule",
+        "person",
+        "scheduled_run",
+        "rule"
+      ]
+    },
+    "expires": {
+      "anyOf": [
+        {
+          "$ref": "../common.json#/$defs/time"
+        },
+        {
+          "enum": [
+            "run_end"
+          ]
+        }
+      ]
+    },
+    "direction": {
+      "enum": [
+        "on",
+        "off",
+        "other"
+      ],
+      "description": "A person's hold granted or replacing: the change's direction; none for a load_cap lease"
+    },
+    "role": {
+      "enum": [
+        "owner",
+        "member",
+        "guest"
+      ],
+      "description": "A granted apply's hold: the role derived at the apply, kept with the hold (GA-LEASE-10)"
+    },
+    "restored": {
+      "const": true,
+      "description": "A hold a press replaced, granted again after the press's step ended unreachable (GA-LEASE-9)"
+    },
+    "end": {
+      "enum": [
+        "quiet",
+        "window",
+        "cap",
+        "vacant",
+        "schedule",
+        "replaced",
+        "unreachable",
+        "removed"
+      ],
+      "description": "What ended the lease, on an `ended` event only; a person's hold's ended event names it (GA-LEASE-7)"
+    },
+    "quiet_since": {
+      "$ref": "../common.json#/$defs/time",
+      "description": "With end quiet: the moment the room last became quiet; absent when quiet throughout"
+    },
+    "end_time": {
+      "$ref": "../common.json#/$defs/time",
+      "description": "An end that fell inside a restart's gap, ended at the restart (GA-PERSIST-2)"
+    },
+    "run": {
+      "type": "string",
+      "description": "With end schedule: the schedule's run"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "end"
+        ]
+      },
+      "then": {
+        "properties": {
+          "change": {
+            "const": "ended"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "role"
+        ]
+      },
+      "then": {
+        "properties": {
+          "change": {
+            "const": "granted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "restored"
+        ]
+      },
+      "then": {
+        "properties": {
+          "change": {
+            "const": "granted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "end_time"
+        ]
+      },
+      "then": {
+        "properties": {
+          "change": {
+            "const": "ended"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "end": {
+            "const": "schedule"
+          }
+        },
+        "required": [
+          "end"
+        ]
+      },
+      "then": {
+        "required": [
+          "run"
+        ]
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "change": {
+                "const": "granted"
+              }
+            }
+          },
+          {
+            "properties": {
+              "holder": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "endpoint"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "role",
+          "direction"
+        ]
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "change": {
+                "const": "granted"
+              }
+            }
+          },
+          {
+            "properties": {
+              "holder": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "rule",
+                      "press"
+                    ]
+                  },
+                  {
+                    "const": "external"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "direction"
+        ]
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "change": {
+                "const": "granted"
+              }
+            }
+          },
+          {
+            "properties": {
+              "holder": {
+                "anyOf": [
+                  {
+                    "const": "load_cap"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "direction"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "change": {
+                "const": "ended"
+              }
+            }
+          },
+          {
+            "properties": {
+              "holder": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "endpoint"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "rule",
+                      "press"
+                    ]
+                  },
+                  {
+                    "const": "external"
+                  },
+                  {
+                    "const": "load_cap"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "end"
+        ]
+      }
+    }
+  ]
+}

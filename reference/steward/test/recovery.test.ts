@@ -3,7 +3,7 @@ import { SECRETS, up } from "./house.js";
 import { describeOf, DEVICES, DIMMER, eventsSince, LAMP, on, quiet, setup } from "./setup.js";
 
 type Body = Record<string, any>;
-const HOLD_MS = 7_200_000;
+const HOLD_MS = 3_600_000;
 const VALVE = "sim-bridge:valve";
 const iso = (ms: number) => new Date(ms).toISOString();
 const live = (on: boolean) => ({ targets: { [LAMP]: { liveness: "live", values: [{ key: "on", value: on }] },
@@ -59,12 +59,14 @@ describe("recovery after a gap (the design, *Recovery*)", () => {
 
   it("leases a missed external or load_cap change for what is left of its hold, none past it, never over a later lease (GA-LEASE-2)", async () => {
     const s = await following();
+    // The gap's changes come after the steward's last live reading, which no gap event counts before (GA-LEASE-7).
+    s.clock.jump(2 * HOLD_MS);
     const now = s.clock.now();
     s.applier.emit({ type: "state", target: LAMP, key: "on", value: false, time: iso(now - HOLD_MS - 1_000), cause: "external" });
-    s.applier.emit({ type: "state", target: DIMMER, key: "level", value: 10, time: iso(now - 3_600_000), cause: "load_cap" });
+    s.applier.emit({ type: "state", target: DIMMER, key: "level", value: 10, time: iso(now - 1_800_000), cause: "load_cap" });
     await gapEnds(s, live(false));
     const leases = (await s.ok(SECRETS.owner, "state")).leases as Body;
-    expect(leases).toEqual({ [DIMMER]: { holder: "load_cap", precedence: "person", expires: iso(now - 3_600_000 + HOLD_MS) } });
+    expect(leases).toEqual({ [DIMMER]: { holder: "load_cap", precedence: "person", expires: iso(now - 1_800_000 + HOLD_MS) } });
     // A person's apply after the missed change: its lease stands.
     await s.ok(SECRETS.olga, "apply", { request: { endpoint: "olga-app", actions: [{ target: LAMP, action: "onoff.turn_on", args: {} }] },
       idempotency_key: "after-the-change" });

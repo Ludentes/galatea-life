@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "steward/define.rule_exception.json",
-  "title": "A define change's value for kind rule_exception (steward, Time windows, not_in and exceptions): one exception of a rule, added by an upsert, removed by a delete of the same from and until (provisional until the standard names the shape)",
+  "title": "A define change's value for kind rule_exception (steward, Time windows, not_in and exceptions): one exception of a rule, added by an upsert, removed by a delete of the same from and until; steward, Change sets",
   "type": "object",
   "additionalProperties": false,
   "required": ["rule", "from", "until"],

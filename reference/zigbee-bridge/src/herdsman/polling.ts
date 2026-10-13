@@ -1,5 +1,6 @@
 import { Zcl } from "zigbee-herdsman";
 import type { Zh } from "zigbee-herdsman-converters/lib/types";
+import { noAnswer } from "./availability.js";
 import { lostDetail } from "./execute.js";
 
 /**
@@ -39,22 +40,33 @@ export function polls(device: Zh.Device, reachMs: number): boolean {
   return reachMs <= POLL_REACH_MS && pollEndpoint(device) !== undefined;
 }
 
-/** How a poll ended: the device answered (an error status is an answer), or it did not, with why in the doer's own words. */
-export type Polled = { answered: true } | { answered: false; detail: string };
+/**
+ * How a poll ended: the device answered (an error status is an answer), or it did not, with why in the
+ * doer's own words, and whether that says the device did not answer (`noAnswer`: a timeout or a lost
+ * delivery), which counts towards its going unavailable.
+ */
+export type Polled = { answered: true } | { answered: false; detail: string; noAnswer: boolean };
+
+/** How a poll is sent: with herdsman's recovery (a retry), and on the first endpoint where none serves genBasic (a device unavailable). */
+export interface PollOptions {
+  recovery?: boolean;
+  /** Read the first endpoint where none lists genBasic, as herdsman's own `Device.ping` does: every device serves genBasic. */
+  anyEndpoint?: boolean;
+}
 
 /**
- * One poll: the read, on herdsman's own model of the device. Its answer reaches the core as the
- * device's message, not from here.
+ * One poll: the read, on herdsman's own model of the device, sent once unless `recovery`. Its answer
+ * reaches the core as the device's message, not from here.
  */
-export async function poll(model: Zh.Device): Promise<Polled> {
-  const ep = pollEndpoint(model);
-  if (!ep) return { answered: false, detail: "the device serves no genBasic" };
+export async function poll(model: Zh.Device, o: PollOptions = {}): Promise<Polled> {
+  const ep = pollEndpoint(model) ?? (o.anyEndpoint ? model.endpoints[0] : undefined);
+  if (!ep) return { answered: false, detail: "the device serves no genBasic", noAnswer: false };
   try {
-    await ep.read(POLL_READ.cluster, [POLL_READ.attribute], { sendPolicy: "immediate", disableRecovery: true, timeout: POLL_CALL_MS });
+    await ep.read(POLL_READ.cluster, [POLL_READ.attribute], { sendPolicy: "immediate", disableRecovery: !o.recovery, timeout: POLL_CALL_MS });
     return { answered: true };
   } catch (err) {
     // A status the device sent back is its application's answer: a check-in all the same.
     if (err instanceof Zcl.StatusError) return { answered: true };
-    return { answered: false, detail: lostDetail(err) };
+    return { answered: false, detail: lostDetail(err), noAnswer: noAnswer(err) };
   }
 }

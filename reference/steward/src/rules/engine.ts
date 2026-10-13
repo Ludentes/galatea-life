@@ -53,7 +53,12 @@ interface Live {
    */
   firing?: boolean;
   pending?: boolean;
+  /** The occurrence that last fired an event trigger, handed to the firing: a press's hold names it (GA-LEASE-9). */
+  hit?: Hit;
 }
+
+/** The occurrence a rule's `event` trigger matched: its device, key and reported value. */
+export interface Hit { target: string; key: string; value: unknown }
 
 export interface EngineOptions {
   clock: Clock;
@@ -66,8 +71,11 @@ export interface EngineOptions {
   view(): View;
   /** Whether the mirror has the applier's state: before, nothing is evaluated, so no rule reads an empty mirror as false. */
   ready(): boolean;
-  /** Fires a rule as firing `n`, all its actions or, a retry, `only` these steps; resolves once the firing is over. */
-  fire(rule: Rule, n: number, only?: FiringStep[]): Promise<void>;
+  /**
+   * Fires a rule as firing `n`, all its actions or, a retry, `only` these steps, `hit` the occurrence
+   * that fired it, if one did; resolves once the firing is over.
+   */
+  fire(rule: Rule, n: number, only?: FiringStep[], hit?: Hit): Promise<void>;
   /** The devices a rule names, read or acted on, for GA-LEASE-4. */
   names(rule: Rule): string[];
   /** Whether the last stop was clean: if not, a block of firing numbers is skipped. */
@@ -81,6 +89,15 @@ export interface EngineOptions {
    */
   firedSince?(rule: string, applierMs: number): boolean;
   mutation?: Mutation;
+}
+
+/**
+ * A press rule (GA-LEASE-9): an occurrence trigger its author marks `press`; `any-occurrence-is-a-press`
+ * takes every occurrence trigger for one.
+ */
+export function isPressRule(r: Rule, mutation?: Mutation): boolean {
+  const t = r.trigger;
+  return !!t && "event" in t && t.event.type === "occurrence" && (t.event.press === true || mutation === "any-occurrence-is-a-press");
 }
 
 const isLevel = (r: Rule) => r.trigger === undefined || "held" in r.trigger;
@@ -246,7 +263,7 @@ export class RuleEngine {
       if (t && "event" in t && t.event.target === e.target && t.event.type === e.type) {
         const matches = e.type === "liveness" ? t.event.new === undefined || t.event.new === e.new
           : (t.event.key === undefined || t.event.key === e.key) && (t.event.value === undefined || canonical(t.event.value) === canonical(e.value));
-        if (matches) this.edge(r);
+        if (matches) this.edge(r, e.type === "occurrence" ? { target: e.target, key: String(e.key), value: e.value } : undefined);
         continue;
       }
       const reads = [...(t && "state" in t ? [t.state.target] : t && "held" in t ? [t.held.target] : []),
@@ -449,11 +466,16 @@ export class RuleEngine {
     return (r.conditions ?? []).every((c) => !("between" in c) || conditionsHold([c], v));
   }
 
-  /** An edge trigger: fires when the rule's conditions hold and it is outside an exception; inside one, it is lost (GA-RULE-6). */
-  private edge(r: Rule): void {
+  /**
+   * An edge trigger: fires when the rule's conditions hold and it is outside an exception; inside one, it
+   * is lost (GA-RULE-6). `hit`, the occurrence that fired it, goes to the firing.
+   */
+  private edge(r: Rule, hit?: Hit): void {
     if (!r.active || !this.o.ready()) return;
     const v = this.o.view();
-    if (this.excepted(r, v.now) || !conditionsHold(r.conditions, v)) return;
+    const unconditional = this.o.mutation === "press-skips-conditions" && isPressRule(r, this.o.mutation);
+    if (this.excepted(r, v.now) || (!unconditional && !conditionsHold(r.conditions, v))) return;
+    this.liveOf(r.id).hit = hit;
     this.launch(r);
   }
 
@@ -479,13 +501,13 @@ export class RuleEngine {
     }
     l.firing = true;
     const n = this.take(r.id);
-    void this.o.fire(r, n).catch(() => undefined).finally(() => {
+    void this.o.fire(r, n, undefined, l.hit).catch(() => undefined).finally(() => {
       l.firing = false;
       if (!l.pending) return;
       l.pending = false;
       const again = this.o.rules().find((x) => x.id === r.id);
       if (!again || this.stopped) return;
-      if (!isLevel(again)) this.edge(again);
+      if (!isLevel(again)) this.edge(again, l.hit);
       else if (this.kept.get(again.id)?.fired && !this.excepted(again, this.o.view().now)) this.launch(again);
     });
   }

@@ -282,8 +282,25 @@ _Avoid_: timer, cron
 
 **Lease**:
 A claim by a holder that, for a while, lower-precedence writers may not change a
-target.
-_Avoid_: lock, ownership, hold
+target, with named exceptions: `session.lock` and a narrowing action (a lock, a valve's close) pass a person's hold, and the owner's work may pass a guest's once its floor has passed. A narrowing action takes no lease and replaces no person's hold; a lower lease it displaces, such as a run's, ends, leaving the device with none. A
+**person's hold** is the lease a person's change takes: one made at an endpoint,
+an `external` change, or a press.
+_Avoid_: lock, ownership; "hold" alone for any lease but a person's
+
+**Hold policy**:
+How a person's hold ends: its windows after an on, an off and any other change,
+counted once the room goes quiet; whether presence renews it, vacancy or a schedule
+ends it; the window for a device with no presence source, the heater's guard after
+a load cap, and a cap on every hold (`cap_s`); and whether the owner's rules pass a
+guest's hold. The steward's own, declared in `describe` as the home's `hold`;
+the owner may change it.
+_Avoid_: hold time, timeout
+
+**Press rule**:
+A rule whose trigger is an occurrence its author marks as a person's physical act
+(`press`), such as a wall button. It acts at a person's precedence and takes a
+person's hold, while staying the rule's for its confirmation and the applier's gate.
+_Avoid_: button rule, manual rule
 
 **Via**:
 How a request arrived: voice, panel or app (the endpoint's type), or a rule or a

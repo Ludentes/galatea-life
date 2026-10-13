@@ -1,9 +1,69 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "steward/define.delete.json",
-  "title": "A define delete's value: { id } names the item, { endpoint } a voice record (provisional until the standard names the shape)",
+  "title": "A define delete's value: the key of the item it removes, { id }, { endpoint } for a voice record, { rule, from, until } for a rule exception, { schedule, date } for a schedule exception (steward, Change sets; GA-DEF-14)",
   "oneOf": [
-    { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "type": "string", "minLength": 1 } } },
-    { "type": "object", "additionalProperties": false, "required": ["endpoint"], "properties": { "endpoint": { "type": "string", "minLength": 1 } } }
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule",
+        "from",
+        "until"
+      ],
+      "properties": {
+        "rule": {
+          "$ref": "../common.json#/$defs/id"
+        },
+        "from": {
+          "$ref": "../common.json#/$defs/time"
+        },
+        "until": {
+          "$ref": "../common.json#/$defs/time"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schedule",
+        "date"
+      ],
+      "properties": {
+        "schedule": {
+          "$ref": "../common.json#/$defs/id"
+        },
+        "date": {
+          "$ref": "define.schedule.json#/$defs/date"
+        }
+      }
+    }
   ]
 }

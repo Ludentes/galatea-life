@@ -110,7 +110,7 @@ export function core(refuse: (hw: string) => boolean = () => false): { events: D
   const events: DoerEvents = {
     described: on("described"), observed: on("observed"), occurred: on("occurred"), undescribed: on("undescribed"),
     admitted: on("admitted"), interviewed: on("interviewed"), left: on("left"), transport: on("transport"), fault: on("fault"),
-    ungoverned: on("ungoverned"),
+    ungoverned: on("ungoverned"), availability: on("availability"),
     mayAdmit: (hw) => {
       seen.push(["mayAdmit", hw]);
       return !refuse(hw);

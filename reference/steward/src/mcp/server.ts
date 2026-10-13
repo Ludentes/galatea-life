@@ -2,7 +2,7 @@ import { createServer as createHttp, type IncomingMessage, type ServerResponse }
 import { createServer as createHttps } from "node:https";
 import { localhostHostValidation, localhostOriginValidation, toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler, legacyStatelessFallback, ProtocolError, ProtocolErrorCode, Server } from "@modelcontextprotocol/server";
-import { requestSchemaFor, type ToolInputSchema } from "@ludentes/galatea-life-schemas";
+import { toolInputSchemaFor, type ToolInputSchema } from "@ludentes/galatea-life-schemas";
 import { TOOLS, type Steward } from "../steward.js";
 import { maskUrls, StoreError } from "../core/db.js";
 import { isLoopback } from "../net/loopback.js";
@@ -41,12 +41,18 @@ type ListedTool = { name: string; description: string; inputSchema: ToolInputSch
  * operation has no request schema, so that the steward fails at start rather than list it untyped.
  */
 export function toolList(tools: readonly { name: string; readOnly?: true; destructive?: boolean; summary: string }[]): ListedTool[] {
-  return tools.map((t) => ({
-    name: t.name,
-    description: t.summary,
-    inputSchema: requestSchemaFor("steward", t.name),
-    annotations: t.readOnly ? { readOnlyHint: true } : { destructiveHint: t.destructive === true },
-  }));
+  return tools.map((t) => {
+    // No combinator at the schema's top level, or Claude Code drops the tool; the alternatives it
+    // took out are said in the description, and each call is still validated in full.
+    const inputSchema = toolInputSchemaFor("steward", t.name);
+    const alternatives = typeof inputSchema.description === "string" ? ` ${inputSchema.description}` : "";
+    return {
+      name: t.name,
+      description: `${t.summary}${alternatives}`,
+      inputSchema,
+      annotations: t.readOnly ? { readOnlyHint: true } : { destructiveHint: t.destructive === true },
+    };
+  });
 }
 
 // The low-level Server, not McpServer: the tools are the standard's operations, validated inside
@@ -65,7 +71,7 @@ function mcpServer(steward: Steward, bearer: string | undefined, tools: ListedTo
       throw new ProtocolError(ProtocolErrorCode.InternalError, publicMessage(err),
         { pending: err instanceof Unsettled && err.pending, ...(err instanceof OutcomeUnknown ? { outcome_unknown: true } : {}) });
     }
-    const out = result.ok ? result.body : { error: result.error, message: result.message };
+    const out = result.ok ? result.body : { error: result.error, message: result.message, ...(result.data ? { data: result.data } : {}) };
     return { content: [{ type: "text" as const, text: JSON.stringify(out) }], structuredContent: out, isError: !result.ok };
   });
   return server;

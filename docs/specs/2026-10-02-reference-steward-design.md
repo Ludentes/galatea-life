@@ -198,6 +198,8 @@ backlog). The Python voice front keeps its port, and its tests run the package's
   `history` like any other, withheld below the floor (GA-AUTH-7). The `history` operation reads the
   tables and applies the floor; `history_v`, the `reader` role's view, also leaves out every
   personal key, since `reader` is no principal the floor can judge.
+  An event's withheld fields (`Keep.withheld`: a `refused` outcome's holder when it is a personal
+  press's) are kept beside its readers in the `readers` jsonb, and are shown to the owner's app alone.
   `history` keeps 90 days, past the standard's floor of 7. A personal
   key's `state` events are pruned at 7 days: a design choice, for privacy, which the standard's
   floor allows (*Decisions*).
@@ -393,8 +395,8 @@ backlog). The Python voice front keeps its port, and its tests run the package's
   and emits no `lease` event; then hand the apply's record to the writer. The applier call waits for that commit. The
   second step takes the applier's answer: passes its outcomes through, adds the steward's own,
   stamps each with its `time` (GA-STW-12). For a step whose outcome is `dispatched`, the
-  provisional lease becomes the device's lease, from dispatch, for `hold_time_s`, replacing the
-  one it lay over (GA-LEASE-3), with its `lease` event; for every other step (refused, skipped,
+  provisional lease becomes the device's lease, from dispatch, a person's hold judged by the home's
+  hold policy (*Leases*), replacing the one it lay over (GA-LEASE-3), with its `lease` event; for every other step (refused, skipped,
   `unreachable`) it is lifted and the earlier lease stands untouched (GA-LEASE-1, 2). Lifting it
   re-evaluates as a lease's end does (GA-LEASE-4), since a rule refused meanwhile may now act.
   Then it records events and answers. `apply` with `{ request }` plans and applies in one call, its asks `refused(tier)` and
@@ -435,17 +437,81 @@ backlog). The Python voice front keeps its port, and its tests run the package's
 ## Leases
 
 A table of `{ holder, targets, precedence, expires }` in memory and the store, with a timer per
-expiry. Granted: an endpoint principal's dispatched stateful action, not `session.lock`, for
-`hold_time_s` from dispatch, ended if the step ends `unreachable` (GA-LEASE-1); an `external` or
-`load_cap` change, at person precedence (GA-LEASE-2); a safety rule's actuation, until its latch
-clears or, latchless, its `rule_fired` (GA-LEASE-6); a run's `owned` targets until it ends, released
-by run (GA-SCN-2). Never for a rule's action (GA-LEASE-5). Checked in the reason order: lower
-precedence refused with its holder, equal or higher replaces, `session.lock` never refused and
-replacing none, a duck refused only by `safety_rule` (GA-LEASE-3). Every end runs one hook that
-re-evaluates the level-triggered rules naming the devices (GA-LEASE-4). A person's provisional
-lease lifted because its step sent nothing is no lease's end. It runs the hook only if it refused a
-change meanwhile (the milestone review's B6, milestone ruling Q7, provisional). A `person` lease's
-precedence follows the principal: a person, `external` or a person-started run.
+expiry. Granted: an endpoint principal's dispatched stateful action, not `session.lock` and not a
+narrowing action, from dispatch, ended if the step ends `unreachable` (GA-LEASE-1); an `external` or
+`load_cap` change, at person precedence, only for a key one of the device's actions sets on an
+adopted device (GA-LEASE-2); a safety rule's actuation, until its latch clears or, latchless, its
+`rule_fired` (GA-LEASE-6); a run's `owned` targets until it ends, released by run (GA-SCN-2). Never
+for a rule's action (GA-LEASE-5), but a press (below). Every end runs one hook that re-evaluates the
+level-triggered rules naming the devices (GA-LEASE-4). A person's provisional lease lifted because
+its step sent nothing is no lease's end. It runs the hook only if it refused a change meanwhile (the
+milestone review's B6, milestone ruling Q7, provisional). A `person` lease's precedence follows the
+principal: a person, `external` or a person-started run.
+A person's lease kept by a steward from before 0.12 has no hold state, so it is not carried:
+migration `0015_lease_hold.sql` drops every lease at `person` precedence that is not a run's, and the
+device is free until its next change.
+
+**The policy.** `HoldPolicy` (`house/model.ts`) is the home's `hold`: `on_s`, `off_s`, `other_s`,
+`fixed_s`, `load_cap_s`, `cap_s`, and the flags `presence_renews`, `vacant_ends`, `schedule_ends`
+and `owner_work_passes_guest_holds` (GA-LEASE-7, GA-LEASE-8). `HOLD_DEFAULTS` holds the reference
+values: 3600 s for `on_s`, `other_s`, `fixed_s` and `load_cap_s`, 600 s for `off_s`, `cap_s` 43200 s
+(0: none), `presence_renews`, `vacant_ends` and `owner_work_passes_guest_holds` true. They are an
+example, declared in `describe`, never asserted by a check. `define` merges the fields it names
+(a client may set one at a time) and the schema bounds a window at 1 s; a `null` for a field puts
+its reference value back, and a `null` hold puts them all back. The reference
+refuses `schedule_ends: true` with `invalid_request` and `data.field` `schedule_ends`: it ends no
+hold at a scheduled dispatch (GA-LEASE-8 allows a flag not implemented, and a second dispatch path
+is a cost the maintainer ruled out), so the harness skips the subjects that need it.
+
+**Judging a hold.** `judgeHold` (`leases/hold.ts`) is a pure function of the hold's state, the
+policy, the room as it stands (`RoomNow`: its live presence sources, whether one reads presence, the
+occupancy and when the room would turn `vacant`) and now. It returns the new state, the hold's
+`expires` (windows, `cap_s` and the floor, never a predicted vacancy), when to judge again and the
+end, if any, with how it ended: `quiet`, `window`, `cap`, `vacant`, `schedule`, `replaced`,
+`unreachable` or `removed`. `Holds` (`leases/holds.ts`) owns when a hold is judged: on a presence
+report in its room, a `define` (the policy, a room), the applier's model (a source adopted or
+removed, a device gone), an ack, a late ack, and its own timer, armed at the hold's `expires` or at
+the predicted vacancy if sooner, or, for a guest's hold, at its floor (R-63), which re-evaluates what
+the hold refused. A busy room keeps a hold whose `expires` passed: the timer re-judges
+and does not end it. Nothing is judged before the first state after a start has been read (`begin`);
+a gap is replayed by `replayAt`, each event judged at its own time clamped to the steward's last live
+reading and the read-back. A hold ends at its computed end and never more than the hold end
+lateness (2 s) after it.
+
+**The clock.** A hold's windows run on elapsed time, so a step of the wall clock moves none; what a
+hold shows (`expires`, `quiet_since`, `end_time`) and what the store keeps are wall instants.
+`TimeBase` (`leases/time-base.ts`) relates the two by one offset that `LeaseTable` and `Holds`
+share: sampled once, sampled again only when the two clocks part by more than 100 ms (a step), and
+rounding a wall instant to the millisecond, so an instant born on the wall clock (a dispatch, a gap
+event's time) comes back as the same integer. Under the harness, with no separate elapsed clock
+(GA-HARN-2), the offset is 0 and every step of the test clock moves a hold, as the standard asks.
+Outside it, `start.ts` reads elapsed time from `performance.now()`, a monotonic clock that on Linux
+does not count a suspend: a hold's windows stop while the host sleeps, so on a host that suspends a
+hold outlives its window in wall time by the suspend's length (`TimeBase` re-samples its offset on the
+jump, so nothing else moves). An always-on hub never suspends.
+
+**Who holds, and what passes.** An apply's step takes a person's hold whose `role` (the apply's
+derived role) it keeps; the guest mark is that role being `guest` (`guestsHold`), and a hold taken
+by a brain-served endpoint with no person is a guest's. A rule whose `occurrence` trigger carries
+`press: true` acts at `person` precedence and, once dispatched, holds a person's hold whose holder
+is `{ rule, press }` (`isPress`), replacing a person's hold or a guest's and restoring the replaced
+hold if its own step ends `unreachable` while it is still the device's lease (GA-LEASE-9). A
+narrowing action (`isNarrowing` in `leases/narrowing.ts`: `lock.lock`, `valve.close`, an `onoff`
+valve's closing action, never a `toggles` action) passes a person's hold, replaces none and takes
+none, and ends a lower lease it displaces (GA-LEASE-11). The owner's rules and schedules pass a
+guest's hold once its floor has passed, while `owner_work_passes_guest_holds` is declared
+(GA-LEASE-10); the floor passing tells `Holds`' `floorPassed`, which re-evaluates the rules the hold
+refused. A personal press's hold is withheld as its occurrence is (GA-AUTH-7): its lease events are
+marked personal, and so are the end of the hold it replaced and the grant that restores that hold,
+through the `other` holder `LeaseTable` passes, since either would show the press's moment. Its
+`press.value` is withheld from the owner too, until the personal floor (slice 8), and a `refused`
+outcome against it withholds its holder.
+
+**One place a step meets a lease.** `leaseRefuses` (`leases/table.ts`) is the only place a change's
+precedence and what it may pass (`Passing`: `press`, `ownerWork`, `narrowing`) are set against the
+lease it meets, a provisional lease first and, under it, the device's own (`Met`, `beneath`).
+Refused is `leased` with the holder (`gate/reasons.ts`); the order of reasons is unchanged
+(GA-STW-4, GA-LEASE-3).
 
 ## Occupancy and sessions
 
@@ -1506,8 +1572,8 @@ Filled here provisionally, for the next steward revision:
   7 days back; its events after that `seq` and up to the sync's cursor, from the same `applier_id`
   and `test_run_id`, at most 4096 (the newest; a level rule reading a dropped one's device counts as
   having become false); each recorded with the steward's `seq` and time, `recovered: true`,
-  `applier_time`; a missed `external` or `load_cap` change leased from its time for what is left of
-  `hold_time_s`, never over a lease granted after it; an edge at most 5 minutes old firing once after
+  `applier_time`; a missed `external` or `load_cap` change leased from its time, its hold judged as of the
+  gap's events (*Leases*), never over a lease granted after it; an edge at most 5 minutes old firing once after
   the state is read; an applier's refusal of `history` said, the sync going on.
 - **Work through a brain (slice 10).** The policy: the `owner` role only (Q4), for room, target
   (names and room), group, scenario, rule, rule exception, schedule and schedule exception, deletes

@@ -1,5 +1,5 @@
 {
- "why": "Mutations whose Negative subjects rows are incomplete: each fails these ids, outside its row, for a real coupling the row does not name. tokens-without-a-yes fails GA-STW-4: a toggle applied inline is refused toggle_only, and with a token on every step above reversible it is sent and runs; the row should name GA-STW-4 beside GA-TIER-2 and GA-APPLY-3 (a standards fix slice 2b proposes). ignores-leases fails GA-STW-4: GA-STW-4's reason order places leased (already before leased, leased before occupancy), which a steward that ignores leases cannot show; the row should name GA-STW-4 beside GA-LEASE-1 to 4 (a standards fix slice 3b proposes). Slice 5: tokens-without-a-yes also fails GA-SCN-3, GA-SCN-7 and GA-SCN-11, a run's unanswered ask being dispatched with a token, so it no longer ends skipped(not_confirmed); refuses-the-toggle fails GA-SCN-3 and GA-SCN-11, a run's toggle step refused rather than asked (and, in a person's run, re-asked); authors-a-toggle fails GA-SCN-11, a rule-started run's toggle step sent with an authored token, so no skipped(toggle_only) is listed. Each row should name these ids (standards fixes slice 5 proposes). Slice 7: ignores-leases also fails GA-STW-7, whose history case reads the lease an outside change took and the rule's step that lease refused; a steward that ignores leases records neither. The row should name GA-STW-7 (a standards fix slice 7 proposes). Slice 11: ignores-leases also fails GA-PERSIST-2, whose restart case reads a member's lease and a run's lease kept and released across the restart; notices-a-late-launch fails GA-PERSIST-2, whose case reads that a late_ack the applier gave while the steward was down lands the held notice of a failed(no_ack), which that mutation keeps. Each row should name GA-PERSIST-2 (standards fixes slice 11 proposes). Steward 0.11: conditions-fire-once also fails GA-RULE-8, whose case reads a failed lock noticed again on a second night and a skipped(occupancy_unknown) noticed again after its room was known in between, each needing the rule to become true a second time; fires-in-an-exception fails GA-LEASE-4, whose case reads a lease that refused a rule ending inside the rule's exception and the rule not fired; refuses-an-announcing-channel fails GA-NOTE-1, whose case holds a notice with an announcing speaker as the only channel (its clause needs that list). Each row should name these ids (standards fixes the steward-follows-0.11 spike proposes for 0.12).",
+ "why": "Mutations whose Negative subjects rows are incomplete: each fails these ids, outside its row, for a real coupling the row does not name. tokens-without-a-yes fails GA-STW-4: a toggle applied inline is refused toggle_only, and with a token on every step above reversible it is sent and runs; the row should name GA-STW-4 beside GA-TIER-2 and GA-APPLY-3 (a standards fix slice 2b proposes). ignores-leases fails GA-STW-4: GA-STW-4's reason order places leased (already before leased, leased before occupancy), which a steward that ignores leases cannot show; the row should name GA-STW-4 beside GA-LEASE-1 to 4 (a standards fix slice 3b proposes). Slice 5: tokens-without-a-yes also fails GA-SCN-3, GA-SCN-7 and GA-SCN-11, a run's unanswered ask being dispatched with a token, so it no longer ends skipped(not_confirmed); refuses-the-toggle fails GA-SCN-3 and GA-SCN-11, a run's toggle step refused rather than asked (and, in a person's run, re-asked); authors-a-toggle fails GA-SCN-11, a rule-started run's toggle step sent with an authored token, so no skipped(toggle_only) is listed. Each row should name these ids (standards fixes slice 5 proposes). Slice 7: ignores-leases also fails GA-STW-7, whose history case reads the lease an outside change took and the rule's step that lease refused; a steward that ignores leases records neither. The row should name GA-STW-7 (a standards fix slice 7 proposes). Slice 11: ignores-leases also fails GA-PERSIST-2, whose restart case reads a member's lease and a run's lease kept and released across the restart; notices-a-late-launch fails GA-PERSIST-2, whose case reads that a late_ack the applier gave while the steward was down lands the held notice of a failed(no_ack), which that mutation keeps. Each row should name GA-PERSIST-2 (standards fixes slice 11 proposes). Steward 0.11: conditions-fire-once also fails GA-RULE-8, whose case reads a failed lock noticed again on a second night and a skipped(occupancy_unknown) noticed again after its room was known in between, each needing the rule to become true a second time; fires-in-an-exception fails GA-LEASE-4, whose case reads a lease that refused a rule ending inside the rule's exception and the rule not fired; refuses-an-announcing-channel fails GA-NOTE-1, whose case holds a notice with an announcing speaker as the only channel (its clause needs that list). Each row should name these ids (standards fixes the steward-follows-0.11 spike proposes for 0.12). Steward 0.12: ends-a-hold-while-busy and never-ends-a-quiet-hold fail GA-PERSIST-2, whose hold part times a hold renewed by motion before a restart to its quiet end; quiet-without-its-moment fails GA-PERSIST-2, whose hold part reads the quiet_since the restart kept. ends-without-a-reason fails GA-LEASE-3, GA-LEASE-9, GA-LEASE-11 and GA-PERSIST-2, each reading the end a person's hold's ended event names (replaced, or quiet). roomless-on-window fails GA-LEASE-2, whose gap case's roomless lamp turned off is held fixed_s and not off_s, and GA-LEASE-8, whose roomless hold's expires moves with fixed_s. hides-the-hold-policy fails every check that pins the windows (GA-LEASE-1 to -4, -9 to -11, GA-PERSIST-2), as a check failure reading describe's home.hold, never a fault. refuses-a-short-hold fails GA-LEASE-7, whose short-window parts are refused; refuses-a-flag-unnamed fails GA-LEASE-7 and GA-LEASE-10, which set flags expecting a refusal to name its flag. ends-a-hold-late fails GA-LEASE-1, -2, -4, -9, -10 and GA-PERSIST-2, each timing a hold's end within the hold end lateness. missed-change-full-window fails GA-PERSIST-2, whose hold part reads a missed change in a two-hour restart gap taking no lease. passes-a-member-hold fails GA-STW-4, GA-LEASE-1, -4, -9 and -11, each reading a rule refused(leased) by a member's hold. holds-the-auto-lock fails GA-LEASE-9, a press's lock.lock taking no hold. The harness milestone's fix wave: same-window-both-ways fails GA-PERSIST-2, whose hold part reads a member's turn_off ending off_s after its dispatch across a restart; guest-hold-blocks-the-owner and passes-a-member-hold fail GA-PERSIST-2, whose hold part reads the owner's rule passing a guest's hold and refused by a member's after a restart; ends-without-a-reason fails GA-LEASE-1 and GA-LEASE-2, each reading the end (window) a person's hold's ended event names; roomless-on-window fails GA-LEASE-9, whose press's hold on a roomless lamp expires fixed_s after dispatch. forgets-a-replaced-lease fails GA-LEASE-9, whose press replaces a member's hold that refused an off rule, the rule handed on and firing at the press's hold's end. Each row should name these ids (standards fixes this build proposes for 0.13). The matrix of the build's gate: ignores-leases fails GA-LEASE-7, GA-LEASE-8, GA-LEASE-9, GA-LEASE-10 and GA-LEASE-11, each reading a lease an apply, a press or an outside change takes (GA-LEASE-8's to show a change of policy applying at once to a hold held, its expires moving); conditions-fire-once fails GA-LEASE-10, whose floor part makes the owner's rule true a second time, after the guest's step failed, to read it refused again; authors-a-moved-device fails GA-LEASE-9, whose press's step on a lamp a brain added to its group, not marked brain_authored, acts at person precedence and passes the member's hold. Each row should name these ids (standards fixes this build proposes for 0.13).",
  "known": {
   "tokens-without-a-yes": [
    "GA-SCN-11",
@@ -8,6 +8,11 @@
    "GA-STW-4"
   ],
   "ignores-leases": [
+   "GA-LEASE-7",
+   "GA-LEASE-8",
+   "GA-LEASE-9",
+   "GA-LEASE-10",
+   "GA-LEASE-11",
    "GA-PERSIST-2",
    "GA-STW-4",
    "GA-STW-7"
@@ -23,6 +28,7 @@
    "GA-PERSIST-2"
   ],
   "conditions-fire-once": [
+   "GA-LEASE-10",
    "GA-RULE-8"
   ],
   "fires-in-an-exception": [
@@ -30,6 +36,79 @@
   ],
   "refuses-an-announcing-channel": [
    "GA-NOTE-1"
+  ],
+  "ends-a-hold-while-busy": [
+   "GA-PERSIST-2"
+  ],
+  "never-ends-a-quiet-hold": [
+   "GA-PERSIST-2"
+  ],
+  "ends-without-a-reason": [
+   "GA-LEASE-1",
+   "GA-LEASE-2",
+   "GA-LEASE-3",
+   "GA-LEASE-9",
+   "GA-LEASE-11",
+   "GA-PERSIST-2"
+  ],
+  "roomless-on-window": [
+   "GA-LEASE-2",
+   "GA-LEASE-8",
+   "GA-LEASE-9"
+  ],
+  "hides-the-hold-policy": [
+   "GA-LEASE-1",
+   "GA-LEASE-2",
+   "GA-LEASE-3",
+   "GA-LEASE-4",
+   "GA-LEASE-9",
+   "GA-LEASE-10",
+   "GA-LEASE-11",
+   "GA-PERSIST-2"
+  ],
+  "refuses-a-short-hold": [
+   "GA-LEASE-7"
+  ],
+  "refuses-a-flag-unnamed": [
+   "GA-LEASE-7",
+   "GA-LEASE-10"
+  ],
+  "quiet-without-its-moment": [
+   "GA-PERSIST-2"
+  ],
+  "ends-a-hold-late": [
+   "GA-LEASE-1",
+   "GA-LEASE-2",
+   "GA-LEASE-4",
+   "GA-LEASE-9",
+   "GA-LEASE-10",
+   "GA-PERSIST-2"
+  ],
+  "missed-change-full-window": [
+   "GA-PERSIST-2"
+  ],
+  "passes-a-member-hold": [
+   "GA-LEASE-1",
+   "GA-LEASE-4",
+   "GA-LEASE-9",
+   "GA-LEASE-11",
+   "GA-PERSIST-2",
+   "GA-STW-4"
+  ],
+  "holds-the-auto-lock": [
+   "GA-LEASE-9"
+  ],
+  "same-window-both-ways": [
+   "GA-PERSIST-2"
+  ],
+  "guest-hold-blocks-the-owner": [
+   "GA-PERSIST-2"
+  ],
+  "forgets-a-replaced-lease": [
+   "GA-LEASE-9"
+  ],
+  "authors-a-moved-device": [
+   "GA-LEASE-9"
   ]
  }
 }

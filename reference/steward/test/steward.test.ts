@@ -1,6 +1,8 @@
+import { validate } from "@ludentes/galatea-life-schemas";
 import { describe, expect, it, vi } from "vitest";
 import { StoreUnavailable } from "../src/core/errors.js";
 import { SEQ_LIFE_GAP } from "../src/core/events.js";
+import { HOLD_DEFAULTS } from "../src/house/model.js";
 import { GATE_MS, Store } from "../src/core/store.js";
 import type { Mutation } from "../src/mutations.js";
 import { OWNERS_CAP, Steward, STANDARD_VERSION } from "../src/steward.js";
@@ -78,6 +80,23 @@ describe("Steward", () => {
     expect((await again.ok(SECRETS.owner, "describe")).persons).toHaveLength(1);
   });
 
+  it("says standard 0.12, and shows the hold policy in force after a define (GA-LEASE-8)", async () => {
+    const { ok, define } = await withBaseline();
+    expect(STANDARD_VERSION).toBe("0.12");
+    expect((await define([up("home", { hold: { off_s: 20 } })])).ok).toBe(true);
+    const owner = await ok(SECRETS.owner, "describe");
+    expect(owner.home.hold).toEqual({ ...HOLD_DEFAULTS, off_s: 20 });
+    expect(owner.standard_version).toBe("0.12");
+    expect(validate("steward/describe.response.json", owner)).toEqual([]);
+    expect(validate("steward/describe.response.json", await ok(SECRETS.front, "describe"))).toEqual([]);
+  });
+
+  it("answers a refused hold flag with data.field on the wire (GA-LEASE-8)", async () => {
+    const { define } = await withBaseline();
+    expect(await define([up("home", { hold: { schedule_ends: true } })]))
+      .toMatchObject({ ok: false, error: "invalid_request", message: expect.stringContaining("hold.schedule_ends"), data: { field: "schedule_ends" } });
+  });
+
   it("makes no first owner from a credential shorter than define allows, and says so once", async () => {
     const said = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
@@ -97,7 +116,7 @@ describe("Steward", () => {
       applier: { applier_id: "sim-applier", levels: ["Act"], ungoverned: [] }, groups: [], scenarios: [], rules: [], schedules: [] });
     expect(d.targets.map((t: { id: string }) => t.id)).toEqual(["sim-bridge:channel", "sim-bridge:lamp"]);
     expect(d.targets[0]).toMatchObject({ name: "channel", aliases: [], room: null, adopted: true });
-    expect(d.home).toMatchObject({ timezone: "Europe/Moscow", notice_channels: ["sim-bridge:channel"], hold_time_s: 7200 });
+    expect(d.home).toMatchObject({ timezone: "Europe/Moscow", notice_channels: ["sim-bridge:channel"], hold: HOLD_DEFAULTS });
     expect(d.persons.map((p: { id: string }) => p.id).sort()).toEqual(["liza", "olga", "owner"]);
     expect(JSON.stringify(d)).not.toMatch(/secret/);
     expect(d.endpoints.find((e: { id: string }) => e.id === "hall-panel")).toMatchObject({ max_role: "guest", confirm_on: "same" });

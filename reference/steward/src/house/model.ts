@@ -10,10 +10,23 @@ export type EndpointType = "voice" | "panel" | "app";
 export type CredentialKind = "app" | "panel" | "brain" | "front";
 export type Listening = "off" | "tap" | "wake_device" | "wake_server";
 
+/** The hold policy (steward, *How a person's hold ends*; GA-LEASE-8). */
+export interface HoldPolicy {
+  on_s: number; off_s: number; other_s: number; fixed_s: number; load_cap_s: number;
+  /** A person's hold ends this long after the change whatever presence does, never before its floor; 0: no cap. */
+  cap_s: number;
+  presence_renews: boolean; vacant_ends: boolean; schedule_ends: boolean;
+  /** Whether the owner's rules and schedules pass a guest's hold (GA-LEASE-10). */
+  owner_work_passes_guest_holds: boolean;
+}
+/** The reference values (steward, *How a person's hold ends*): an example, declared in describe. */
+export const HOLD_DEFAULTS: HoldPolicy = { on_s: 3600, off_s: 600, other_s: 3600, fixed_s: 3600, load_cap_s: 3600, cap_s: 43200,
+  presence_renews: true, vacant_ends: true, schedule_ends: false, owner_work_passes_guest_holds: true };
+
 /** The home's settings (steward, *The house model*). `time_source` only under the harness (GA-HARN-2). */
 export interface HomeSettings {
   timezone: string;
-  hold_time_s: number;
+  hold: HoldPolicy;
   occupancy_hold_s: number;
   ask_expiry_s: number;
   notice_channels: string[];
@@ -91,7 +104,7 @@ export interface Reading { target: string; key: string; op?: "eq" | "ne" | "gt" 
 /** A time window (GA-RULE-3): `HH:MM` in the home's timezone, `days` the ISO weekdays it starts on, every day when absent. */
 export interface Window { from: string; until: string; days?: number[] }
 export type Trigger = { state: Reading } | { held: Reading & { for_s: number } }
-  | { event: { target: string; type: "liveness" | "occurrence"; new?: string; key?: string; value?: unknown } }
+  | { event: { target: string; type: "liveness" | "occurrence"; new?: string; key?: string; value?: unknown; press?: boolean } }
   | { time: { at: string; days?: number[] } };
 export type Condition = Reading | { between: Window };
 /** An action on a target id (a device's or a group's) or a selector, as a request's, with its own `respect_occupancy`. */
@@ -183,7 +196,7 @@ export const ANSWER_WORDS = ["да", "нет", "конечно", "хорошо",
  * `timezone`; until the owner sets it the home keeps UTC, which the owner tool shows.
  */
 export const HOME_DEFAULTS: HomeSettings = {
-  timezone: "UTC", hold_time_s: 7200, occupancy_hold_s: 300, ask_expiry_s: 300, notice_channels: [],
+  timezone: "UTC", hold: HOLD_DEFAULTS, occupancy_hold_s: 300, ask_expiry_s: 300, notice_channels: [],
   other_wake_words: OTHER_WAKE_WORDS, answer_words: ANSWER_WORDS, audio_retention_s: 0,
 };
 
@@ -228,7 +241,10 @@ export async function loadHouse(store: Pick<Store, "query">): Promise<House> {
   const h = emptyHouse();
   const rows = await store.query<{ kind: string; id: string; doc: any }>("SELECT kind, id, doc FROM house ORDER BY kind, id");
   for (const r of rows.rows) {
-    if (r.kind === "home") h.home = { ...structuredClone(HOME_DEFAULTS), ...r.doc };
+    if (r.kind === "home") {
+      const { hold_time_s: _gone, ...doc } = r.doc as Record<string, unknown>;
+      h.home = { ...structuredClone(HOME_DEFAULTS), ...doc, hold: { ...HOLD_DEFAULTS, ...(doc.hold as Partial<HoldPolicy> | undefined) } } as HomeSettings;
+    }
     else (TABLES.find(([k]) => k === r.kind)?.[1](h) as Map<string, unknown> | undefined)?.set(r.id, r.doc);
   }
   return h;

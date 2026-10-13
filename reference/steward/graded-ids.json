@@ -1,5 +1,5 @@
 {
- "slice": "11, steward 0.9",
+ "slice": "steward 0.12",
  "ids": [
   "GA-BIND-2",
   "GA-SEC-2",
@@ -77,7 +77,12 @@
   "GA-SCHED-3",
   "GA-STW-7",
   "GA-LEASE-6",
-  "GA-PERSIST-2"
+  "GA-PERSIST-2",
+  "GA-LEASE-7",
+  "GA-LEASE-8",
+  "GA-LEASE-9",
+  "GA-LEASE-10",
+  "GA-LEASE-11"
  ],
  "partial": {
   "GA-HOUSE-1": [
@@ -134,6 +139,12 @@
   "GA-PERSIST-2": [
    "the narrowings and the front's records (slice 9)",
    "a session's persons (slice 8)"
+  ],
+  "GA-LEASE-7": [
+   "a hold's end at a schedule's step (schedule_ends): not built in the reference"
+  ],
+  "GA-LEASE-10": [
+   "a guest's hold not ended by a schedule's step (schedule_ends): not built in the reference"
   ]
  }
 }

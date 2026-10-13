@@ -39,6 +39,30 @@ export const MUTATIONS = [
   "ends-a-safety-lease-early", "ends-a-safety-lease-undeclared", "forgets-a-safety-refusal",
   "never-notices-again", "coalesces-a-failed-lock", "forgets-an-asked-plan",
   "runs-a-stepped-schedule", "visitor-stops-a-schedule",
+  // Steward 0.12: the hold policy.
+  "null-keeps-the-window", "hides-the-hold-policy", "refuses-a-short-hold", "refuses-a-flag-unnamed",
+  // Steward 0.12: how a person's hold ends.
+  "ends-a-hold-while-busy", "never-ends-a-quiet-hold", "same-window-both-ways", "vacant-ends-a-remote-hold",
+  "ends-a-hold-before-the-ack", "renews-a-capped-heater", "roomless-on-window",
+  "renews-when-told-not-to", "fixed-expires", "ignores-the-cap", "misses-a-vacancy",
+  // Steward 0.12: what a hold's lease events say, and when its timer falls due.
+  "grants-no-direction", "ends-without-a-reason", "gap-end-without-time", "ends-a-hold-late",
+  // Steward 0.12: judging every hold as its room and policy move.
+  "quiet-without-its-moment", "keeps-a-removed-hold", "missed-change-full-window",
+  // Steward 0.12: what takes and moves a hold.
+  "floor-waits-past-sent", "sensor-reading-holds", "metering-holds", "unadopted-holds", "renews-on-a-dead-sensor",
+  // Steward 0.12: a hold across a restart.
+  "restarts-the-quiet",
+  // Steward 0.12: a press is a person's.
+  "refuses-the-press", "press-loses-the-hold", "brain-groups-a-press", "press-over-safety", "press-without-a-hold",
+  "any-occurrence-is-a-press", "brain-press-overrides", "press-skips-conditions", "press-asks-the-tier", "names-the-presser",
+  "press-on-liveness", "press-over-the-cap", "press-cancels-on-unreachable", "press-hold-dies-with-rule",
+  // Steward 0.12: the owner's work passes a guest's hold.
+  "guest-hold-blocks-the-owner", "passes-undeclared", "brain-rule-passes-a-guest", "passes-a-member-hold", "named-speaker-is-a-guest",
+  "passes-inside-the-floor", "two-leases-at-once",
+  // Steward 0.12: narrowing actions pass a person's hold.
+  "press-lock-holds", "holds-the-auto-lock", "narrows-a-heater", "narrowing-takes-a-hold", "narrows-over-safety", "closes-by-opens-with",
+  "narrows-over-a-run", "narrows-by-toggle",
 ] as const;
 export type Mutation = (typeof MUTATIONS)[number];
 

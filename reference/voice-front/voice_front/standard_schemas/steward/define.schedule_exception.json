@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "steward/define.schedule_exception.json",
-  "title": "A define change's value for kind schedule_exception (steward, Schedules): one exception of a schedule, an upsert replacing the one on its date, removed by a delete naming it whole (provisional until the standard names the shape)",
+  "title": "A define change's value for kind schedule_exception (steward, Schedules): one exception of a schedule, an upsert replacing the one on its date, removed by a delete naming it whole; steward, Change sets",
   "type": "object",
   "additionalProperties": false,
   "required": ["schedule", "date", "action"],

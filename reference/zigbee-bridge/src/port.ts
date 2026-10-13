@@ -84,6 +84,13 @@ export interface DoerEvents {
   occurred(hardwareId: HardwareId, key: string, value: unknown, time: number, frameId: string): void;
   /** Names the device sent that no key describes, by the protocol's own names (GA-BRIDGE-76). */
   undescribed(hardwareId: HardwareId, names: string[]): void;
+  /**
+   * The doer cannot reach the device now (false), or can again (true), stamped with when it found so:
+   * a mains device that stopped answering, and its next frame heard (the maintainer's ruling of
+   * 2026-10-12). The core publishes the device's status with `available` as told; a return is told
+   * before the observation of the frame that brought it.
+   */
+  availability(hardwareId: HardwareId, available: boolean, time: number): void;
   /** The device came into the network, as `how` says; its description follows (GA-BRIDGE-35). */
   admitted(hardwareId: HardwareId, how: Admission): void;
   /**

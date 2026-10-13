@@ -1,6 +1,6 @@
 import type { ApplierPlan } from "@ludentes/galatea-life-schemas";
 import type { Principal } from "../auth/principal.js";
-import { LEASE_EXEMPT, refusedBy, type Holder, type Lease, type Precedence } from "../leases/table.js";
+import { LEASE_EXEMPT, leaseRefuses, type Holder, type Met, type Passing, type Precedence } from "../leases/table.js";
 import type { Occupancy } from "./occupancy.js";
 import type { Mutation } from "../mutations.js";
 import type { Resolved } from "./resolve.js";
@@ -40,8 +40,15 @@ export interface Judge {
   principal: Principal;
   /** The precedence the principal acts at (steward, *Leases*): a person at an endpoint, `person`. */
   precedence: Precedence;
+  /**
+   * How it passes a lease beside its precedence: a press rule's own action passes only a person's hold
+   * (GA-LEASE-9); the owner's work, a guest's hold whose floor passed (GA-LEASE-10).
+   */
+  pass?: Passing;
+  /** Whether the steward declares `owner_work_passes_guest_holds`: the owner's work passes a guest's hold only then (GA-LEASE-10). */
+  guestsPass?: boolean;
   /** What a change on a device meets: its provisional lease, else its lease (GA-LEASE-3). */
-  leaseOf: (target: string) => Pick<Lease, "holder" | "precedence"> | undefined;
+  leaseOf: (target: string) => Met | undefined;
   /** The occupancy of a device's room, where the request respects occupancy; absent, occupancy is not consulted (GA-OCC-1). */
   occupancyOf?: (target: string) => Occupancy;
   mutation?: Mutation;
@@ -114,13 +121,18 @@ const REASONS: { name: string; hit: (x: Judged) => Hit | undefined }[] = [
 
 /**
  * `refuse(leased)` with the lease's holder, when a change at the judge's precedence meets a lease that
- * outranks it on `target` (GA-LEASE-3); none for `session.lock`, which no lease refuses.
+ * refuses it on `target` (GA-LEASE-3; a press's, GA-LEASE-9; the owner's work's, GA-LEASE-10); none for `session.lock`, which no lease refuses.
  * `ignores-leases` never refuses.
  */
-export function leased(target: string, action: string, j: Pick<Judge, "leaseOf" | "precedence" | "mutation">): Hit | undefined {
+export function leased(target: string, action: string, j: Pick<Judge, "leaseOf" | "precedence" | "pass" | "guestsPass" | "mutation">): Hit | undefined {
   if (action === LEASE_EXEMPT || j.mutation === "ignores-leases") return undefined;
   const l = j.leaseOf(target);
-  return l && refusedBy(l, j.precedence) ? { verdict: "refuse", reason: "leased", holder: l.holder } : undefined;
+  if (!l) return undefined;
+  const o = { mutation: j.mutation, guestsPass: j.guestsPass };
+  if (leaseRefuses(l, j.precedence, j.pass ?? {}, o)) return { verdict: "refuse", reason: "leased", holder: l.holder };
+  // A narrowing action passes a person's provisional lease, but not the device's lease beneath it that refuses it (R-67).
+  if (j.pass?.narrowing && l.beneath && leaseRefuses(l.beneath, j.precedence, j.pass, o)) return { verdict: "refuse", reason: "leased", holder: l.beneath.holder };
+  return undefined;
 }
 
 /** `skip(occupied)` for an occupied room, `ask(occupancy_unknown)` for one not known, none for a vacant one or none consulted (GA-OCC-1). */

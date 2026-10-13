@@ -30,3 +30,14 @@ export class FakeClock implements Clock {
     this.t = end;
   }
 }
+
+/**
+ * A fake clock whose wall time (`now`) steps by `step` while its timers run on, as a host's timers do across
+ * a step of the system clock; `elapsed` is the timers' own time, which no step moves.
+ */
+export class WallStepClock extends FakeClock {
+  private offset = 0;
+  elapsed(): number { return super.now(); }
+  step(ms: number): void { this.offset += ms; }
+  override now(): number { return super.now() + this.offset; }
+}

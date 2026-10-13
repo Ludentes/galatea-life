@@ -91,6 +91,8 @@ export interface ZigbeeBridgeOptions {
   runId?: string;
   /** A negative mutation, honoured only with a run id. */
   mutation?: Mutation;
+  /** The build's own `leaves-a-reading-unmarked` mutation (`UNCLAIMED_MUTATIONS`), honoured only with a run id. */
+  leavesReadingsUnmarked?: boolean;
   /** How `exits-on-fault` exits; the process's own exit unless given. */
   exit?: (code: number) => void;
 }
@@ -220,7 +222,13 @@ export class ZigbeeBridge {
     await this.publishDevices(true);
     for (const id of this.clears) await this.publish(`${this.base}/devices/${id}/status`, "", true);
     this.clears.clear();
-    for (const dev of this.byId.values()) await this.publishDeviceStatus(dev);
+    for (const dev of this.byId.values()) {
+      if (dev.values.size) await this.publishDeviceStatus(dev);
+      // A device with no reading still says it is reachable: an earlier instance may have left its
+      // retained `available: false` (a mains device that stopped answering), which nothing else here
+      // would replace. Stamped with its last check-in, or now where it has none (⚠️ a choice).
+      else await this.publishBareStatus(dev, dev.lastCheckIn ?? this.o.clock.now());
+    }
     await this.publishStatus();
     // Blocked hardware the bridge still has (a removal a restart cut off) is removed again, so that
     // the `remove` ends in its `left` and the hardware is out of the network (GA-BRIDGE-27).
@@ -367,6 +375,7 @@ export class ZigbeeBridge {
       },
       left: (hw) => queue(() => this.left(hw)),
       interviewed: (hw) => queue(() => this.interviewed(hw)),
+      availability: (hw, available, time) => timed("an availability", time, () => this.availability(hw, available, time)),
     };
   }
 
@@ -541,10 +550,11 @@ export class ZigbeeBridge {
     else await this.publishBareStatus(dev, this.o.clock.now());
   }
 
-  /** A device's status with no reading, stamped `at`: its readings all dropped while it stays listed. */
+  /** A device's status with no reading, stamped `at`: its readings all dropped while it stays listed, or none yet as its availability changes. */
   private async publishBareStatus(dev: Device, at: number): Promise<void> {
     if (!this.publishing || this.life !== "running") return;
-    await this.publish(`${this.base}/devices/${dev.id}/status`, { deviceId: dev.id, timestamp: wireTime(at), available: true }, true);
+    await this.publish(`${this.base}/devices/${dev.id}/status`, { deviceId: dev.id, timestamp: wireTime(at),
+      available: dev.unreachableSince === null }, true);
   }
 
   /**
@@ -699,7 +709,7 @@ export class ZigbeeBridge {
       const undescribed = this.o.store.undescribed(stored.deviceId).map((u) => ({ name: u.name, firstSeen: u.at }));
       dev = { id: stored.deviceId, hw, d, keys: new Map(), events: new Map(), values: new Map(), undescribed,
         frames: new Map(), lastCheckIn, observable: { value: false, since: now }, savedAt: stored.lastCheckIn,
-        unsaved: false };
+        unsaved: false, unreachableSince: null };
       // Declared before it enters the maps: a declaration that throws leaves no device whose raw
       // description the next `devices` would carry (GA-BRIDGE-77).
       this.declare(dev, d);
@@ -820,6 +830,23 @@ export class ZigbeeBridge {
     if (this.devicesAfterStatus.delete(dev.id)) await this.publishDevices();
     if (unnamed.length) await this.addUndescribed(dev, unnamed, now);
     if (this.refreshDevice(dev, now)) await this.publishStatus();
+  }
+
+  /**
+   * The doer cannot reach the device now, or can again (a mains device that stopped answering, the
+   * maintainer's ruling of 2026-10-12): its status goes out with `available` as told, its readings
+   * kept with their old times, or bare, stamped with the moment, when it has none. While it is
+   * unavailable a command for it is `failed(unreachable)` (GA-BRIDGE-6). Nothing is stored: a
+   * restart takes every device as reachable until the doer says otherwise.
+   */
+  private async availability(hw: HardwareId, available: boolean, time: number): Promise<void> {
+    const dev = this.byHw.get(hw);
+    if (!dev || available === (dev.unreachableSince === null)) return;
+    const now = this.o.clock.now();
+    const at = Math.min(time, now);
+    dev.unreachableSince = available ? null : at;
+    if (dev.values.size) await this.publishDeviceStatus(dev);
+    else await this.publishBareStatus(dev, at);
   }
 
   /** Names the doer reports as no key's (GA-BRIDGE-76). */
@@ -1011,7 +1038,7 @@ export class ZigbeeBridge {
   private entry(dev: Device): Record<string, unknown> {
     return entry(dev.id, dev.d, COORDINATOR, dev.undescribed, { hidesAwaited: this.mutation === "holds-back-silently",
       claimsProtocol: this.mutation === "claims-protocol-class",
-      hidesOtherAdmins: this.mutation === "hides-other-admins" });
+      hidesOtherAdmins: this.mutation === "hides-other-admins", leavesReadingsUnmarked: !!this.o.runId && !!this.o.leavesReadingsUnmarked });
   }
 
   /** `devices` when a declaration changed, or always when `force`d (the start, a snapshot, a reconnection). */
@@ -1029,7 +1056,12 @@ export class ZigbeeBridge {
    * `timestamps` for those observed at another time (GA-BRIDGE-1, GA-BRIDGE-2). None before its first reading.
    */
   private async publishDeviceStatus(dev: Device): Promise<void> {
-    if (!this.publishing || this.life !== "running" || !dev.values.size) return;
+    if (!this.publishing || this.life !== "running") return;
+    // With no reading, a device the doer cannot reach still says so (a start's or a reconnection's statuses).
+    if (!dev.values.size) {
+      if (dev.unreachableSince !== null) await this.publishBareStatus(dev, dev.unreachableSince);
+      return;
+    }
     // `stamps-publication-time`: every reading stamped with the publication, not its observation.
     const now = this.o.clock.now();
     const readings = [...dev.values.entries()].map(([k, r]) => [k, this.mutation === "stamps-publication-time" ? { ...r, at: now } : r] as const);
@@ -1043,7 +1075,7 @@ export class ZigbeeBridge {
       ...(typeof on === "boolean" ? { state: on ? "on" : "off" } : {}),
       timestamp: wireTime(newest),
       ...values,
-      available: true,
+      available: dev.unreachableSince === null,
       ...(Object.keys(timestamps).length ? { timestamps } : {}),
     }, true);
   }
@@ -1192,6 +1224,8 @@ export class ZigbeeBridge {
       if (this.mutation === "unreachable-late") await this.wait(UNREACHABLE_LATE_MS);
       return this.ack(id, commandId, "failed", "unreachable", "the coordinator is not answering");
     }
+    // A device the doer cannot reach now (`available: false`): nothing is sent (GA-BRIDGE-6).
+    if (dev.unreachableSince !== null) return this.ack(id, commandId, "failed", "unreachable", "the device does not answer: available: false");
     if (this.mutation === "echoes-commanded-state") await this.echo(dev, decl, args);
     // The owner's PIN goes to the doer with a lock's unlock, where the lock requires one, and nowhere else (GA-BRIDGE-36).
     const owners = decl.action === UNLOCK && dev.d.pinRequired ? this.pins.get(dev.id) : undefined;

@@ -132,6 +132,17 @@ export function declaredKeys(capabilities: readonly string[], sensorKeys: readon
   return keys;
 }
 
+/**
+ * The keys an action of one of `capabilities` sets (`on`, `level`, `setpoint` and so on), by the
+ * vocabulary, whether or not the device is offered that action now: a person changing one at the
+ * device is the change a lease is for, never the device's own.
+ */
+export function closedSetKeys(capabilities: readonly string[]): Set<string> {
+  const keys = new Set<string>();
+  for (const c of capabilities) for (const a of Object.values(capability(c)?.actions ?? {})) for (const k of Object.keys(a.sets ?? {})) keys.add(k);
+  return keys;
+}
+
 /** Whether `value` is a reading of type `type`: that scalar, or "unknown" (*A device's status*). */
 export function fits(type: KeyType, value: unknown): boolean {
   if (value === "unknown") return true;

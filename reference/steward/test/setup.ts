@@ -7,6 +7,7 @@ import { lasting, memoryDb } from "./db.js";
 import { complete, FakeApplier } from "./fake-applier.js";
 import { FakeClock } from "./fake-clock.js";
 import { BASELINE, SECRETS, up } from "./house.js";
+import { validLeaseEvents } from "./lease-events.js";
 
 type Body = Record<string, any>;
 export type Db = Awaited<ReturnType<typeof memoryDb>>;
@@ -104,9 +105,10 @@ export function heardAt(clock: FakeClock, endpoint: string, extra: Body = {}, ms
   return { utterance_id: randomUUID(), endpoint, time: new Date(clock.now() + ms).toISOString(), transcript: `да ${++said}`, addressed_by: "wake", ...extra };
 }
 
-/** The events since `cursor`, of `type` when given. */
+/** The events since `cursor`, of `type` when given; `lease` events each checked against `steward/event.lease.json` (R-38). */
 export async function eventsSince(ok: (s: string, t: string, a?: Body) => Promise<Body>, cursor: string, type?: string): Promise<Body[]> {
   const events = (await ok(SECRETS.owner, "events", { cursor })).events as Body[];
+  validLeaseEvents(events.filter((e) => e.type === "lease"));
   return type ? events.filter((e) => e.type === type) : events;
 }
 

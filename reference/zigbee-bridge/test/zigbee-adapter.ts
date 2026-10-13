@@ -80,7 +80,17 @@ export function stubAdapter() {
   };
 }
 
-/** The adapter's error for a delivery the network reported lost, as herdsman's Z-Stack adapter words it. */
-export const dataConfirmFailure = (status = "MAC_NO_ACK") => new Error(`Data request failed with error: '${status}' (0xe9)`);
-/** The adapter's error for an answer that never came. */
-export const responseTimeout = () => new Error("Timeout - 4660 - 1 - 7 - 6 - 11 after 10000ms");
+/** The Z-Stack status codes herdsman names in a failed data confirm (its `ZnpCommandStatus`). */
+const ZNP_STATUS: Record<string, number> = { MAC_NO_ACK: 0xe9, NWK_NO_ROUTE: 0xcd, MAC_TRANSACTION_EXPIRED: 0xf0, APS_NO_ACK: 0xb7,
+  MAC_CHANNEL_ACCESS_FAILURE: 0xe1, BUFFER_FULL: 0x11, MAC_NO_RESOURCES: 0x1a };
+/**
+ * The adapter's error for a delivery the network reported failed, as herdsman 10.10.0's Z-Stack
+ * adapter words it (`DataConfirmError`): the status's name and code, or `'TIMEOUT'` where no data
+ * confirm came at all.
+ */
+export const dataConfirmFailure = (status = "MAC_NO_ACK") => new Error(status === "TIMEOUT" ? "Data request failed with error: 'TIMEOUT'"
+  : `Data request failed with error: '${status}' (0x${(ZNP_STATUS[status] ?? 0xe9).toString(16)})`);
+/** The adapter's error for an answer that never came, as herdsman 10.10.0's cluster waitress words it. */
+export const responseTimeout = () => new Error("Timeout after 5000ms [address=4660 endpoint=1 clusterId=6 cmdId=11 tsn=7]");
+/** The Z-Stack driver's error for a data request the coordinator itself did not take within 6 s (its SRSP). */
+export const srspTimeout = () => new Error("SRSP - AF - dataRequest after 6000ms");

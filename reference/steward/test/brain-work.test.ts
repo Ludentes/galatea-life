@@ -1,7 +1,7 @@
 import { validate } from "@ludentes/galatea-life-schemas";
 import { describe, expect, it, vi } from "vitest";
 import type { Mutation } from "../src/mutations.js";
-import { SECRETS, up } from "./house.js";
+import { OWNER_CHAT, SECRETS, up } from "./house.js";
 import { DEVICES, DIMMER, eventsSince, heardAt, LAMP, quiet, setup } from "./setup.js";
 
 type Body = Record<string, any>;
@@ -9,7 +9,6 @@ const CHANNEL = "sim-bridge:channel";
 const MINUTE = 60_000;
 const STATE = { targets: Object.fromEntries(DEVICES.map((d) => [d.id, { liveness: "live", values: d.id === LAMP || d.id === DIMMER
   ? [{ key: "on", value: false, basis_time: "2030-01-01T08:00:00.000Z" }] : [] }])), transports: [], latches: [] };
-const OWNER_CHAT = up("endpoint", { id: "owner-chat", name: "Чат владельца", type: "app", room: null, person: "owner", served_by: "brain" });
 const dimmerOn = { target: DIMMER, action: "onoff.turn_on", args: {} };
 const lampOn = { target: LAMP, action: "onoff.turn_on", args: {} };
 const note = { target: CHANNEL, action: "notify.notify", args: { text: "вечер" } };

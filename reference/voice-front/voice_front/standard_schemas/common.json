@@ -52,6 +52,15 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+\\.[a-z][a-z0-9_]*$"
     },
+    "argConstraint": {
+      "description": "One argument's constraint in an action's args, the table ruled 2026-10-06: a list is the allowed values (an empty one allows none); an object holding min, max or step a numeric range (step from min, else 0); \"any\" or {} no limit; an object of named fields an object argument, each field's own constraint; optional: true beside a range's or fields' keys an argument that may be left out. Not JSON Schema.",
+      "anyOf": [
+        { "const": "any" },
+        { "type": "array", "items": { "type": ["string", "number", "boolean"] } },
+        { "type": "object", "properties": { "min": { "type": "number" }, "max": { "type": "number" },
+          "step": { "type": "number", "exclusiveMinimum": 0 }, "optional": { "type": "boolean" } } }
+      ]
+    },
     "otherAdmins": {
       "anyOf": [
         { "type": "array", "items": { "type": "object", "required": ["vendor", "label"],
@@ -123,11 +132,33 @@
     "personRole": { "enum": ["owner", "member", "guest"] },
     "endpointType": { "enum": ["voice", "panel", "app"] },
     "credentialKind": { "enum": ["app", "panel", "brain", "front"] },
+    "holdPolicy": {
+      "description": "The hold policy in force (steward, How a person's hold ends; GA-LEASE-8): every field present, as describe shows it",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["on_s", "off_s", "other_s", "fixed_s", "load_cap_s", "cap_s", "presence_renews", "vacant_ends", "schedule_ends",
+        "owner_work_passes_guest_holds"],
+      "properties": {
+        "on_s": { "type": "integer", "minimum": 1, "description": "The quiet window after an on change" },
+        "off_s": { "type": "integer", "minimum": 1, "description": "The quiet window after an off change" },
+        "other_s": { "type": "integer", "minimum": 1, "description": "The quiet window after any other change" },
+        "fixed_s": { "type": "integer", "minimum": 1, "description": "The window from the change for a device with no room or no presence source" },
+        "load_cap_s": { "type": "integer", "minimum": 1, "description": "The window from the change for a load_cap lease" },
+        "cap_s": { "type": "integer", "minimum": 0, "description": "A person's hold ends this long after the change whatever presence does, never before its floor; 0: no cap" },
+        "presence_renews": { "type": "boolean" },
+        "vacant_ends": { "type": "boolean" },
+        "schedule_ends": { "type": "boolean" },
+        "owner_work_passes_guest_holds": { "type": "boolean", "description": "Whether the owner's rules and schedules pass a guest's hold (GA-LEASE-10)" }
+      }
+    },
     "principal": {
-      "description": "Who holds a lease (steward, Clients, endpoints and principals): a principal, or safety_rule or load_cap",
+      "description": "Who holds a lease (steward, Clients, endpoints and principals): a principal (a press rule's `{ rule, press }` among them), or safety_rule, external or load_cap",
       "anyOf": [
         { "type": "object", "required": ["endpoint"], "properties": { "person": { "type": "string" }, "endpoint": { "type": "string" } } },
-        { "type": "object", "required": ["rule"], "properties": { "rule": { "type": "string" } } },
+        { "type": "object", "required": ["rule"], "properties": { "rule": { "type": "string" },
+          "press": { "type": "object", "required": ["target", "key", "value"], "properties": {
+            "target": { "type": "string" }, "key": { "type": "string" }, "value": {} },
+            "description": "A press rule's hold: the press it came from, the occurrence's reported value (GA-LEASE-9)" } } },
         { "type": "object", "required": ["run"], "properties": { "run": { "type": "string" } } },
         { "enum": ["external", "safety_rule", "load_cap"] }
       ]

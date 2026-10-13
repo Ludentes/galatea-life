@@ -19,7 +19,7 @@ async function open() {
 describe("Store", () => {
   it("records its migrations once, in no schema it names, and grants reader history_v alone", async () => {
     const { db, store } = await open();
-    expect((await db.query<{ name: string }>("SELECT name FROM migrations")).rows.map((r) => r.name)).toEqual(["0001_skeleton.sql", "0002_plans.sql", "0003_answers.sql", "0004_applies.sql", "0005_leases.sql", "0006_notices.sql", "0007_rules.sql", "0008_rule_pending.sql", "0009_runs.sql", "0010_schedules.sql", "0011_history.sql", "0012_schedule_wait_marked.sql", "0013_event_readers.sql", "0014_lease_refused.sql"]);
+    expect((await db.query<{ name: string }>("SELECT name FROM migrations")).rows.map((r) => r.name)).toEqual(["0001_skeleton.sql", "0002_plans.sql", "0003_answers.sql", "0004_applies.sql", "0005_leases.sql", "0006_notices.sql", "0007_rules.sql", "0008_rule_pending.sql", "0009_runs.sql", "0010_schedules.sql", "0011_history.sql", "0012_schedule_wait_marked.sql", "0013_event_readers.sql", "0014_lease_refused.sql", "0015_lease_hold.sql"]);
     await store.write((tx) => setMeta(tx, "revision", "3"));
     expect(await migrate(db)).toEqual([]);
     expect(await getMeta(store, "revision")).toBe("3");

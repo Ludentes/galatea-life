@@ -1,25 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "steward/define.rule.json",
-  "title": "A define change's value for kind rule (steward, Rules): replaced whole by an upsert, its exceptions with it (provisional until the standard names the shape)",
+  "title": "A define change's value for kind rule (steward, Rules): an upsert sets only the fields it names (GA-DEF-14), its exceptions with it; steward, Change sets; created with name, actions and a trigger or conditions",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "id",
-    "name",
-    "actions"
-  ],
-  "anyOf": [
-    {
-      "required": [
-        "trigger"
-      ]
-    },
-    {
-      "required": [
-        "conditions"
-      ]
-    }
+    "id"
   ],
   "properties": {
     "id": {
@@ -30,116 +16,144 @@
       "minLength": 1
     },
     "trigger": {
-      "description": "A state change and a liveness or occurrence event are edges; a state held for a duration is level; a time is an edge at a minute; absent for a rule of conditions only",
-      "oneOf": [
+      "anyOf": [
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "state"
-          ],
-          "properties": {
-            "state": {
-              "$ref": "#/$defs/reading"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "held"
-          ],
-          "properties": {
-            "held": {
-              "$ref": "#/$defs/held"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "event"
-          ],
-          "properties": {
-            "event": {
+          "description": "A state change and a liveness or occurrence event are edges; a state held for a duration is level; a time is an edge at a minute; absent for a rule of conditions only",
+          "oneOf": [
+            {
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "target",
-                "type"
+                "state"
               ],
               "properties": {
-                "target": {
-                  "$ref": "../common.json#/$defs/id"
-                },
-                "type": {
-                  "enum": [
-                    "liveness",
-                    "occurrence"
-                  ]
-                },
-                "new": {
-                  "$ref": "../common.json#/$defs/liveness"
-                },
-                "key": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "value": {}
+                "state": {
+                  "$ref": "#/$defs/reading"
+                }
               }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "time"
-          ],
-          "properties": {
-            "time": {
+            },
+            {
               "type": "object",
               "additionalProperties": false,
               "required": [
-                "at"
+                "held"
               ],
               "properties": {
-                "at": {
-                  "$ref": "#/$defs/clock"
-                },
-                "days": {
-                  "$ref": "#/$defs/days"
+                "held": {
+                  "$ref": "#/$defs/held"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event"
+              ],
+              "properties": {
+                "event": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "target",
+                    "type"
+                  ],
+                  "properties": {
+                    "target": {
+                      "$ref": "../common.json#/$defs/id"
+                    },
+                    "type": {
+                      "enum": [
+                        "liveness",
+                        "occurrence"
+                      ]
+                    },
+                    "new": {
+                      "$ref": "../common.json#/$defs/liveness"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "value": {},
+                    "press": {
+                      "type": "boolean",
+                      "description": "The author's mark that the occurrence is a person's physical act (GA-LEASE-9); only on an occurrence trigger"
+                    }
+                  },
+                  "if": {
+                    "required": ["press"]
+                  },
+                  "then": {
+                    "properties": {
+                      "type": {
+                        "const": "occurrence"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "time"
+              ],
+              "properties": {
+                "time": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "at"
+                  ],
+                  "properties": {
+                    "at": {
+                      "$ref": "#/$defs/clock"
+                    },
+                    "days": {
+                      "$ref": "#/$defs/days"
+                    }
+                  }
                 }
               }
             }
-          }
+          ]
+        },
+        {
+          "type": "null"
         }
       ]
     },
     "conditions": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "oneOf": [
-          {
-            "$ref": "#/$defs/reading"
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "between"
-            ],
-            "properties": {
-              "between": {
-                "$ref": "#/$defs/window"
+      "anyOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/reading"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "between"
+                ],
+                "properties": {
+                  "between": {
+                    "$ref": "#/$defs/window"
+                  }
+                }
               }
-            }
+            ]
           }
-        ]
-      }
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "actions": {
       "type": "array",
@@ -159,7 +173,7 @@
             }
           },
           {
-            "description": "Starts a run of a scenario, which acts as the rule (steward, Scenario runs); the standard names no form for it (provisional)",
+            "description": "Starts a run of a scenario, which acts as the rule (steward, Scenario runs); steward, Change sets",
             "type": "object",
             "additionalProperties": false,
             "required": [
@@ -175,29 +189,43 @@
       }
     },
     "active": {
-      "type": "boolean",
-      "default": true
+      "anyOf": [
+        {
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "exceptions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "from",
-          "until"
-        ],
-        "properties": {
-          "from": {
-            "$ref": "../common.json#/$defs/time"
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "until"
+            ],
+            "properties": {
+              "from": {
+                "$ref": "../common.json#/$defs/time"
+              },
+              "until": {
+                "$ref": "../common.json#/$defs/time"
+              }
+            }
           },
-          "until": {
-            "$ref": "../common.json#/$defs/time"
-          }
+          "maxItems": 64,
+          "description": "At most 64: an owner removes ended ones by upserting the rule"
+        },
+        {
+          "type": "null"
         }
-      },
-      "maxItems": 64,
-      "description": "At most 64: an owner removes ended ones by upserting the rule"
+      ]
     }
   },
   "$defs": {

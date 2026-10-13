@@ -1,5 +1,6 @@
 import { afterEach, describe as group, expect, it, vi } from "vitest";
 import { Binary, Enum, findByDevice, Numeric, Text, type Definition } from "zigbee-herdsman-converters";
+import { entry } from "../src/declaring.js";
 import { descriptionProblem } from "../src/description.js";
 import { boundOf, describe, isPlug, NAMESPACE, pinRequiredOf, reachOf, slug, UNKNOWN_REACH_MS, versionOf } from "../src/herdsman/describe.js";
 import { overrideFor, type Override } from "../src/herdsman/overrides.js";
@@ -438,5 +439,31 @@ group("describe: the freshness bound from the reporting configure set up (plan 2
     const { version: _v, ...definition } = (await findByDevice(device, true))!;
     expect(versionOf(definition as Definition)).toBe("0.0.0");
     expect(boundOf(device, definition as Definition)).toBe(1_200_000);
+  });
+});
+
+group("selfChanging on the bench's devices, from their real definitions (FL-GAP-2)", () => {
+  const plain = { claimsProtocol: false, hidesOtherAdmins: false };
+  /** A TS0044 scene switch: the bench's manufacturer string is not recorded here, so a whitelabel the converters know as TS0044. */
+  const SWITCH = "0x00000000000a0044";
+  const SWITCH_ROW = row(44, SWITCH, "EndDevice", "TS0044", "_TZ3000_wkai4ga5", "Battery", [0, 1, 6]);
+  const selfChanging = async (ieee: string, r: Parameters<typeof devices>[0], model: string) => {
+    const override = overrideFor(model);
+    const { description } = await described(ieee, r, override ? { override } : {});
+    db?.close(); db = undefined;
+    return (entry("x", description, "zigbee", [], plain).selfChanging ?? []) as string[];
+  };
+  const own = (keys: string[]) => keys.filter((k) => !k.includes("."));
+
+  it("marks each sensor key its own and keeps `on` out, on the plug, the presence and vibration sensors, the scene switch and the pusher", async () => {
+    const plug = await selfChanging(PLUG, [PLUG_ROW], "TS011F");
+    expect(own(plug)).toEqual([]);
+    expect(plug).toEqual(expect.arrayContaining([`${NAMESPACE}.ts011f_plug_1.power`, `${NAMESPACE}.ts011f_plug_1.energy`]));
+    expect(own(await selfChanging(PRESENCE, [PRESENCE_ROW], "ZG-204ZV"))).toEqual(["occupancy", "illuminance", "battery"]);
+    expect(own(await selfChanging(SENSOR, [SENSOR_ROW], "TS0210"))).toEqual(["battery", "battery_low"]);
+    expect(own(await selfChanging(SWITCH, [SWITCH_ROW], "TS0044"))).toEqual(["battery"]);
+    const pusher = await selfChanging(PUSHER, [PUSHER_ROW], "TS0001");
+    expect(own(pusher)).toEqual(["battery"]);
+    expect(pusher.some((k) => k.endsWith(".mode"))).toBe(false);
   });
 });

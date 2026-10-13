@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EVENT_RETENTION_MS, HISTORY_RETENTION_MS, PERSONAL_RETENTION_MS } from "../src/core/events.js";
 import { SECRETS, up } from "./house.js";
 import { describeOf, DEVICES, DIMMER, LAMP, setup } from "./setup.js";
+import { validLeaseEvents } from "./lease-events.js";
 
 type Body = Record<string, any>;
 const DAY = 24 * 3_600_000;
@@ -38,6 +39,7 @@ describe("history (GA-STW-7)", () => {
     const state = h.events.find((e: Body) => e.type === "state");
     expect(state).toMatchObject({ cause: "external", applier_seq: 1 });
     expect(h.events.find((e: Body) => e.type === "lease")).toMatchObject({ change: "granted", holder: "external", precedence: "person" });
+    validLeaseEvents(h.events.filter((e: Body) => e.type === "lease"));
     expect(h).not.toHaveProperty("more");
     // The same events `events` serves, seq for seq.
     const seqs = h.events.map((e: Body) => e.seq);

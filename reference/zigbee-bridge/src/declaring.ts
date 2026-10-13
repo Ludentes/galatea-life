@@ -1,5 +1,5 @@
 import type { Description, HardwareId, ProtocolResult } from "./port.js";
-import { extensionName, extensionProblems, type ActionDecl, type KeyType } from "./vocabulary.js";
+import { closedSetKeys, declaredKeys, extensionName, extensionProblems, type ActionDecl, type KeyType } from "./vocabulary.js";
 
 /** A device the bridge cannot reach within this is offered no action (GA-BRIDGE-7): twice it plus 10 s fits the longest ack bound. */
 export const LONGEST_REACH_MS = 145_000;
@@ -24,6 +24,11 @@ export interface Device {
   frames: Map<string, number>;
   lastCheckIn: number | null;
   observable: { value: boolean; since: number };
+  /**
+   * When the doer said it cannot reach the device now (a mains device that stopped answering), or
+   * null while it can: the device's status says `available: false` until the doer says it can again.
+   */
+  unreachableSince: number | null;
   /** The check-in last written to the store, and whether a newer one waits to be. */
   savedAt: number | null;
   unsaved: boolean;
@@ -68,18 +73,35 @@ export function declaration(given: Description, o: { misnames: boolean; hasPin: 
 }
 
 /**
- * A device's entry in `devices` (*Devices*): the doer's description under the core's id, on the
- * coordinator. Every extension `state` key that no action's `confirmedBy` names is `selfChanging`
- * (*Devices*), the doer's list or not. `claimsProtocol` and `hidesOtherAdmins` are the
- * `claims-protocol-class` and `hides-other-admins` mutations, `hidesAwaited` the `holds-back-silently` one.
+ * The keys a device changes by its own behaviour (*Devices*, `selfChanging`), the doer's list and
+ * every declared `state` key, of the vocabulary or an extension, that no vocabulary action sets, no
+ * action's `confirmedBy` names and that is not a setting: an extension's readings (a socket's power),
+ * and every `sensorKeys` key and a thermostat's `current` ("any other the bridge knows the device
+ * changes"), so that their changes take cause `device` and lease no one (GA-EVT-6; FL-GAP-2). A key an
+ * action sets (`on`) stays out, so a person's press at the device still leases it. `unmarked` is the
+ * build's own `leaves-a-reading-unmarked` mutation: no vocabulary key, as before FL-GAP-2.
  */
-export function entry(id: string, d: Description, transport: string, undescribed: Device["undescribed"],
-  o: { claimsProtocol: boolean; hidesOtherAdmins: boolean; hidesAwaited?: boolean }): Record<string, unknown> {
+export function selfChangingKeys(d: Description, unmarked = false): string[] {
+  const set = closedSetKeys(d.capabilities);
   const confirming = new Set(d.actions.map((a) => a.confirmedBy?.key).filter((k) => k !== undefined));
-  const extensionState = (d.extensions ?? []).flatMap((e) => (e.keys ?? []).filter((k) => k.kind !== "event").map((k) => k.key));
   // A setting changes only when written, so it is never selfChanging (*Devices*).
   const settings = new Set(d.settings ?? []);
-  const selfChanging = [...new Set([...(d.selfChanging ?? []), ...extensionState.filter((k) => !confirming.has(k) && !settings.has(k))])];
+  const vocabulary = unmarked ? [] : [...declaredKeys(d.capabilities, d.sensorKeys).keys()];
+  const extensionState = (d.extensions ?? []).flatMap((e) => (e.keys ?? []).filter((k) => k.kind !== "event").map((k) => k.key));
+  const own = [...vocabulary, ...extensionState].filter((k) => !set.has(k) && !confirming.has(k) && !settings.has(k));
+  return [...new Set([...(d.selfChanging ?? []), ...own])];
+}
+
+/**
+ * A device's entry in `devices` (*Devices*): the doer's description under the core's id, on the
+ * coordinator, with its `selfChanging` keys (`selfChangingKeys`). `claimsProtocol` and
+ * `hidesOtherAdmins` are the `claims-protocol-class` and `hides-other-admins` mutations,
+ * `hidesAwaited` the `holds-back-silently` one, `leavesReadingsUnmarked` the build's own
+ * `leaves-a-reading-unmarked`.
+ */
+export function entry(id: string, d: Description, transport: string, undescribed: Device["undescribed"],
+  o: { claimsProtocol: boolean; hidesOtherAdmins: boolean; hidesAwaited?: boolean; leavesReadingsUnmarked?: boolean }): Record<string, unknown> {
+  const selfChanging = selfChangingKeys(d, o.leavesReadingsUnmarked);
   return {
     id,
     stableIdentifier: d.stableIdentifier,

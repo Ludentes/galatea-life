@@ -1,9 +1,14 @@
 // The applier's operations as the binding lists them, and who may call each (moved from applier.ts).
-import { requestSchemaFor } from "@ludentes/galatea-life-schemas";
+import { toolInputSchemaFor } from "@ludentes/galatea-life-schemas";
 import type { Tool } from "./service.js";
 
-const op = (name: string, readOnly: boolean, summary: string): Tool =>
-  ({ name, readOnly, summary, inputSchema: requestSchemaFor("applier", name) });
+// No combinator at the schema's top level, or Claude Code drops the tool; the alternatives it took
+// out are said in the summary, and each call is still validated in full.
+const op = (name: string, readOnly: boolean, summary: string): Tool => {
+  const inputSchema = toolInputSchemaFor("applier", name);
+  const alternatives = typeof inputSchema.description === "string" ? ` ${inputSchema.description}` : "";
+  return { name, readOnly, summary: `${summary}${alternatives}`, inputSchema };
+};
 
 /**
  * The applier's operations (applier, *Operations*), as its MCP binding lists them, each with its

@@ -124,6 +124,13 @@ describe("the MCP binding", () => {
     expect(toolList(TOOLS)).toHaveLength(17);
   });
 
+  it("lists no tool whose inputSchema has a combinator at its top level, which Claude Code drops", () => {
+    const tools = toolList(TOOLS);
+    for (const t of tools) for (const k of ["oneOf", "anyOf", "allOf"]) expect(t.inputSchema, `${t.name} ${k}`).not.toHaveProperty(k);
+    expect(tools.find((t) => t.name === "apply")?.description).toMatch(/Give exactly one of: plan_id; request\.$/);
+    expect(tools.find((t) => t.name === "define")?.description).toMatch(/Give exactly one of: changes, expected_revision and dry_run; plan_id\.$/);
+  });
+
   it("answers a define refused while the store is down with -32603 and pending false, never a result", async () => {
     const { url, db, store } = await serve();
     const { call } = await connect(url, SECRETS.owner);

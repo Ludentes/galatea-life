@@ -1,33 +1,101 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "steward/define.schedule.json",
-  "title": "A define change's value for kind schedule (steward, Schedules): replaced whole by an upsert, its exceptions with it (provisional until the standard names the shape)",
+  "title": "A define change's value for kind schedule (steward, Schedules): an upsert sets only the fields it names (GA-DEF-14), its exceptions with it; steward, Change sets; created with scenario, time",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "scenario", "time"],
+  "required": [
+    "id"
+  ],
   "properties": {
-    "id": { "$ref": "../common.json#/$defs/id" },
-    "scenario": { "description": "The scenario a run of the schedule runs", "$ref": "../common.json#/$defs/id" },
-    "time": { "$ref": "define.rule.json#/$defs/clock" },
-    "days": { "description": "ISO weekday numbers the schedule runs on, every day when absent", "$ref": "define.rule.json#/$defs/days" },
-    "exceptions": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/exception" } }
+    "id": {
+      "$ref": "../common.json#/$defs/id"
+    },
+    "scenario": {
+      "description": "The scenario a run of the schedule runs",
+      "$ref": "../common.json#/$defs/id"
+    },
+    "time": {
+      "$ref": "define.rule.json#/$defs/clock"
+    },
+    "days": {
+      "anyOf": [
+        {
+          "description": "ISO weekday numbers the schedule runs on, every day when absent",
+          "$ref": "define.rule.json#/$defs/days"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "exceptions": {
+      "anyOf": [
+        {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/exception"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
   },
   "$defs": {
     "exception": {
       "description": "Suppresses (skip) or moves (move, to time on the same date) exactly the run on its date, in the home's timezone (GA-SCHED-1)",
       "type": "object",
       "additionalProperties": false,
-      "required": ["date", "action"],
+      "required": [
+        "date",
+        "action"
+      ],
       "properties": {
-        "date": { "$ref": "#/$defs/date" },
-        "action": { "enum": ["skip", "move"] },
-        "time": { "$ref": "define.rule.json#/$defs/clock" }
+        "date": {
+          "$ref": "#/$defs/date"
+        },
+        "action": {
+          "enum": [
+            "skip",
+            "move"
+          ]
+        },
+        "time": {
+          "$ref": "define.rule.json#/$defs/clock"
+        }
       },
       "oneOf": [
-        { "properties": { "action": { "const": "skip" } }, "not": { "required": ["time"] } },
-        { "properties": { "action": { "const": "move" } }, "required": ["time"] }
+        {
+          "properties": {
+            "action": {
+              "const": "skip"
+            }
+          },
+          "not": {
+            "required": [
+              "time"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "action": {
+              "const": "move"
+            }
+          },
+          "required": [
+            "time"
+          ]
+        }
       ]
     },
-    "date": { "description": "YYYY-MM-DD, a date in the home's timezone", "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+    "date": {
+      "description": "YYYY-MM-DD, a date in the home's timezone",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    }
   }
 }

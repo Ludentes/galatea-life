@@ -82,6 +82,8 @@ export async function startSteward(s: StewardSettings, d: StartDeps): Promise<{ 
     // Its client id at the applier, every token's issuer, and the key that proves them; never printed.
     applierClient: s.applier.client,
     tokenKey: s.applier.tokenKey,
+    // Elapsed time for holds (GA-LEASE-7): the harness's clock is elapsed time (GA-HARN-2); otherwise the monotonic clock.
+    ...(clock instanceof TestClock ? {} : { elapsed: () => performance.timeOrigin + performance.now() }),
   });
   await steward.start();
 
@@ -99,7 +101,7 @@ export async function startSteward(s: StewardSettings, d: StartDeps): Promise<{ 
         ...(applier.ca === undefined ? {} : { ca: applier.ca }),
         insecure: s.mutation === "trusts-any-applier",
       }),
-      steps: { describe: (x) => steward.onDescribe(x), state: (x) => steward.onState(x), events: (e) => steward.onEvents(e),
+      steps: { describe: (x) => steward.onDescribe(x), state: (x, cursor) => steward.onState(x, cursor), events: (e) => steward.onEvents(e),
         notices: (n) => steward.onNotices(n), taken: () => steward.noticesTaken(), since: () => steward.lastApplierEvent(),
         recover: (missed, x, cursor, dropped) => steward.recover(missed, x, cursor, dropped) },
     });

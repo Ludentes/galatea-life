@@ -1566,6 +1566,28 @@ describe("Home: declarations", () => {
     expect(describe("hall:desk")).toMatchObject({ personal: ["app", "speech", "temperature", "volume"], self_changing: ["speech", "temperature", "volume"] });
   });
 
+  it("takes a bridge's self_changing sensor key as the device's own on an adopted device heard live, its `on` a hand's (FL-GAP-2)", () => {
+    const { clock, send, events, own, home, status } = setup();
+    send("devices", { devices: [entry("lamp", { capabilities: ["onoff", "sensor"], sensorKeys: ["occupancy", "battery"],
+      selfChanging: ["occupancy", "battery"] })] }, true);
+    home.listening(B.id);
+    send("status", status());
+    own([["hall:lamp", "light"]]);
+    const report = (r: Record<string, unknown>) => {
+      clock.advance(1000);
+      send("devices/lamp/status", { deviceId: "lamp", timestamp: wire(clock.now()), available: true, ...r });
+    };
+    report({ on: false, occupancy: false, battery: 90 });
+    report({ on: false, occupancy: true, battery: 90 });
+    report({ on: false, occupancy: false, battery: 89 });
+    report({ on: true, occupancy: false, battery: 89 });
+    const causes = events.filter((e) => e.type === "state").map((e) => [e.body.key, e.body.cause]);
+    const readings = causes.filter(([k]) => k !== "on");
+    expect(readings).toHaveLength(5);
+    expect(new Set(readings.map(([, c]) => c))).toEqual(new Set(["device"]));
+    expect(causes.filter(([k]) => k === "on").at(-1)).toEqual(["on", "external"]);
+  });
+
   it("takes an owner's self_changing key's change as the device's own", () => {
     const { clock, send, events, own, heard } = setup();
     heard();

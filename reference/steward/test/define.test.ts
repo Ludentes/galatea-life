@@ -1,13 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { digest } from "../src/core/secret.js";
 import { hasNotifyChannel, planDefine, type Change } from "../src/house/define.js";
-import { houseKey } from "../src/house/model.js";
+import { HOLD_DEFAULTS, houseKey } from "../src/house/model.js";
 import { baseline, BASELINE, context, del, DEVICES, furnished, FURNISHED, SECRETS, up, withOwner } from "./house.js";
 
 const refused = (changes: Change[], message: RegExp, ctx = context(), h = baseline()) =>
   expect(() => planDefine(h, changes, ctx)).toThrow(expect.objectContaining({ code: "invalid_request", message: expect.stringMatching(message) }));
 
 describe("planDefine", () => {
+  it("sets the hold policy field by field, a null field back to the steward's own, null whole back to all of it (GA-LEASE-8)", () => {
+    const short = planDefine(baseline(), [up("home", { hold: { on_s: 20, off_s: 20, presence_renews: false } })], context()).draft;
+    expect(short.home.hold).toEqual({ ...HOLD_DEFAULTS, on_s: 20, off_s: 20, presence_renews: false });
+    const one = planDefine(short, [up("home", { hold: { on_s: null } })], context()).draft;
+    expect(one.home.hold).toEqual({ ...HOLD_DEFAULTS, off_s: 20, presence_renews: false });
+    expect(planDefine(one, [up("home", { hold: null })], context()).draft.home.hold).toEqual(HOLD_DEFAULTS);
+  });
+
+  it("accepts every window of 1 s or more, a cap included, and 0 as no cap (GA-LEASE-8)", () => {
+    const h = planDefine(baseline(), [up("home", { hold: { on_s: 1, off_s: 1, other_s: 1, fixed_s: 1, load_cap_s: 1, cap_s: 1 } })], context()).draft;
+    expect(h.home.hold).toMatchObject({ on_s: 1, off_s: 1, other_s: 1, fixed_s: 1, load_cap_s: 1, cap_s: 1 });
+    expect(planDefine(baseline(), [up("home", { hold: { cap_s: 0 } })], context()).draft.home.hold.cap_s).toBe(0);
+  });
+
+  it("refuses schedule_ends: true, naming the flag, which this steward does not implement; false and null pass", () => {
+    refused([up("home", { hold: { schedule_ends: true } })], /hold\.schedule_ends/);
+    expect(() => planDefine(baseline(), [up("home", { hold: { schedule_ends: true } })], context()))
+      .toThrow(expect.objectContaining({ code: "invalid_request", data: { field: "schedule_ends" } }));
+    expect(planDefine(baseline(), [up("home", { hold: { schedule_ends: false } })], context()).draft.home.hold.schedule_ends).toBe(false);
+    expect(planDefine(baseline(), [up("home", { hold: { schedule_ends: null } })], context()).draft.home.hold.schedule_ends).toBe(false);
+  });
+
+  it("refuses hold_time_s, gone in steward 0.12 (GA-DEF-13)", () => {
+    refused([up("home", { hold_time_s: 7200 })], /hold_time_s|additional/);
+  });
+
   it("defines the baseline house in one change set, and a diff that never shows a secret (GA-DEF-1)", () => {
     const { draft, diff } = planDefine(withOwner(), BASELINE, context());
     expect([...draft.rooms.keys()].sort()).toEqual(["hall", "kitchen"]);
@@ -196,7 +222,7 @@ describe("planDefine", () => {
     refused([up("home", { time_source: "127.0.0.1:123" })], /accepted only while the applier reports a test_run_id/, context({ underHarness: false }));
     const set = planDefine(baseline(), [up("home", { time_source: "127.0.0.1:123" })], context()).draft;
     expect(set.home.time_source).toBe("127.0.0.1:123");
-    expect(planDefine(set, [up("home", { time_source: null, hold_time_s: null })], context()).draft.home)
+    expect(planDefine(set, [up("home", { time_source: null, hold: null })], context()).draft.home)
       .toEqual(expect.not.objectContaining({ time_source: expect.anything() }));
   });
 

@@ -1,13 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "steward/define.home.json",
-  "title": "A define change's value for kind home: the settings it sets, a null one back to its default (provisional until the standard names the shape)",
+  "title": "A define change's value for kind home: the settings it sets, a null one back to its default (steward, Change sets)",
   "type": "object",
   "additionalProperties": false,
   "minProperties": 1,
   "properties": {
     "timezone": { "type": ["string", "null"], "minLength": 1 },
-    "hold_time_s": { "type": ["integer", "null"], "minimum": 1 },
+    "hold": {
+      "description": "The hold policy (GA-LEASE-8): an upsert sets the fields it names, a null field back to the steward's own; null whole puts every field back",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "on_s": { "type": ["integer", "null"], "minimum": 1 },
+        "off_s": { "type": ["integer", "null"], "minimum": 1 },
+        "other_s": { "type": ["integer", "null"], "minimum": 1 },
+        "fixed_s": { "type": ["integer", "null"], "minimum": 1 },
+        "load_cap_s": { "type": ["integer", "null"], "minimum": 1 },
+        "cap_s": { "type": ["integer", "null"], "minimum": 0, "description": "0: no cap; null: back to the steward's own" },
+        "presence_renews": { "type": ["boolean", "null"] },
+        "vacant_ends": { "type": ["boolean", "null"] },
+        "schedule_ends": { "type": ["boolean", "null"] },
+        "owner_work_passes_guest_holds": { "type": ["boolean", "null"] }
+      }
+    },
     "occupancy_hold_s": { "type": ["integer", "null"], "minimum": 1 },
     "ask_expiry_s": { "type": ["integer", "null"], "minimum": 1 },
     "notice_channels": { "type": ["array", "null"], "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },

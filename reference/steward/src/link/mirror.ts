@@ -200,14 +200,14 @@ export class Mirror {
   }
 
   /** `action` as `target`'s description declares it, or undefined. */
-  private declared(target: string, action: string): Body | undefined {
+  declaredAction(target: string, action: string): Body | undefined {
     const d = this.devices.get(target);
     return (Array.isArray(d?.actions) ? d!.actions as Body[] : []).find((x) => x.action === action);
   }
 
   /** Whether `target` declares `action` `idempotent: true` (applier, *Capabilities and actions*); not said is not idempotent. */
   idempotent(target: string, action: string): boolean {
-    return this.declared(target, action)?.idempotent === true;
+    return this.declaredAction(target, action)?.idempotent === true;
   }
 
   /**
@@ -215,12 +215,12 @@ export class Mirror {
    * `feedback: open` device, so a rule's or a schedule's step on it ends `skipped(toggle_only)` (GA-SCN-4).
    */
   toggleOnly(target: string, action: string): boolean {
-    return this.declared(target, action)?.toggles === true && this.devices.get(target)?.feedback === "open";
+    return this.declaredAction(target, action)?.toggles === true && this.devices.get(target)?.feedback === "open";
   }
 
   /** `action`'s `ack_within_s` as `target` declares it (a described device always does). */
   ackWithinS(target: string, action: string): number {
-    const s = this.declared(target, action)?.ack_within_s;
+    const s = this.declaredAction(target, action)?.ack_within_s;
     // Declared, as it must be (0 read as 0); 10 s only for an action no longer described.
     return typeof s === "number" ? s : 10;
   }

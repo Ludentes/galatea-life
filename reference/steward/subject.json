@@ -26,5 +26,17 @@
     "ends-a-safety-lease-early", "ends-a-safety-lease-undeclared", "forgets-a-safety-refusal",
     "never-notices-again", "coalesces-a-failed-lock",
     "forgets-an-asked-plan",
-    "runs-a-stepped-schedule", "visitor-stops-a-schedule"]
+    "runs-a-stepped-schedule", "visitor-stops-a-schedule",
+    "ends-a-hold-while-busy", "never-ends-a-quiet-hold", "same-window-both-ways", "renews-on-a-dead-sensor",
+    "vacant-ends-a-remote-hold", "ends-a-hold-before-the-ack", "renews-a-capped-heater", "ends-without-a-reason", "roomless-on-window",
+    "renews-when-told-not-to", "fixed-expires", "grants-no-direction", "gap-end-without-time", "hides-the-hold-policy", "refuses-a-short-hold",
+    "refuses-a-flag-unnamed", "restarts-the-quiet", "sensor-reading-holds", "metering-holds", "unadopted-holds",
+    "ignores-the-cap", "misses-a-vacancy", "quiet-without-its-moment", "floor-waits-past-sent", "ends-a-hold-late", "null-keeps-the-window",
+    "keeps-a-removed-hold", "missed-change-full-window",
+    "refuses-the-press", "press-loses-the-hold", "brain-groups-a-press", "press-over-safety", "press-without-a-hold",
+    "any-occurrence-is-a-press", "brain-press-overrides", "press-skips-conditions", "press-asks-the-tier", "names-the-presser", "press-on-liveness",
+    "press-over-the-cap", "guest-hold-blocks-the-owner", "passes-undeclared", "brain-rule-passes-a-guest", "passes-a-member-hold",
+    "named-speaker-is-a-guest", "holds-the-auto-lock", "narrows-a-heater", "narrowing-takes-a-hold", "narrows-over-safety", "closes-by-opens-with",
+    "press-lock-holds", "press-hold-dies-with-rule", "press-cancels-on-unreachable", "passes-inside-the-floor", "two-leases-at-once",
+    "narrows-over-a-run", "narrows-by-toggle"]
 }

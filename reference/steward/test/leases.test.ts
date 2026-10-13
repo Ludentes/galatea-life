@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { HOLD_DEFAULTS } from "../src/house/model.js";
 import { LeaseTable } from "../src/leases/table.js";
 import { MUTATIONS } from "../src/mutations.js";
 import { lasting, memoryDb } from "./db.js";
@@ -7,7 +8,8 @@ import { SECRETS } from "./house.js";
 import { describeOf, DEVICES, eventsSince, LAMP, on, setup } from "./setup.js";
 
 type Body = Record<string, any>;
-const HOLD_MS = 7_200_000;
+/** `fixed_s`: the lamp is in the hall, which has no presence source (GA-LEASE-7). */
+const HOLD_MS = HOLD_DEFAULTS.fixed_s * 1000;
 const CHANNEL = "sim-bridge:channel";
 const LAPTOP = "pc-bridge:laptop";
 /** A computer whose `session.lock` takes no lease (GA-LEASE-1). */
@@ -98,7 +100,7 @@ describe("leases", () => {
       .toEqual({ [LAMP]: "external person", "sim-bridge:dimmer": "load_cap person" });
   });
 
-  it("lets an equal precedence replace a lease, saying so, and gives the outside change's lease no hold over a person's apply (GA-LEASE-3)", async () => {
+  it("lets an equal precedence replace a lease, the replaced hold ended before the new one's grant, and gives the outside change's lease no hold over a person's apply (GA-LEASE-3, R-44)", async () => {
     const { ok, applier, pump } = await setup();
     const { cursor } = await ok(SECRETS.owner, "events");
     await inline(ok, SECRETS.olga, "olga-app", [on(LAMP)]);
@@ -106,7 +108,8 @@ describe("leases", () => {
     await pump();
     const r = await inline(ok, SECRETS.panel, "hall-panel", [on(LAMP)]);
     expect(r.outcomes.map((o: Body) => o.outcome)).toEqual(["dispatched"]);
-    expect(await leaseEvents(ok, cursor)).toEqual([`granted ${LAMP} olga-app`, `replaced ${LAMP} external`, `replaced ${LAMP} hall-panel`]);
+    expect(await leaseEvents(ok, cursor)).toEqual([`granted ${LAMP} olga-app`, `ended ${LAMP} olga-app`, `granted ${LAMP} external`,
+      `ended ${LAMP} external`, `granted ${LAMP} hall-panel`]);
   });
 
   it("changes no lease when planning (GA-STW-1)", async () => {
@@ -182,7 +185,7 @@ describe("the lease table: a provisional lease's refused rules handed on (the co
     t.refused(LAMP, "evening");
     // A safety rule takes the device before the applier answers: the person's grant is refused.
     expect(t.grant(safety(0))).toBe(true);
-    t.settle(LAMP, "a1", "s1", { sinceMs: 0, holdMs: 60_000 });
+    t.settle(LAMP, "a1", "s1", { sinceMs: 0, expiresMs: 60_000 });
     expect(t.of(LAMP)?.holder).toEqual({ safety_rule: "night" });
     expect(t.of(LAMP)?.refused).toEqual(["evening"]);
     expect(ended).toEqual([]);

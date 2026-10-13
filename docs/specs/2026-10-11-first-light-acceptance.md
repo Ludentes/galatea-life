@@ -24,6 +24,10 @@ related:
 
 | Date | Change |
 |---|---|
+| 2026-10-12 | FL-GAP-4 closed by the bridge build on `feat/zigbee-mains-dead`: FL-LIVE-3 expects the plug `dead` about 10 min after its last answer (two polls, each with its retry), and `failed(unreachable)` for a step sent after that |
+| 2026-10-12 | FL-GAP-2 ruled to close (the maintainer): the Zigbee bridge declares every sensor reading `selfChanging` (branch `feat/zigbee-sensor-self-changing`), so once it is deployed the presence sensor takes no lease and its readings carry cause `device`; *Known noise*, the standing rules and FL-RST-3 say so. No check expects `external` on a sensor reading; the plug's `on` stays `external` |
+| 2026-10-12 | *Settings for the run*: `first-light.mjs` also sets `cap_s` to 0 and restores it; a hand run may leave it as found |
+| 2026-10-12 | Steward 0.12 replaces the home's `hold_time_s` with `home.hold` (windows by direction, `load_cap_s`, flags): *Settings for the run* records `home.hold` from `describe`, sets `on_s`, `off_s`, `other_s`, `fixed_s` and `load_cap_s` to 20 s, `presence_renews` and `vacant_ends` to false, and restores it field by field; FL-RST-2 and FL-RST-8 set the windows to 120 s; FL-SAFE-3 waits `load_cap_s`; `first-light.mjs` does all this itself for scripted runs |
 | 2026-10-12 | The maintainer's answers: FL-NOTE-3 not now; a minimal `galatea scenario` for smoke tests; `dead` for mains devices (FL-GAP-4 to close); rules read from `galatea status --json` |
 | 2026-10-12 | `hold_time_s` is 20 s in every run (the maintainer): each run's setup records the value it finds and sets 20, and the teardown sets back what it recorded, asserting no default. The lease checks are rebuilt to fit 20 s: FL-LEASE-1 on a rule held 5 s on the plug's own `on`, FL-LEASE-3 and FL-LEASE-4 on a time window opening just after the press, FL-SCHED-5 and FL-GAP-1 pressed seconds before; `empty-off` is now defined in FL-RULE-2; FL-RST-2 and FL-RST-8, which cannot fit a restart in 20 s, set 120 s for themselves alone (an open question); FL-SW-1's and FL-SAFE-3's leases read as 20 s; *Evening one* about 3 h 40 min, *Rules and time* about 2 h 50 min |
 | 2026-10-12 | The maintainer's answers: FL-SAFE-3 becomes a must and a bench check on the backlog; the Fingerbot is a test device mounted on nothing, so FL-ADOPT-6 and FL-GRP-2 join the run for groups and tiers |
@@ -129,12 +133,18 @@ blocked by the brain, with what would unblock it.
 
 ### Settings for the run
 
-- **`hold_time_s` is 20 s in every run** (the maintainer, 2026-10-12: 20 s at most in a test run).
-  Each run's setup first reads the home's `hold_time_s` as found, from `galatea status --json` (the
-  steward's `describe`, its `home`), and records it in the run's record; then it sets 20 with
-  `galatea define` `{ op: upsert, kind: home, value: { hold_time_s: 20 } }`. The teardown sets back
-  the value recorded. Whether the default of 7200 is right is to be brainstormed apart from this
-  document, so no check asserts it.
+- **The hold is 20 s in every run** (the maintainer, 2026-10-12: 20 s at most in a test run). Since
+  steward 0.12 the home's hold is a policy, `home.hold`, not one length. Each run's setup first reads
+  `home.hold` as found, from `galatea status --json` (the steward's `describe`, its `home`), and
+  records it whole in the run's record; then it sets, one field per `galatea define` (`{ op: upsert,
+  kind: home, value: { hold: { on_s: 20 } } }`, and so on): `on_s`, `off_s`, `other_s`, `fixed_s`
+  and `load_cap_s` to 20, `presence_renews` and `vacant_ends` to false, so that the room's presence
+  neither lengthens nor shortens a lease and each lasts its window. The teardown sets the recorded
+  fields back, one at a time, never `null` (which would put a reference value there, not the
+  recorded one). For a scripted run `first-light.mjs` does this itself, in the same way, and also sets
+  `cap_s` to 0 (no cap) and restores it with the rest. A hand run may leave `cap_s` (43200 s in the
+  reference) as found: with 20 s windows it never bites. The reference values are not asserted by any
+  check.
 - **So every lease of a person's lasts 20 s**: the one an apply's step takes from dispatch, so that
   no rule acts between dispatch and ack (GA-LEASE-1), and the ones an `external` or `load_cap` change
   takes (GA-LEASE-2). A lease refuses only what acts inside those 20 s, so a check that must show a
@@ -174,7 +184,8 @@ blocked by the brain, with what would unblock it.
 - **Every presence reading takes a person lease on the presence sensor** (backlog, *A sensor's every
   reading leases it to a person*); the vibration sensor took none in seven days. Nothing acts on the
   sensor, so the lease refuses nothing, but `history` fills with `lease` events. Checks read leases
-  on the plug only.
+  on the plug only. Ruled to close (FL-GAP-2): once the bridge build is deployed, presence readings
+  carry cause `device` and take no lease, and this noise is gone.
 - **The plug's tiers.** With 0.16 the owner may lower a tier she raised, down to the table's floor,
   so tier checks use `onoff.turn_off` and `onoff.turn_on` again. Every lowering is tried with
   `galatea configure --dry-run` first. The extension action `identify` (it blinks the plug's light) is
@@ -210,7 +221,7 @@ once and holds the core pass.
 |---|---|---|
 | Before | FL-OCC-0, the presence sensor's cadence, its room empty | 60 min |
 | 1 | FL-ADOPT-1, reading the plug's settings and every device's `fresh_s` | 10 min |
-| 2 | FL-ADOPT-3, then the presence sensor's `fresh_s`, and the run's `hold_time_s` read, recorded and set to 20 | 15 min |
+| 2 | FL-ADOPT-3, then the presence sensor's `fresh_s`, and the run's `home.hold` read, recorded and set to 20 s windows | 15 min |
 | 3 | FL-SW-1 and FL-SW-3 | 10 min |
 | Setup | FL-TIER-0, `onoff.turn_on` raised to `confirm` | 5 min |
 | 4 | **FL-TIER-1, the core pass**, with the misbehaving session | 20 min |
@@ -245,8 +256,9 @@ Each about an evening. The order inside a run follows the list.
   day), and the measurements that need hours.
 - **When the devices allow:** FL-ADOPT-5 (something to pair), FL-OCC-2 (a short enough bound), FL-OCC-4, FL-OCC-5 (the second
   radar), FL-SCN-6, FL-SCHED-4, FL-LIVE-5, FL-NOTE-3, FL-NOTE-4.
-- **Known gaps seen along the way:** FL-GAP-2 in every presence check, FL-GAP-4 in FL-LIVE-3, and
-  FL-GAP-5 at FL-ADOPT-3's owner bound; each is recorded where it shows.
+- **Known gaps seen along the way:** FL-GAP-2 in every presence check until its bridge build is
+  deployed, and FL-GAP-5 at FL-ADOPT-3's owner bound; each is recorded where it shows. (FL-GAP-4 is
+  closed by the bridge build.)
 
 ## The checks
 
@@ -281,7 +293,7 @@ Each about an evening. The order inside a run follows the list.
   стенде», the bench room). `galatea adopt <presence> --class sensor --name … --room bench`; the same
   for `<vibration>`, its room by the maintainer's choice. Then `galatea configure` with `{ op: upsert,
   kind: fresh_s, value: { device: <presence>, fresh_s: <from FL-OCC-0> } }`; then the home's
-  `hold_time_s` read, recorded and set to 20 with `galatea define`, as *Settings for the run* says.
+  `home.hold` read, recorded and set to 20 s windows with `galatea define`, as *Settings for the run* says.
 - Expected: the scene switch adopted, named and in its room; the two sensors adopted; the applier's
   and the steward's revisions move once per change; names and rooms in `galatea devices`; the
   presence sensor's effective bound the owner's.
@@ -884,11 +896,11 @@ brain, and a `galatea scenario` command (code) would unblock them.
 **FL-RST-2 · A gap replayed once** — must
 - Story: HS3. Requirements: GA-RULE-1, GA-LEASE-2, GA-PERSIST-2.
 - Devices: the plug, the presence sensor.
-- Steps: set the home's `hold_time_s` to 120 for this check alone (*Settings for the run* says why).
+- Steps: set the hold's `on_s`, `off_s`, `other_s` and `fixed_s` to 120 for this check alone (*Settings for the run* says why).
   `arrive-on` defined again as FL-RULE-1 has it (a teardown deleted it) and active; lamp on.
   `docker compose -p galatea --profile zigbee stop steward`; press the plug's button (the lamp goes
   off); walk into the sensor's view (the `arrive-on` edge); start the steward within 60 s of the
-  press. Once the lease has ended, set `hold_time_s` back to 20.
+  press. Once the lease has ended, set those four back to 20.
 - Expected: the steward reads the gap from the applier's `history`: the press gets a `person` lease
   for what is left of its 120 s; the presence edge, younger than `edge_replay_s` (300 s), is replayed
   once, and its action meets that lease, `refused(leased)`; nothing fires twice.
@@ -901,8 +913,9 @@ brain, and a `galatea scenario` command (code) would unblock them.
 - Story: HS35; the applier 0.16 bench check. Requirements: GA-EVT-1, GA-LEASE-2.
 - Steps: `docker compose -p galatea --profile zigbee restart applier`.
 - Expected: every first value after the restart with cause `device`, told by what the applier
-  observes (0.16), and no `lease` on the plug from them. Presence readings after the first still
-  lease the sensor (FL-GAP-2), so the check reads first values only.
+  observes (0.16), and no `lease` on the plug from them. Until FL-GAP-2's bridge build is deployed,
+  presence readings after the first still lease the sensor, so the check reads first values only;
+  once it is, no reading of the presence sensor leases it, first or not.
 - Evidence: `galatea history` over the restart. The 2026-10-12 deployment, the applier and the bridge
   restarting together, is a first sighting, not this check.
 
@@ -941,9 +954,9 @@ brain, and a `galatea scenario` command (code) would unblock them.
 
 **FL-RST-8 · A lease and its refused rule across a restart** — stretch
 - Requirements: GA-PERSIST-2, GA-LEASE-4, GA-RULE-1.
-- Steps: set the home's `hold_time_s` to 120 for this check alone (*Settings for the run*). FL-LEASE-1's
+- Steps: set the hold's `on_s`, `off_s`, `other_s` and `fixed_s` to 120 for this check alone (*Settings for the run*). FL-LEASE-1's
   steps, `lamp-left-on` defined again; right after the refusal, `docker compose -p galatea --profile
-  zigbee restart steward`. Once the lease has ended, set `hold_time_s` back to 20.
+  zigbee restart steward`. Once the lease has ended, set those four back to 20.
 - Expected: the lease survives the restart with its end unchanged, 120 s after the press; once the
   steward is back the rule, held 5 s afresh, may be refused once more, since a refused firing does not
   count as fired (GA-RULE-1); at the lease's end `lamp-left-on` fires and the lamp goes off.
@@ -972,12 +985,17 @@ brain, and a `galatea scenario` command (code) would unblock them.
 **FL-LIVE-3 · The plug unplugged** — must
 - Story: HS12. Requirements: GA-STATE-5, GA-APPLY-8, GA-BRIDGE-13.
 - Steps: unplug the plug; at once, and again after 16 minutes, tell the brain to switch it.
-- Expected **today**: the plug reads `stale` about 911 s after its last answer (a 300 s poll, a 900 s
-  bound, the 11 s slack), and **never `dead`**: the bridge reports no single device `available:
-  false`. A step sent meanwhile is acked `failed(no_confirmation)` by the bridge, which the applier
-  takes as no ack, so the step ends `failed(no_ack)` at its `ack_within_s` (GA-APPLY-8). The brain says
-  the device did not answer. If the run sees another outcome, it records it.
-- Evidence: the `liveness` (stale) event and its time; the `outcome`.
+- Expected (the bridge build that closed FL-GAP-4): the plug reads `dead` about 10 min after its
+  last answer, so 5 to 10 min after unplugging: two polls 300 s apart go unanswered, each with its
+  retry 3 s later, and the bridge publishes it `available: false` (before the `stale` it would reach
+  about 911 s after its last answer). The step sent at once, before that, is acked
+  `failed(no_confirmation)` by the bridge, which the applier takes as no ack, so the step ends
+  `failed(no_ack)` at its `ack_within_s` (GA-APPLY-8). The step sent after 16 minutes is acked
+  `failed(unreachable)` by the bridge (GA-BRIDGE-6), or `skip(dead)` in the plan where the applier
+  refuses it first. The brain says the device did not answer. The plug plugged back in reads `live`
+  again at its next frame (its announce, or the next poll answered). If the run sees another outcome,
+  it records it.
+- Evidence: the `liveness` (dead) event and its time against the unplugging; both `outcome`s.
 
 **FL-LIVE-4 · A rule's step that did not land** — must
 - Requirements: GA-RULE-7.
@@ -1041,14 +1059,14 @@ brain, and a `galatea scenario` command (code) would unblock them.
 - Story: HS14. Requirements: GA-LOAD-2, GA-LEASE-2.
 - Backlog: *Bench check: a heating load's cap, the applier acting alone*.
 - Run it once, undisturbed: any switch-off before the cap restarts the count.
-- Steps: overnight: load `heating`, lamp on, wait 14400 s; set the load back to `lighting` after.
+- Steps: overnight: load `heating`, lamp on, wait 14400 s, then `load_cap_s` (20 s) more; set the load back to `lighting` after.
 - Expected: the applier, which runs the cap at Act with its default, turns the lamp off with cause
-  `load_cap`, and the steward gives the plug a `person` lease held by `load_cap` for the run's 20 s
+  `load_cap`, and the steward gives the plug a `person` lease held by `load_cap` for the run's `load_cap_s`, 20 s
   (GA-LEASE-2). No rule acts on the plug overnight, so the lamp stays off after the lease ends.
 - Evidence: the `state` event's cause; the `lease` event, its `expires` 20 s after the change, and
   its end.
 - The check shows that the lease is taken and by whom. How long a capped heater should be held is
-  the home's `hold_time_s`, whose default is not settled; at 20 s a rule could switch a real heater
+  the home's `load_cap_s`, whose reference value is an example; at 20 s a rule could switch a real heater
   back on after 20 s, which is why this lamp carries no rule overnight.
 
 **Out of reach, and why.** Safety rules (GA-SAFE-1 to GA-SAFE-14), latches, witnesses (GA-WIT-1) and a
@@ -1092,9 +1110,22 @@ Each is expected today. A known gap passes when it behaves as it says.
 - **What 0.12 would change:** the backlog's candidates are that such a rule acts at `person`
   precedence, or that a press renews or takes over the lease. Either way the press switches the lamp.
 
-**FL-GAP-2 · Every presence reading leases the presence sensor** (applier, open)
-- Expected today: a `person` lease on the presence sensor at each reading, and none on the vibration
-  sensor. It refuses nothing at first light.
+**FL-GAP-2 · Every presence reading leases the presence sensor** (Zigbee bridge) — Ruled to close
+(the maintainer, 2026-10-12): the bridge declared only extension keys `selfChanging`, so a sensor key
+such as `occupancy` reached the applier as `external` and the steward leased the sensor. Once the
+bridge build lands (branch `feat/zigbee-sensor-self-changing`), every `sensorKeys` key that no action
+confirms is declared `selfChanging`: the presence sensor's `occupancy`, `illuminance` and `battery` readings carry cause
+`device`, and no lease is taken on the presence sensor. Keys an action sets stay out, so the plug's
+own press stays `external` and still leases the plug (FL-SW, FL-LEASE). Steward 0.12 (GA-LEASE-2) closes the lease
+from its side as well, since only a key one of the device's actions sets takes a hold; the bridge
+build is still what makes these readings' cause `device` in `events` and `history`.
+- Steps: with `galatea events --follow` open, walk in front of the presence sensor and out again.
+- Expected once deployed: each `occupancy` and `illuminance` `state` event with cause `device`, and
+  no `lease` on the presence sensor in `galatea history`. Before the build: a `person` lease at each
+  reading, and none on the vibration sensor; it refuses nothing at first light. The bridge's first
+  start after the deploy is a model change for every device with sensor keys: the applier emits
+  `model` events for them, and a plan made before it is refused as stale. That is expected, not a
+  fault.
 
 **FL-GAP-3 · A change while the applier is down takes no lease** (applier, the code review of #100,
 CR4)
@@ -1102,9 +1133,11 @@ CR4)
 - Expected today: the new value arrives as a first value, cause `device`, with no lease, so a rule may
   undo the person's press.
 
-**FL-GAP-4 · An unplugged device never goes dead** (Zigbee bridge) — see FL-LIVE-3. Ruled to close
-(the maintainer, 2026-10-12): once the bridge build lands, the plug reads `dead` about 10 min after
-unplugging, and FL-LIVE-3 expects that.
+**FL-GAP-4 · An unplugged device never goes dead** (Zigbee bridge) — **closed** by the bridge build
+on branch `feat/zigbee-mains-dead` (the maintainer's ruling, 2026-10-12; the workshop's plan for it,
+#126), once it is deployed: a mains device goes `dead`
+after two polls in a row, each with its retry, or three commands in a row get no answer, about
+10 min after its last answer for the plug. FL-LIVE-3 expects that.
 
 **FL-GAP-5 · An owner bound longer than the declared one raises no notice** (steward)
 - The reference steward raises GA-RULE-2's notice only for a device whose `fresh_s` is null; an owner
@@ -1122,8 +1155,8 @@ At the end of every run, recorded in the run's record:
   `onoff.turn_on` and `onoff.turn_off` recorded (after FL-TIER-5 both `reversible`), and
   `identify` `reversible`;
 - the maintainer's `bench-switch-on` and `bench-switch-off` left as they were found, active or not;
-- the home's `hold_time_s` set back to the value the run's setup recorded, then read again from
-  `galatea status --json` and recorded; no default is asserted;
+- the home's `hold` set back, field by field, to what the run's setup recorded, then read again from
+  `galatea status --json` and recorded; no reference value is asserted;
 - the presence sensor's owner `fresh_s` kept, with the measurement behind it;
 - `galatea status`: nothing not live but what a check left unplugged, which is plugged back in.
 
@@ -1192,8 +1225,8 @@ table. No transcripts in the repository. Notice checks run before #108's deploym
 Answered by the maintainer (2026-10-12):
 - **FL-SAFE-3:** run it; it is on the backlog's list of bench checks.
 - **The Fingerbot:** a test device, mounted on nothing; FL-ADOPT-6 and FL-GRP-2 move into the run for groups and tiers.
-- **`hold_time_s` in runs:** 20 s at most (the maintainer, 2026-10-12); the default itself is to be
-  brainstormed.
+- **The hold in runs:** 20 s at most (the maintainer, 2026-10-12); steward 0.12 settled the policy
+  itself (`home.hold`).
 - **FL-NOTE-3:** not now; the simulated first light holds it, and it runs at the next reinstall.
 - **Scenarios:** the owner tool gets a minimal `galatea scenario` (`list`, `run [--yes]`, `status`,
   `stop`; defining stays with `galatea define`), at least for smoke testing. Once it is merged, each
@@ -1201,11 +1234,11 @@ Answered by the maintainer (2026-10-12):
 - **`dead` for mains devices:** yes. A mains device goes `available: false` after two polls in a row
   or three commands in a row get no answer (about 10 min for the plug), and `available: true` on the
   next frame heard from it; battery devices stay stale on silence. A bridge build item with a bridge
-  0.7 wording check, on the backlog; until it is built, FL-GAP-4 stands and FL-LIVE-3 expects
-  `stale`.
+  0.7 wording check, on the backlog; built on `feat/zigbee-mains-dead` (a missed poll counts only
+  when its retry, with recovery, is missed too), so FL-GAP-4 is closed and FL-LIVE-3 expects `dead`.
 
 Still for the maintainer to answer, each with the review's recommendation:
-- **FL-RST-2 and FL-RST-8 at 120 s:** each sets `hold_time_s` to 120 for itself alone, above the 20 s
+- **FL-RST-2 and FL-RST-8 at 120 s:** each sets the hold's windows to 120 for itself alone, above the 20 s
   ruling, because a lease must outlast a steward's stop or restart (*Settings for the run*). Allowed,
   or should they run at 20 s and record what they show? *Recommended: allow 120 for these two only;
   if FL-RST-1 measures a restart of a few seconds, try FL-RST-8 at 20 s first.*

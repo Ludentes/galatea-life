@@ -2,7 +2,8 @@
 # Starts a coding agent as a brain on the steward (the install-core design, *How the owner and a
 # brain reach the steward*). Run it as the brain's own account, never the owner's:
 #   galatea-agent-brain [command [args...]]     the agent tool; Claude Code when none is given, with
-#                                               AGENTS.md appended to its system prompt
+#                                               AGENTS.md appended to its system prompt and
+#                                               claude-settings.json as its settings
 # It reads the brain's two files from ~/.config/galatea/ (GALATEA_BRAIN_CONFIG), as
 # `galatea-secret <id> --for <account>` installs them: the credential <id> (GALATEA_BRAIN_ID,
 # brain_agent by default) and ca.pem. It sets, for the agent's process alone:
@@ -30,5 +31,5 @@ NODE_EXTRA_CA_CERTS=$dir/ca.pem
 GALATEA_STEWARD_URL=${GALATEA_STEWARD_URL:-https://127.0.0.1:18444/mcp}
 export GALATEA_BRAIN_CREDENTIAL NODE_EXTRA_CA_CERTS GALATEA_STEWARD_URL
 cd "$here"
-[ $# -gt 0 ] || set -- claude --append-system-prompt "$(cat "$here/AGENTS.md")"
+[ $# -gt 0 ] || set -- claude --settings "$here/claude-settings.json" --append-system-prompt "$(cat "$here/AGENTS.md")"
 exec "$@"

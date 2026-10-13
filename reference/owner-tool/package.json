@@ -25,14 +25,14 @@
     "e2e": "galatea-with-postgres node scripts/e2e.mjs"
   },
   "dependencies": {
-    "@ludentes/galatea-life-schemas": "^0.1.4",
+    "@ludentes/galatea-life-schemas": "^0.1.5",
     "@modelcontextprotocol/client": "2.2.0",
     "undici": "8.11.2"
   },
   "devDependencies": {
     "@ludentes/galatea-life-applier": "workspace:*",
-    "@ludentes/galatea-life-harness": "^0.1.7",
-    "@ludentes/galatea-life-sim": "^0.1.2",
+    "@ludentes/galatea-life-harness": "^0.1.8",
+    "@ludentes/galatea-life-sim": "^0.1.3",
     "@ludentes/galatea-life-steward": "workspace:*",
     "@ludentes/galatea-life-test-clock": "^0.1.0",
     "@modelcontextprotocol/node": "2.1.0",

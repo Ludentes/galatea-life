@@ -5,7 +5,8 @@
   "properties": {
     "revision": { "type": "integer" },
     "diff": { "type": "string" },
-    "skipped": { "const": "not_confirmed", "description": "define { plan_id } of a plan whose confirm_define no one answered yes: nothing changed, and the plan is spent (GA-DEF-6; provisional)" }
+    "no_notify_channel": { "const": true, "description": "The house, after this define, has no notify channel, so notices are held (GA-NOTE-1)" },
+    "skipped": { "const": "not_confirmed", "description": "define { plan_id } of a plan whose confirm_define no one answered yes: nothing changed, and the plan is spent (GA-DEF-6; steward, Operations)" }
   },
   "anyOf": [
     { "required": ["revision"] },

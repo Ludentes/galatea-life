@@ -1,5 +1,6 @@
 import { proofHolds } from "@ludentes/galatea-life-binding";
 import { describe, expect, it, vi } from "vitest";
+import { HOLD_DEFAULTS } from "../src/house/model.js";
 import { MUTATIONS, type Mutation } from "../src/mutations.js";
 import { FIRING_BLOCK } from "../src/rules/engine.js";
 import { lasting, memoryDb } from "./db.js";
@@ -12,7 +13,8 @@ const MOTION = "sim-bridge:motion";
 const LAPTOP = "pc-bridge:laptop";
 const CHANNEL = "sim-bridge:channel";
 const AC = "sim-bridge:ac";
-const HOLD_MS = 7_200_000;
+/** A person's hold on the lamp: `on_s` from the change, the hall's motion here a rule's condition and no presence renewing it (GA-LEASE-7). */
+const HOLD_MS = HOLD_DEFAULTS.on_s * 1000;
 /** The fake applier's devices with a motion sensor, a laptop with two accounts, and an IR air conditioner. */
 // Each with a bound, so no rule here is a notice for a device whose fresh_s is not known.
 const ALL = [...DEVICES.map((d) => ({ ...d, fresh_s: 60 })),
@@ -39,7 +41,8 @@ async function ruled(rules: Body[], o: { mutation?: Mutation; db?: Db; clock?: F
       ? { key, value: value.value, basis_time: at, assumed: true } : { key, value, basis_time: at })) }])), transports: [], latches: [] };
   // The clock moves by days here: the periodic prune runs hourly, not every minute.
   const s = await setup({ mutation: o.mutation, db: o.db, clock, define: o.define, devices: o.devices ?? ALL, state, options: { pruneEveryMs: 3_600_000 } });
-  if (o.define !== false) await s.define([up("target", { id: MOTION, room: "hall" }), ...rules.map((r) => up("rule", r))]);
+  // The motion sensor in the hall is the rules' condition: a person's hold there runs its window from the change, not renewed by it.
+  if (o.define !== false) await s.define([up("home", { hold: { presence_renews: false } }), up("target", { id: MOTION, room: "hall" }), ...rules.map((r) => up("rule", r))]);
   const change = async (target: string, key: string, value: unknown, cause: unknown = "device") => {
     s.applier.emit({ type: "state", target, key, value, basis_time: new Date(s.clock.now()).toISOString(), cause });
     await s.pump();

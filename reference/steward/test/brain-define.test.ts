@@ -2,14 +2,12 @@ import { validate } from "@ludentes/galatea-life-schemas";
 import { describe, expect, it, vi } from "vitest";
 import { lasting, memoryDb } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
-import { SECRETS, up } from "./house.js";
+import { OWNER_CHAT, SECRETS, up } from "./house.js";
 import { eventsSince, heardAt, LAMP, on, setup } from "./setup.js";
 
 type Body = Record<string, any>;
 type Ok = (s: string, t: string, a?: Body) => Promise<Body>;
 
-/** The owner's chat window in their app, which the brain serves: the owner through a brain. */
-const OWNER_CHAT = up("endpoint", { id: "owner-chat", name: "Чат владельца", type: "app", room: null, person: "owner", served_by: "brain" });
 const attic = up("room", { id: "attic", name: "Чердак" });
 const night = up("scenario", { id: "night", name: "Ночь", mode: "single", steps: [{ target: LAMP, action: "onoff.turn_off", args: {} }] });
 
@@ -69,7 +67,7 @@ describe("define through a brain (GA-DEF-3, GA-DEF-6)", () => {
     expect(await code([attic], { endpoint: "olga-chat" })).toBe("not_permitted");
     // The owner named at the kitchen's voice endpoint is a member there, its cap.
     expect(await code([attic], { endpoint: "kitchen-voice", speaker: "owner" })).toBe("not_permitted");
-    for (const c of [up("person", { id: "liza", name: "Лиза", role: "member" }), up("home", { hold_time_s: 60 }),
+    for (const c of [up("person", { id: "liza", name: "Лиза", role: "member" }), up("home", { hold: { on_s: 60 } }),
       up("endpoint", { id: "hall-panel", name: "Панель", type: "panel", room: "hall", person: null, served_by: null }),
       up("credential", { id: "spare", kind: "brain", secret: "spare-secret-0123456789" }),
       up("voice", { endpoint: "kitchen-voice", listening: "off", wake_words: [], zone: null, output: null, follow_up: false, heard_by: "front" }),

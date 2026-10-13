@@ -43,6 +43,18 @@ describe("ApplierLink", () => {
     await link.stop();
   });
 
+  it("hands the state step the sync's events cursor, the position a restart reads its gap from with no event yet (R-52)", async () => {
+    const applier = new FakeApplier();
+    applier.emit({ type: "state", target: LAMP.id, key: "on", value: true });
+    const clock = new FakeClock();
+    const got: [unknown, string | undefined][] = [];
+    const link = new ApplierLink({ clock, connect: async () => applier.port(), log: () => undefined,
+      steps: { describe: () => undefined, state: (s, cursor) => got.push([s.transports, cursor]), events: () => undefined } });
+    link.start();
+    await vi.waitFor(() => expect(got).toEqual([[[], "1"]]));
+    await link.stop();
+  });
+
   it("hands on every answer's notices, the sync's and an empty batch's too, and names the delivered ones in notice_taken (GA-NOTE-1)", async () => {
     const applier = new FakeApplier();
     applier.devices = [CHANNEL];

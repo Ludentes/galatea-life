@@ -87,7 +87,10 @@ describe("the MCP binding", () => {
       expect(t.description, t.name).toBeTruthy();
       expect(t.inputSchema.type, t.name).toBe("object");
       expect(JSON.stringify(t.inputSchema), t.name).not.toContain("$ref");
+      // Claude Code drops a tool whose inputSchema has a combinator at its top level.
+      for (const k of ["oneOf", "anyOf", "allOf"]) expect(t.inputSchema, `${t.name} ${k}`).not.toHaveProperty(k);
     }
+    expect(tools.find((t) => t.name === "apply")?.description).toMatch(/Give exactly one of: plan_id; request\.$/);
     expect((tools.find((t) => t.name === "configure")?.inputSchema.properties as Record<string, { type?: unknown }>)?.changes?.type)
       .toBe("array");
     const r = await call("describe");

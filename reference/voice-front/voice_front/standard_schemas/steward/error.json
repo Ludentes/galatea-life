@@ -6,6 +6,7 @@
   "required": ["error", "message"],
   "properties": {
     "error": { "$ref": "../common.json#/$defs/stewardErrorCode" },
-    "message": { "type": "string" }
+    "message": { "type": "string" },
+    "data": { "type": "object", "description": "What the error names: for a refused hold flag, field (GA-LEASE-8)" }
   }
 }

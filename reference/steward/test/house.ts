@@ -23,6 +23,9 @@ export const SECRETS = { owner: "owner-secret-0123456789", olga: "olga-secret-01
 export const up = (kind: string, value: unknown): Change => ({ op: "upsert", kind, value });
 export const del = (kind: string, value: unknown): Change => ({ op: "delete", kind, value });
 
+/** The owner's chat window in their app, which the brain serves: work defined there is brain_authored (GA-DEF-7). */
+export const OWNER_CHAT = up("endpoint", { id: "owner-chat", name: "Чат владельца", type: "app", room: null, person: "owner", served_by: "brain" });
+
 /** The house the harness's setup defines, as one change set (the first owner already there). */
 export const BASELINE: Change[] = [
   up("home", { timezone: "Europe/Moscow", notice_channels: ["sim-bridge:channel"] }),

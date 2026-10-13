@@ -49,7 +49,8 @@ const at = (ms: number) => new Date(ms).toISOString();
 describe("the bridge's start", () => {
   it("subscribes before anything, clears lwt, then publishes devices and a valid status", async () => {
     const { wire } = await bridge();
-    expect(wire.calls.slice(0, 4)).toEqual([SUBS, `publish ${BASE}/lwt`, `publish ${BASE}/devices`, `publish ${BASE}/status`]);
+    // The lamp has no reading yet: its bare status, reachable, replaces whatever an earlier instance left retained.
+    expect(wire.calls.slice(0, 5)).toEqual([SUBS, `publish ${BASE}/lwt`, `publish ${BASE}/devices`, `publish ${STATUS}`, `publish ${BASE}/status`]);
     expect(wire.last(`${BASE}/lwt`)).toEqual({ topic: `${BASE}/lwt`, payload: "", retain: true });
     const s = wire.last(`${BASE}/status`)!;
     expect(s.retain).toBe(true);
@@ -72,8 +73,8 @@ describe("the bridge's start", () => {
     expect(rosterOf(wire)).toEqual({ id: HW, transport: "coordinator", basis: "report", cadenceMs: null, basisMaxAgeMs: 60_000,
       timestamp: null, lastCheckIn: null, observable: false, since: at(clock.now()) });
     expect(status(wire).state).toBe("offline");
-    // No reading yet: no device status.
-    expect(wire.all(STATUS)).toHaveLength(0);
+    // No reading yet: only its bare status, reachable, stamped now since it never checked in.
+    expect(wire.all(STATUS).map((p) => p.payload)).toEqual([{ deviceId: HW, timestamp: at(clock.now()), available: true }]);
   });
 
   it("carries the run id under a run", async () => {
@@ -178,6 +179,88 @@ describe("a device's readings", () => {
     expect(wire.last(STATUS)!.payload.level).toBeUndefined();
     await doer.observe(HW, { level: 50, on: false });
     expect(wire.last(STATUS)!.payload).toEqual({ deviceId: HW, state: "off", timestamp: expect.any(String), on: false, available: true });
+  });
+});
+
+describe("a device the doer cannot reach (a mains device that stopped answering)", () => {
+  it("goes out available: false, its readings kept with their old times, and a command for it is failed(unreachable) at once", async () => {
+    const { wire, doer, clock } = await bridge();
+    const observed = clock.now() - 5000;
+    await doer.observe(HW, { on: true }, observed);
+    await clock.advance(60_000);
+    await doer.availability(HW, false);
+    const s = wire.last(STATUS)!;
+    expect(s.retain).toBe(true);
+    expect(s.payload).toEqual({ deviceId: HW, state: "on", timestamp: at(observed), on: true, available: false });
+    expect(validate("bridge/device-status.json", s.payload)).toEqual([]);
+    await wire.deliver(COMMAND, command({ action: "onoff.turn_on" }));
+    expect(doer.executed).toEqual([]);
+    expect(wire.last(ACK)!.payload).toMatchObject({ result: "failed", reason: "unreachable" });
+  });
+
+  it("goes out available: true at its return, before the readings of the frame that brought it, and is commanded again", async () => {
+    const { wire, doer, clock } = await bridge();
+    const observed = clock.now() - 5000;
+    await doer.observe(HW, { on: true }, observed);
+    await doer.availability(HW, false);
+    const mark = wire.all(STATUS).length;
+    await doer.availability(HW, true);
+    await doer.observe(HW, { on: false });
+    const after = wire.all(STATUS).slice(mark).map((p) => p.payload);
+    expect(after).toEqual([{ deviceId: HW, state: "on", timestamp: at(observed), on: true, available: true },
+      { deviceId: HW, state: "off", timestamp: at(clock.now()), on: false, available: true }]);
+    await wire.deliver(COMMAND, command({ action: "onoff.turn_on" }));
+    expect(doer.executed).toHaveLength(1);
+    expect(wire.last(ACK)!.payload).toMatchObject({ result: "applied" });
+  });
+
+  it("goes out as a bare status when it has no reading: stamped when the doer found it gone, and again at its return", async () => {
+    const { wire, doer, clock } = await bridge();
+    const gone = clock.now() - 1000;
+    await doer.availability(HW, false, gone);
+    expect(wire.last(STATUS)!.payload).toEqual({ deviceId: HW, timestamp: at(gone), available: false });
+    expect(validate("bridge/device-status.json", wire.last(STATUS)!.payload)).toEqual([]);
+    await clock.advance(5000);
+    await doer.availability(HW, true);
+    expect(wire.last(STATUS)!.payload).toEqual({ deviceId: HW, timestamp: at(clock.now()), available: true });
+  });
+
+  it("publishes nothing for a word that changes nothing, or for hardware it has no device for", async () => {
+    const { wire, doer } = await bridge();
+    await doer.observe(HW, { on: true });
+    const mark = wire.calls.length;
+    await doer.availability(HW, true);
+    await doer.availability("0x00158d00000000ff", false);
+    expect(wire.calls.slice(mark)).toEqual([]);
+    await doer.availability(HW, false);
+    await doer.availability(HW, false);
+    expect(wire.calls.slice(mark)).toEqual([`publish ${STATUS}`]);
+  });
+
+  it("replaces, at a restart, the retained available: false of a device with no reading (the review, M1)", async () => {
+    const store = new MemoryStore();
+    const clock = new FakeClock();
+    const first = await bridge({ store, clock });
+    await first.doer.observe(HW, {});
+    const checkedIn = clock.now();
+    await first.doer.availability(HW, false);
+    expect(first.wire.last(STATUS)!.payload).toMatchObject({ available: false });
+    own(first.b);
+    await first.b.stop();
+    // The broker keeps that retained status; the restarted bridge takes the device as reachable, its rows at zero.
+    const { wire } = await bridge({ store, clock });
+    expect(wire.all(STATUS).map((p) => p.payload)).toEqual([{ deviceId: HW, timestamp: at(checkedIn), available: true }]);
+    expect(validate("bridge/device-status.json", wire.last(STATUS)!.payload)).toEqual([]);
+  });
+
+  it("keeps available: false through a reconnection's statuses", async () => {
+    const { wire, doer } = await bridge();
+    await doer.observe(HW, { on: true });
+    await doer.availability(HW, false);
+    const mark = wire.all(STATUS).length;
+    await wire.reconnected();
+    await settle();
+    expect(wire.all(STATUS).slice(mark).map((p) => p.payload.available)).toEqual([false]);
   });
 });
 

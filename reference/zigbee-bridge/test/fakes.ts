@@ -509,4 +509,10 @@ export class FakeDoer implements DoerPort {
     this.events!.ungoverned(ways);
     await settle();
   }
+
+  /** Tells the core the doer cannot reach the device now, or can again (a mains device that stopped answering). */
+  async availability(hardwareId: HardwareId, available: boolean, time = this.clock.now()): Promise<void> {
+    this.events!.availability(hardwareId, available, time);
+    await settle();
+  }
 }
