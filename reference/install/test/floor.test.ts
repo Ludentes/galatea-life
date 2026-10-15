@@ -64,6 +64,12 @@ esac
     expect(secretsOf("broker")).toEqual(["broker", "tls/broker.key"]);
   });
 
+  it("passes the Zigbee bridge its switches from .env, each off unless set", () => {
+    const env = services["zigbee-bridge"]!.environment ?? {};
+    expect(env.GALATEA_ZIGBEE_NO_ACTIONS).toBe("0");
+    expect(env.GALATEA_ZIGBEE_DEBUG).toBe("0");
+  });
+
   it("binds every secret, certificate, backup and instances path, file or directory, refusing a missing source", () => {
     const roots = [s.secretsRoot, s.tls, s.backups, s.instancesFile];
     let seen = 0;

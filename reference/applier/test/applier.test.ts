@@ -44,7 +44,7 @@ describe("Applier", () => {
   it("describes an empty model with the run id, and answers unchanged for the current revision", async () => {
     const { a, owner } = await make();
     const d = body(await a.call(owner, "describe", {}));
-    expect(d).toMatchObject({ applier_id: "demo-applier", standard_version: "0.16", levels: ["Act"], revision: 0,
+    expect(d).toMatchObject({ applier_id: "demo-applier", standard_version: "0.17", levels: ["Act"], revision: 0,
       devices: [], clients: [], test_run_id: "run-1" });
     expect(body(await a.call(owner, "describe", { since_revision: 0 }))).toEqual({ revision: 0, unchanged: true });
   });

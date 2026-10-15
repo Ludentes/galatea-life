@@ -2,6 +2,7 @@ import type { Clock } from "@ludentes/galatea-life-test-clock";
 import { canonical } from "../core/canonical.js";
 import type { Tx } from "../core/db.js";
 import type { Store } from "../core/store.js";
+import type { PassedHold } from "../leases/table.js";
 import type { Mutation } from "../mutations.js";
 
 /**
@@ -75,9 +76,10 @@ export interface Firing {
   /**
    * The apply it was sent as: the steward's id, and, once the applier answered, the applier's apply id
    * and its step ids to the steward's. Kept with a held notice, so a late ack after a restart, followed
-   * or read from the applier's history, still finds its firing (GA-PERSIST-2).
+   * or read from the applier's history, still finds its firing (GA-PERSIST-2); and the person's hold each
+   * passing step passed, so its outcome after a restart still names it (GA-LEASE-12).
    */
-  apply?: { id: string; applier?: string; steps?: Record<string, string> };
+  apply?: { id: string; applier?: string; steps?: Record<string, string>; passed?: Record<string, PassedHold> };
 }
 
 /**

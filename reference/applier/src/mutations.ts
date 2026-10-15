@@ -58,7 +58,9 @@ export const MUTATIONS = [
   // Applier 0.16: the owner lowers a tier to its floor (HS35), judged against the end state; a key's first value.
   "keeps-an-owner-raise", "keeps-an-owner-raise-on-a-set", "keeps-a-manifest-kept-tier", "lowers-a-heater-below-the-table",
   "keeps-a-table-tier-over-a-new-load",
-  "externalises-a-first-value", "externalises-a-snapshot-value", "externalises-a-rerouted-value", "devices-a-live-press",
+  "externalises-a-first-value",
+  // Applier 0.17: every first value is the device's word, a live one on an adopted device included; a held key's change is a hand.
+  "externalises-a-live-first-value", "devices-a-changed-value", "devices-a-correlated-first-value",
   // A hosted device's tiers, and a computer's proposal (applier, *Plugins' actions*); a replacement's tool hash and manifest (GA-DESC-11).
   "extension-under-the-box", "sleeps-the-box-through-its-player", "sleeps-the-proposed-broker-host",
   "forgets-a-tool-hash", "lowers-by-a-new-manifest", "keeps-a-lowered-tier",

@@ -21,6 +21,7 @@ related:
 
 | Date | Change |
 |---|---|
+| 2026-10-13 | The window rule narrowed (the maintainer's ruling): hardware already admitted in the window open now is that admission still. The bench's ZG-205Z/A radar, paired once, reached the join handler twice 32 ms apart and was admitted twice |
 | 2026-10-06 | Freshness (plan 5b's spike, for the maintainer to approve; *Freshness*): a device in reach (5 s) polled every 5 minutes with one read of genBasic, `basis: poll`, its bound three times that; an hourly battery report configured on the vibration sensor and the radar, its bound twice that once accepted; `reports`, `reportsIgnored`, `rhythm` and `poll` in the override table; the configure's kept version carrying the table's reports; hardware admitted anew configured again; the bench's checks written, not run (a configuration is a write to a device) |
 | 2026-10-06 | What the bench taught, for bridge 0.6 (plan 5, for the maintainer to approve): the mapping layer, by meaning (GA-BRIDGE-78); keys held back until first reported (GA-BRIDGE-80); undescribed data an event and a kept list, duplicates check-ins (GA-BRIDGE-76); every confirmed setting kept and published after a restart (GA-BRIDGE-79); plan 5 split into 5a (these, over both doers, with the harness) and 5b (freshness: polling and configured reports, on the bench) |
 | 2026-10-06 | The bridge installed (plan 4a, for the maintainer to approve): the bridge's image; a Galatea broker in the install's compose, with a password and an access rule for each build in `instances`; the bridge's service, its data directory and its stop grace; the owner's `form` and `backup` run in a one-off container of the bridge's image while its service is stopped, not through `docker exec`; the broker's and the store's passwords read from files. Plan 4 split: 4a the bridge installed, 4b first light. Where the stack runs is not chosen here (the maintainer, 2026-10-06). |
@@ -519,7 +520,9 @@ reported as `<cluster>.<attribute>`. These go to `undescribed` (GA-BRIDGE-76).
     classification; `admitted(hardwareId, how)` is unchanged. The doer keeps its window's state from
     its `join` call to its `joinClose` call. An indication for hardware herdsman has is reported as
     an `association` while that window is open, and as a `securedRejoin` outside it; hardware
-    herdsman deleted on a leave, or never had, is a new admission, in a window or out.
+    herdsman deleted on a leave, or never had, is a new admission, in a window or out. Hardware
+    already admitted in the window open now is let in again with nothing reported and the core not
+    asked: one pairing is one admission (the maintainer's ruling, 2026-10-13).
   - The join handler asks `mayAdmit` for unknown hardware, and for known hardware inside the
     window; a refusal is herdsman's Leave Request. herdsman never interviews known hardware again,
     so the doer re-describes a device admitted anew this way under its new id itself.
@@ -913,6 +916,10 @@ The build is split so that each plan ends graded and merged:
   impostor case outside windows; it departs from the standard's "a secured rejoin sends no
   `joined`, even while a window is open" (*Provisioning (`provision.ts`)*). `withholdsPins` stays:
   no lock gets its PIN until the maintainer has seen the bench check of S6's procedure.
+  Narrowed by the maintainer's ruling of 2026-10-13: hardware already admitted in the window open
+  now is that admission still, whatever reaches the handler for it again before the window closes.
+  One pairing can reach the handler twice: on the bench a radar's second indication came 32 ms
+  after herdsman took it in, and made a second admission (`<id>-2`) of one pairing.
 - **`near` is offered,** and a window without it is house-wide (herdsman's broadcast), as the
   standard's `join` reads ("at the router `near` names if the transport can, else house-wide").
   A window on the coordinator alone is not offered.

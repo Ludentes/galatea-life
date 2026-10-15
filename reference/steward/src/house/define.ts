@@ -115,11 +115,15 @@ function whole(item: Args, v: Args, fields: string[], defaults: Args = {}): bool
   return fields.every((f) => f in v || item[f] === undefined || (f in defaults && canonical(item[f]) === canonical(defaults[f])));
 }
 
-/** The content fields of what carries a `brain_authored` mark, and their defaults. */
+/**
+ * The content fields of what carries a `brain_authored` mark, and their defaults. A rule's `passes_holds`
+ * is not among them (ruled, milestone 1 review m1): a brain never writes it (GA-DEF-3), so it carries
+ * nothing a brain wrote, and the owner's redefinition that leaves it out still clears the mark.
+ */
 const RULE_FIELDS = ["name", "trigger", "conditions", "actions", "active"];
 const SCENARIO_FIELDS = ["name", "mode", "steps", "owned", "respect_occupancy"];
 const SCHEDULE_FIELDS = ["scenario", "time", "days"];
-const RULE_DEFAULTS = { active: true, exceptions: [] };
+const RULE_DEFAULTS = { active: true, exceptions: [], passes_holds: false };
 const SCENARIO_DEFAULTS = { owned: [], respect_occupancy: false };
 const SCHEDULE_DEFAULTS = { exceptions: [] };
 
@@ -155,6 +159,10 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
         if (ctx.mutation === "refuses-a-flag-unnamed") throw invalid(`${at}: hold: this steward does not implement it`);
         throw new RequestError("invalid_request", `${at}: hold.schedule_ends: this steward does not end a hold at a schedule's step (GA-LEASE-8)`, { field: "schedule_ends" });
       }
+      // The mutation: the home's switch refused, though no steward may refuse it (GA-LEASE-12).
+      if (ctx.mutation === "refuses-the-owner-switch" && hold?.owner_work_passes_holds === true) {
+        throw new RequestError("invalid_request", `${at}: hold.owner_work_passes_holds: this steward does not pass a person's hold`, { field: "owner_work_passes_holds" });
+      }
       // The mutation: an owner's short windows refused, though GA-LEASE-8 bounds them by the schema's minimum only.
       if (ctx.mutation === "refuses-a-short-hold" && hold && ["on_s", "off_s", "other_s", "fixed_s"].some((f) => typeof hold[f] === "number" && (hold[f] as number) < 60)) {
         throw invalid(`${at}: hold windows under 60 s are refused`);
@@ -185,6 +193,8 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       // The overlay merges: a field left out keeps its value, null returns it to the applier's label, no aliases, no room.
       const was = ctx.mutation === "renames-away-the-room" ? { id: v.id } : h.targets.get(v.id);
       const t = merged<TargetOverlay>(was, v);
+      // A target's switch is stored only where true, as a rule's is: false, null or left out all read false (GA-LEASE-12).
+      if (t.owner_work_passes_holds !== true) delete t.owner_work_passes_holds;
       // The owner naming the device's room sets it again: a brain's mark on it goes (GA-DEF-7).
       if (owners && "room" in v) delete t.room_brain_authored;
       if (t.room === undefined) delete t.room_brain_authored;
@@ -221,6 +231,8 @@ function apply(h: House, op: Change["op"], kind: string, v: Args, at: string, ct
       const r = merged<Rule>(was, v, RULE_DEFAULTS);
       r.active ??= true;
       r.exceptions = sortedExceptions(r.exceptions ?? []);
+      // A rule's mark is stored only where true: false, null or left out on a new rule all read false (GA-LEASE-12).
+      if (r.passes_holds !== true) delete r.passes_holds;
       if (r.trigger === undefined && r.conditions === undefined) throw invalid(`${at}: a rule keeps a trigger or conditions (GA-DEF-14)`);
       if (owners && was && whole(r as unknown as Args, v, RULE_FIELDS, RULE_DEFAULTS)) delete r.brain_authored;
       checkRule(h, r, at, ctx);

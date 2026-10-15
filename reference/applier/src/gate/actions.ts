@@ -1,3 +1,4 @@
+import { sets, type Sets } from "@ludentes/galatea-life-schemas";
 import { optionalArg, type ConfirmedBy, type Constraint } from "../bus/wire.js";
 
 /**
@@ -178,54 +179,8 @@ export function commandValue(action: string, args: Record<string, unknown>, o: {
   return Object.fromEntries(given);
 }
 
-/** The default `tolerance` of a numeric key (applier, *Action declarations*). */
-const TOLERANCE: Record<string, number> = { level: 1, volume: 1, setpoint: 0.5, position: 2 };
-
-/**
- * The key an action sets, what matches it, and for a numeric key the value it wants, so a report can
- * move towards it; `value`, the value it asks for, which an open device's state assumes once it is
- * sent (GA-STATE-4), absent where an argument chooses among several (`session.lock`).
- */
-export type Sets = { key: string; matches: (value: unknown) => boolean; want?: number; value?: unknown };
-
-const near = (key: string, want: unknown): Sets => ({ key, value: want, ...(typeof want === "number" ? { want } : {}), matches: (v) =>
-  typeof v === "number" && typeof want === "number" && Math.abs(v - want) <= (TOLERANCE[key] ?? 0) });
-const exactly = (key: string, want: unknown): Sets => ({ key, value: want, matches: (v) => v === want });
-
-/**
- * The key a stateful action sets and what matches it (the key an argument chooses included, *Key
- * families*), or undefined for a stateless action and for one never `already` (`media.launch`). An
- * extension action sets what its `confirmed_by` names: its key, at its value or the value of the
- * argument it names (applier, *Action declarations*, GA-EVT-3).
- */
-export function sets(action: string, args: Record<string, unknown>, confirmedBy?: ConfirmedBy): Sets | undefined {
-  if (confirmedBy) {
-    const want = typeof confirmedBy.value === "object" ? args[confirmedBy.value.arg] : confirmedBy.value;
-    return typeof want === "number" ? near(confirmedBy.key, want) : exactly(confirmedBy.key, want);
-  }
-  switch (action) {
-    case "onoff.turn_on": return exactly("on", true);
-    case "onoff.turn_off": return exactly("on", false);
-    case "level.set_level": return near("level", args.level);
-    case "color.set_color": return { key: "color", value: args.rgb, matches: (v) =>
-      typeof v === "string" && typeof args.rgb === "string" && v.toLowerCase() === args.rgb.toLowerCase() };
-    case "climate.set_mode": return exactly("mode", args.mode);
-    case "climate.set_setpoint": return near("setpoint", args.celsius);
-    case "cover.open": return near("position", 100);
-    case "cover.close": return near("position", 0);
-    case "cover.set_position": return near("position", args.position);
-    case "media.pause": return exactly("playing", false);
-    case "media.resume": return exactly("playing", true);
-    case "media.set_volume": return near("volume", args.volume);
-    case "valve.open": return exactly("open", true);
-    case "valve.close": return exactly("open", false);
-    case "lock.lock": return exactly("locked", true);
-    case "lock.unlock": return exactly("locked", false);
-    case "session.lock": return { key: `session.${String(args.account)}`, matches: (v) =>
-      v === "locked" || v === "disconnected" || v === "none" };
-    default: return undefined;
-  }
-}
+// What an action sets, and the report that matches it, is the one table the steward reads too.
+export { sets, type Sets } from "@ludentes/galatea-life-schemas";
 
 /** Whether the observed `values` already hold what `action` would set, within its tolerance (GA-PLAN-4's `already`). */
 export function holds(action: string, args: Record<string, unknown>, values: ReadonlyMap<string, unknown>, confirmedBy?: ConfirmedBy): boolean {

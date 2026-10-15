@@ -18,10 +18,13 @@ export interface HoldPolicy {
   presence_renews: boolean; vacant_ends: boolean; schedule_ends: boolean;
   /** Whether the owner's rules and schedules pass a guest's hold (GA-LEASE-10). */
   owner_work_passes_guest_holds: boolean;
+  /** The home's switch: the owner's work passes every person's hold once its floor has passed (GA-LEASE-12). */
+  owner_work_passes_holds: boolean;
 }
 /** The reference values (steward, *How a person's hold ends*): an example, declared in describe. */
 export const HOLD_DEFAULTS: HoldPolicy = { on_s: 3600, off_s: 600, other_s: 3600, fixed_s: 3600, load_cap_s: 3600, cap_s: 43200,
-  presence_renews: true, vacant_ends: true, schedule_ends: false, owner_work_passes_guest_holds: true };
+  presence_renews: true, vacant_ends: true, schedule_ends: false, owner_work_passes_guest_holds: true,
+  owner_work_passes_holds: false };
 
 /** The home's settings (steward, *The house model*). `time_source` only under the harness (GA-HARN-2). */
 export interface HomeSettings {
@@ -49,6 +52,8 @@ export interface TargetOverlay {
   room?: string | null;
   /** A brain put the device in its room (GA-DEF-7), until the owner sets the overlay again. */
   room_brain_authored?: true;
+  /** The device's switch: the owner's work on it passes a person's hold (GA-LEASE-12). Absent: false. */
+  owner_work_passes_holds?: boolean;
 }
 
 /** A group (steward, *The house model*): its members are the applier's device ids, in code-point order. */
@@ -120,6 +125,8 @@ export interface Rule {
   actions: RuleAction[];
   active: boolean;
   exceptions: { from: string; until: string }[];
+  /** The rule's switch: its own actions pass a person's hold (GA-LEASE-12). Stored only where true; absent: false. */
+  passes_holds?: boolean;
   /** Defined or changed through a brain (GA-DEF-7), until the owner redefines it whole. */
   brain_authored?: true;
 }

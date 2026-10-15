@@ -2,15 +2,17 @@
 // plain .mjs against a live install and shares none of the harness's helpers.
 //
 // A run shortens the hold windows to 20 s so a step's wait stays short, and keeps presence from renewing or
-// ending a hold. Each field is set in its own `define`, so a refusal names the field it refused (`data.field`);
+// ending a hold. The home's switch `owner_work_passes_holds` is pinned off, so a run's holds refuse the bench's
+// rules as each check expects. Each field is set in its own `define`, so a refusal names the field it refused (`data.field`);
 // teardown writes back, field by field, the values `describe` showed before the run, never `null`.
 
-export const RUN_HOLD = { on_s: 20, off_s: 20, other_s: 20, fixed_s: 20, load_cap_s: 20, presence_renews: false, vacant_ends: false };
+export const RUN_HOLD = { on_s: 20, off_s: 20, other_s: 20, fixed_s: 20, load_cap_s: 20, presence_renews: false, vacant_ends: false,
+  owner_work_passes_holds: false };
 /** The run lifts the cap explicitly, so a cap an owner set earlier cannot cut a run's hold short. */
 export const RUN_CAP_S = 0;
 
-const { presence_renews, vacant_ends, ...windows } = RUN_HOLD;
-const RUN_SETS = { ...windows, cap_s: RUN_CAP_S, presence_renews, vacant_ends };
+const { presence_renews, vacant_ends, owner_work_passes_holds, ...windows } = RUN_HOLD;
+const RUN_SETS = { ...windows, cap_s: RUN_CAP_S, presence_renews, vacant_ends, owner_work_passes_holds };
 const homeHold = (field, value) => ({ op: "upsert", kind: "home", value: { hold: { [field]: value } } });
 
 /** The define ops that set the run's policy: one per field. */
@@ -35,4 +37,12 @@ export function judgeSet(result) {
   const field = result.body?.data?.field;
   if (result.error === "invalid_request" && typeof field === "string") return { kind: "refused", field, message: result.message };
   return { kind: "failed", error: result.error, message: result.message };
+}
+
+/** The targets and rules in `describe` whose own switch (`owner_work_passes_holds`, `passes_holds`) is set, as
+ * `target <id>` and `rule <id>`: pinning the home's switch off passes no hold only when this is empty, so a run
+ * records it and stops before its first check when it is not. */
+export function ownSwitches(describe) {
+  return [...(describe?.targets ?? []).filter((t) => t.owner_work_passes_holds === true).map((t) => `target ${t.id}`),
+    ...(describe?.rules ?? []).filter((r) => r.passes_holds === true).map((r) => `rule ${r.id}`)];
 }

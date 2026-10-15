@@ -282,7 +282,7 @@ _Avoid_: timer, cron
 
 **Lease**:
 A claim by a holder that, for a while, lower-precedence writers may not change a
-target, with named exceptions: `session.lock` and a narrowing action (a lock, a valve's close) pass a person's hold, and the owner's work may pass a guest's once its floor has passed. A narrowing action takes no lease and replaces no person's hold; a lower lease it displaces, such as a run's, ends, leaving the device with none. A
+target, with named exceptions: `session.lock` and a narrowing action (a lock, a valve's close) pass a person's hold, and the owner's work may pass a guest's hold once its floor has passed, or any person's where the owner set a switch (a rule's, a device's or the home's). A narrowing action takes no lease and replaces no person's hold; a lower lease it displaces, such as a run's, ends, leaving the device with none. A
 **person's hold** is the lease a person's change takes: one made at an endpoint,
 an `external` change, or a press.
 _Avoid_: lock, ownership; "hold" alone for any lease but a person's
@@ -291,8 +291,8 @@ _Avoid_: lock, ownership; "hold" alone for any lease but a person's
 How a person's hold ends: its windows after an on, an off and any other change,
 counted once the room goes quiet; whether presence renews it, vacancy or a schedule
 ends it; the window for a device with no presence source, the heater's guard after
-a load cap, and a cap on every hold (`cap_s`); and whether the owner's rules pass a
-guest's hold. The steward's own, declared in `describe` as the home's `hold`;
+a load cap, and a cap on every hold (`cap_s`); and whether the owner's work passes a
+guest's hold, or every person's. The steward's own, declared in `describe` as the home's `hold`;
 the owner may change it.
 _Avoid_: hold time, timeout
 
@@ -326,7 +326,8 @@ _Avoid_: anonymous, public user
 
 **Cause**:
 What produced a state change: an apply, a scenario run, a rule, a safety rule, a
-load cap, the device's own behaviour, or an outside system (a person at a physical
+load cap, the device's own word (a key it declares self-changing, or a key's first
+value: no hand can be told from it), or an outside system (a person at a physical
 control included).
 _Avoid_: source, origin, trigger (reserved for rules)
 

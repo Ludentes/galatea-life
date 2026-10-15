@@ -410,6 +410,41 @@ describe("HerdsmanDoer: the join handler, by the window rule (the maintainer's r
     expect(of(seen, "mayAdmit", "admitted", "described")).toEqual([["mayAdmit", PUSHER]]);
   });
 
+  it("takes a second join of hardware already admitted in this window for the same admission: no new id (the bench, 2026-10-13)", async () => {
+    // A radar's one pairing: herdsman lets it in and raises its join, then a second indication of the
+    // same join reaches the handler 32 ms later, while herdsman has it and the window is open.
+    const { doer, made, seen } = await started({ prepare: withDevices });
+    await doer.idle();
+    await doer.join(60_000);
+    seen.length = 0;
+    expect(await made[0]!.events.joining(ROUTER)).toBe(true);
+    made[0]!.had.add(ROUTER);
+    // herdsman has it, though not interviewed yet: no record to describe.
+    const lookup = made[0]!.lookup!;
+    made[0]!.lookup = (ieee) => (ieee === ROUTER ? undefined : lookup(ieee));
+    made[0]!.events.joined(ROUTER);
+    expect(await made[0]!.events.joining(ROUTER)).toBe(true);
+    await doer.idle();
+    expect(of(seen, "mayAdmit", "admitted")).toEqual([["mayAdmit", ROUTER], ["admitted", ROUTER, "association"]]);
+    // A window later, the same hardware paired again is a new admission, by the window rule.
+    await doer.joinClose();
+    await doer.join(60_000);
+    seen.length = 0;
+    expect(await made[0]!.events.joining(ROUTER)).toBe(true);
+    expect(of(seen, "mayAdmit", "admitted")).toEqual([["mayAdmit", ROUTER], ["admitted", ROUTER, "association"]]);
+  });
+
+  it("takes a second join of hardware herdsman had, admitted anew in this window, for the same admission", async () => {
+    const { doer, made, seen } = await started({ prepare: withDevices });
+    await doer.idle();
+    await doer.join(60_000);
+    seen.length = 0;
+    expect(await made[0]!.events.joining(PUSHER)).toBe(true);
+    expect(await made[0]!.events.joining(PUSHER)).toBe(true);
+    await doer.idle();
+    expect(of(seen, "mayAdmit", "admitted")).toEqual([["mayAdmit", PUSHER], ["admitted", PUSHER, "association"]]);
+  });
+
   it("takes hardware herdsman has for a rejoin again once its window is closed", async () => {
     const { doer, made, seen } = await started({ prepare: withDevices });
     await doer.idle();

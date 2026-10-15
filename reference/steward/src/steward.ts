@@ -12,12 +12,13 @@ import { judgeAnswer, stillNeeded, type Answer, type AskedPlan, type Heard, type
 import { mintToken } from "./confirm/token.js";
 import { atDispatch, docOf, KEY_RETENTION_MS, leaves, outcomeRank, REPEAT_WINDOW_MS, ruleDecision, type ApplyRecord, type Outcome } from "./dispatch/apply.js";
 import { occupancyOf, type Occupancy } from "./gate/occupancy.js";
-import { judge, leased, unplanned, type ApplierStep, type Judge, type StewardStep } from "./gate/reasons.js";
-import { guestsHold, isPress, LEASE_EXEMPT, leaseRefuses, LeaseTable, leaseView, personsHold, safetyRuleOf, type Holder, type Lease, type Passing } from "./leases/table.js";
-import { isNarrowing } from "./leases/narrowing.js";
+import { judge, leased, passing, unplanned, type ApplierStep, type Judge, type StewardStep } from "./gate/reasons.js";
+import { isPress, LEASE_EXEMPT, leaseRefuses, LeaseTable, leaseView, passedBy, personsHold, safetyRuleOf, type Holder, type Lease, type Passing,
+  type PassedHold, type Switch } from "./leases/table.js";
+import { isNarrowing, undoesNarrowing } from "./leases/narrowing.js";
 import { directionOf, directionOfChange, vacantFrom, type HoldState } from "./leases/hold.js";
 import { Holds } from "./leases/holds.js";
-import { setByAnAction } from "./house/action-keys.js";
+import { reportOf, setByAnAction, type Expect } from "./house/action-keys.js";
 import { NoticePump, type Notice } from "./notices/pump.js";
 import { resolveRequest, type Requested } from "./gate/resolve.js";
 import { brainMayDefine, deviceMarked } from "./house/brain.js";
@@ -28,7 +29,7 @@ import type { View } from "./rules/conditions.js";
 import { EDGE_REPLAY_MS, isPressRule, RuleEngine, type Hit } from "./rules/engine.js";
 import { afterOutcome, HELD_CAP, LATE_ACK_WINDOW_MS, RETRY_SPACING_MS, RuleOutcomes, type Firing, type FiringStep } from "./rules/outcomes.js";
 import { compile, indexOf, stepIdOf, type ActionNode, type Node, type Program } from "./scenarios/program.js";
-import { outcomesOf, RUN_LIMIT_MS, settled, statusOf, tally, type Run, type RunEnd } from "./scenarios/run.js";
+import { outcomesOf, RUN_LIMIT_MS, settled, statusOf, tally, type FailedStep, type Run, type RunEnd, type SentStep } from "./scenarios/run.js";
 import { saveMarks, Schedules } from "./schedules/timers.js";
 import type { Occurrence } from "./schedules/core.js";
 import type { Schedule } from "./house/model.js";
@@ -43,7 +44,7 @@ import type { Role } from "./house/model.js";
 /** In `channelsTold`: the list's loss of its last adopted notify channel was told (GA-NOTE-4). */
 const NO_NOTIFY = "*notify";
 
-export const STANDARD_VERSION = "0.12";
+export const STANDARD_VERSION = "0.13";
 
 export type ToolResult = { ok: true; body: Record<string, unknown> } | { ok: false; error: string; message: string; data?: Record<string, unknown> };
 
@@ -237,7 +238,10 @@ type Args = Record<string, any>;
  */
 function pressWithheld<T extends object>(x: T): T {
   const h = (x as { holder?: unknown }).holder;
-  return h !== undefined && isPress(h as Holder) ? { ...x, holder: { ...(h as object), press: { ...(h as { press: object }).press, value: "withheld" } } } : x;
+  const y = h !== undefined && isPress(h as Holder) ? { ...x, holder: { ...(h as object), press: { ...(h as { press: object }).press, value: "withheld" } } } : x;
+  // A step that passed a personal press's hold names that hold, its value withheld as the hold's own is (GA-LEASE-12, R-67).
+  const p = (x as { passed_hold?: object }).passed_hold;
+  return p !== undefined ? { ...y, passed_hold: pressWithheld(p) } : y;
 }
 
 export class Steward {
@@ -326,6 +330,11 @@ export class Steward {
   private scheduleTogglesTold?: Set<string>;
   /** Rule firings' records, in the order fired, at most `FIRINGS_KEPT`. */
   private readonly firings = new Map<string, ApplyRecord>();
+  /**
+   * The steward's clock when a committed define last turned the home's `owner_work_passes_holds` from
+   * `false` to `true`; read only through `PassOptions`, by `switch-spares-held-holds` (GA-LEASE-12).
+   */
+  private homeSetMs?: number;
   /** Stopped: a run's steps go no further. */
   private halted = false;
   /** Scenario runs by id: running, and ended ones for 3600 s (the design, *Scenarios*). */
@@ -420,7 +429,7 @@ export class Steward {
         this.rules.leaseEnded(target, rules);
       },
       cameOff: (target, lease) => this.safetyEndedEarly(target, lease),
-      replaced: (target, old, by) => this.runDisplaced(target, old, by),
+      replaced: (target, old) => this.runDisplaced(target, old),
       // A hold's timer falls due: judged again, as of the elapsed clock (GA-LEASE-7).
       due: (target) => this.holds.judge(target), ...(o.elapsed ? { elapsed: o.elapsed } : {}), mutation: o.mutation });
     this.holds = new Holds({ table: this.leases, clock: o.clock, mutation: o.mutation,
@@ -1119,11 +1128,18 @@ export class Steward {
     const eventsOnly = (type === "state" && e.key === "speech") || (type === "occurrence" && personal.includes(String(e.key)));
     // A value's key marked personal as it happens; a device not described then is not known, and counts as personal.
     const mark = type !== "state" && type !== "occurrence" ? false : device === undefined ? null : personal.includes(String(e.key));
+    // An outcome of a step that passed a person's hold names it, as the steward's own outcome event does (GA-LEASE-12).
+    if (r && type === "outcome" && !verdict) Object.assign(body, this.passRecord(r, String(body.step_id)));
     this.lastApplierAlone = undefined;
-    const ev = this.log.append(String(type), body, { eventsOnly, personal: mark }, this.lastApplierWrite());
+    const ev = this.log.append(String(type), body, { eventsOnly, personal: mark, ...this.passedKeep(body.passed_hold) }, this.lastApplierWrite());
     if (!recovered && !Number.isNaN(Date.parse(String(time)))) this.applierOffset = now - Date.parse(String(time));
     // A hold's handling of an event missed in a gap runs as of its time, the gap replayed (GA-LEASE-7, GA-PERSIST-2).
     const asOfIt = (fn: () => void) => (recovered ? this.holds.replayAt(at, fn) : fn());
+    // A device's report of the value a person's step set, the report its ack is matched on, ends that hold's
+    // floor for passing before anything else reads the event, any rule it triggers included (GA-LEASE-10, GA-LEASE-12).
+    if (type === "state" && typeof e.target === "string" && typeof e.key === "string" && device?.adopted === true) {
+      asOfIt(() => this.holds.reported(String(e.target), String(e.key), e.value));
+    }
     // An outside change, or a load cap's, to a key an action sets on an adopted device takes a person
     // hold, timed from its receipt, a gap's from its time; a device's own takes none (GA-LEASE-2). One
     // missed in a gap is granted once the gap is read unless its end passed there, and never over a
@@ -1164,7 +1180,7 @@ export class Steward {
       const i = r.outcomes.findIndex((o) => o.step_id === body.step_id);
       if (i >= 0) {
         r.outcomes[i] = { step_id: r.outcomes[i]!.step_id, target: r.outcomes[i]!.target, outcome: e.outcome, ...(e.reason !== undefined ? { reason: e.reason } : {}),
-          ...(e.detail !== undefined ? { detail: e.detail } : {}), time: ev.time };
+          ...(e.detail !== undefined ? { detail: e.detail } : {}), time: ev.time, ...this.passRecord(r, String(body.step_id)) };
         this.saveApply(r);
         this.ruleOutcome(r, String(body.step_id));
       }
@@ -1396,11 +1412,14 @@ export class Steward {
     // The mutation: the home's hold policy left out of what the owner's app is shown (GA-LEASE-8).
     const home = this.mutation === "hides-the-hold-policy" ? (({ hold: _h, ...rest }) => rest)(this.house.home) : this.house.home;
     return { ...base, ...held, ...empty, applier, home, rooms: byId([...this.house.rooms.values()]),
-      rules: byId([...this.house.rules.values()]), scenarios: byId([...this.house.scenarios.values()]), schedules: byId([...this.house.schedules.values()]),
+      // Each rule with its switch, false where never set (GA-LEASE-12).
+      rules: byId([...this.house.rules.values()]).map((r) => ({ ...r, passes_holds: r.passes_holds === true })),
+      scenarios: byId([...this.house.scenarios.values()]), schedules: byId([...this.house.schedules.values()]),
       // Each device as the applier describes it, with the steward's overlay (names, aliases, room) over it.
       targets: byId([...this.mirror.devices.values()].filter((d) => ownersApp || d.internal !== true).map((d) => {
         const o = this.house.targets.get(d.id as string);
         return { ...d, id: d.id as string, name: o?.name ?? d.label ?? d.id, aliases: o?.aliases ?? [], room: o?.room ?? null,
+          owner_work_passes_holds: o?.owner_work_passes_holds === true,
           ...(deviceMarked(this.house, d.id as string) ? { brain_authored: true } : {}) };
       })),
       // A group a device's id shadows is flagged: it cannot be targeted until it is renamed.
@@ -1427,7 +1446,7 @@ export class Steward {
     const p = principalOf(this.house, caller.credential, a.endpoint, a.speaker, this.mutation);
     if (a.plan_id !== undefined) return this.defineByPlan(a, caller, p);
     if (p.brain) {
-      brainMayDefine(p, a.changes as Change[]);
+      brainMayDefine(p, a.changes as Change[], this.house, this.mutation);
       return this.askDefine(a, caller, p);
     }
     if (p.role !== "owner") {
@@ -1558,6 +1577,7 @@ export class Steward {
     // Committed: the change reaches memory. An applier model read while it waited moved `rev` on too.
     const before = this.house;
     this.house = draft;
+    if (!before.home.hold.owner_work_passes_holds && draft.home.hold.owner_work_passes_holds) this.homeSetMs = Math.floor(this.o.clock.now());
     this.schedules.adopt(marks);
     this.rev = Math.max(next, this.rev + 1);
     this.revision.schedule();
@@ -1834,7 +1854,7 @@ export class Steward {
     if (prior && now - prior.atMs <= KEY_RETENTION_MS) {
       if (prior.body !== body) throw new RequestError("idempotency_conflict", "this key was used with another body (GA-STW-6)");
       await prior.done;
-      return this.applyView(prior);
+      return this.applyView(prior, this.isOwnersApp(caller));
     }
     const cap = this.o.maxAppliesPerCredential ?? MAX_APPLIES_PER_CREDENTIAL;
     if (!prior && (this.keysHeld.get(credential) ?? 0) >= cap) {
@@ -1890,7 +1910,7 @@ export class Steward {
         throw err;
       }
       if (actions.length) await this.callApplier(r, actions);
-      return this.applyView(r);
+      return this.applyView(r, this.isOwnersApp(caller));
     } catch (err) {
       if (!this.appliesById.has(r.apply_id)) {
         // Nothing was decided: the key is free again, and the plan unspent.
@@ -1943,8 +1963,9 @@ export class Steward {
       if (narrowing) this.narrowed(s.target, "person", { narrowing });
       if (s.action !== LEASE_EXEMPT && !this.mirror.stateless(s.target, s.action) && this.mutation !== "ignores-leases"
         && (!narrowing || this.mutation === "narrowing-takes-a-hold")) {
+        const expect = this.reportOf(s.target, s.action, s.args);
         this.leases.lay(s.target, { apply: r.apply_id, step: s.step_id, holder: r.cause.person !== undefined
-          ? { person: r.cause.person, endpoint: r.cause.endpoint } : { endpoint: r.cause.endpoint }, precedence: "person", role });
+          ? { person: r.cause.person, endpoint: r.cause.endpoint } : { endpoint: r.cause.endpoint }, precedence: "person", role, ...(expect ? { expect } : {}) });
         r.laid.push({ step: s.step_id, target: s.target, action: s.action, args: s.args, role });
       }
     }
@@ -1963,13 +1984,23 @@ export class Steward {
       const taken = all ? all === "taken" : leaves(o?.outcome);
       // A person's hold from dispatch, its direction from the action as the device declares it, its floor
       // from dispatch to the ack or the late-ack window (GA-LEASE-7).
+      // It expects the report its ack is matched on, which ends its floor for passing (GA-LEASE-12, R-6).
       const hold = taken ? this.holds.start(x.target, "person", directionOf(x.action, this.mirror.declaredAction(x.target, x.action)),
-        { dispatchWallMs: r.dispatchMs!, ackWithinS: this.mirror.ackWithinS(x.target, x.action) }, x.role) : undefined;
+        { dispatchWallMs: r.dispatchMs!, ackWithinS: this.mirror.ackWithinS(x.target, x.action) }, x.role, this.reportOf(x.target, x.action, x.args)) : undefined;
       this.leases.settle(x.target, r.apply_id, x.step, hold ? { sinceMs: r.dispatchMs!, ...this.holds.expires(x.target, hold), hold } : undefined);
       if (taken && this.floorEnds(o?.outcome)) this.holds.acked(x.target, r.apply_id);
-      else if (taken) this.holds.judge(x.target);
+      else if (taken) {
+        this.holds.judge(x.target);
+        // A report that came while it was provisional: a guest's hold tells what it refused (R-63).
+        this.holds.settledReported(x.target, r.apply_id);
+      }
     }
     r.laid = [];
+  }
+
+  /** The report `action` on `target` is acked on, as the device declares the action (R-6); none for a toggle or where none is known. */
+  private reportOf(target: string, action: string, args: Record<string, unknown> | undefined): Expect | undefined {
+    return reportOf(action, args ?? {}, this.mirror.declaredAction(target, action));
   }
 
   /** Whether `outcome` is a success that ends an apply's ack floor (GA-LEASE-7); not `sent` under `floor-waits-past-sent`. */
@@ -2047,9 +2078,10 @@ export class Steward {
       const at = r.outcomes.findIndex((x) => x.step_id === step);
       if (!o || at < 0) return;
       r.steps[String(o.step_id)] = step;
-      const fields = { outcome: o.outcome, ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.detail !== undefined ? { detail: o.detail } : {}) };
+      const fields = { outcome: o.outcome, ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.detail !== undefined ? { detail: o.detail } : {}),
+        ...this.passRecord(r, step) };
       const ev = this.log.append("outcome", { apply_id: r.apply_id, step_id: step, target: r.outcomes[at]!.target, ...fields, cause: r.cause,
-        ...(typeof o.time === "string" ? { applier_time: o.time } : {}) });
+        ...(typeof o.time === "string" ? { applier_time: o.time } : {}) }, this.passedKeep(fields.passed_hold));
       r.outcomes[at] = { step_id: step, target: r.outcomes[at]!.target, ...fields, time: ev.time } as Outcome;
     });
     this.saveApply(r);
@@ -2063,7 +2095,8 @@ export class Steward {
   /** A step: every step sent, or to be sent, ends `outcome`, nothing having reached the applier (or, `failed`, the applier refused it). */
   private settleUnsent(r: ApplyRecord, outcome: "unreachable" | "failed", detail?: string): void {
     const time = new Date(Math.floor(this.o.clock.now())).toISOString();
-    r.outcomes = r.outcomes.map((o) => (r.sent.includes(o.step_id) ? { step_id: o.step_id, target: o.target, outcome, ...(detail ? { detail } : {}), time } : o));
+    r.outcomes = r.outcomes.map((o) => (r.sent.includes(o.step_id)
+      ? { step_id: o.step_id, target: o.target, outcome, ...(detail ? { detail } : {}), time, ...this.passRecord(r, o.step_id) } : o));
     this.saveApply(r);
     this.settleLeases(r, "lifted");
     for (const step of r.sent) this.ruleOutcome(r, step);
@@ -2099,6 +2132,8 @@ export class Steward {
    */
   private trackFiring(r: ApplyRecord): void {
     if (!r.firing?.apply?.applier) return;
+    // The holds its steps passed, recorded at dispatch, kept with it (GA-LEASE-12).
+    if (r.passed) r.firing.apply.passed = r.passed;
     this.after.inFlight(r.firing, r.sent.filter((step) => outcomeRank(r.outcomes.find((x) => x.step_id === step)?.outcome) < 2));
   }
 
@@ -2106,10 +2141,42 @@ export class Steward {
    * An apply as `apply` and `outcome` return it: its outcomes, each with its time, its fields in one
    * order whether the record was made in this life or read back (the store's jsonb keeps no order).
    */
-  private applyView(r: ApplyRecord): Record<string, unknown> {
+  private applyView(r: ApplyRecord, owner: boolean): Record<string, unknown> {
     return { apply_id: r.apply_id, outcomes: r.outcomes.map((o) => ({ step_id: o.step_id, target: o.target, outcome: o.outcome,
       ...(o.reason !== undefined ? { reason: o.reason } : {}), ...(o.detail !== undefined ? { detail: o.detail } : {}), time: o.time,
-      ...(r.fromReplaced?.includes(o.step_id) ? { from_replaced: true } : {}) })) };
+      ...(r.fromReplaced?.includes(o.step_id) ? { from_replaced: true } : {}), ...(o.holder !== undefined ? { holder: o.holder } : {}),
+      ...this.passView(o.passed_hold, owner) })) };
+  }
+
+  /**
+   * What a step's outcome, and its `outcome` event, record of the person's hold it passed (GA-LEASE-12, R-8): the
+   * hold and the switch covering it, judged at dispatch. `pass-unrecorded` records none; `pass-as-a-lease` names
+   * the hold's holder as the step's own too.
+   */
+  private passRecord(r: ApplyRecord, step: string): { passed_hold?: PassedHold; holder?: Holder } {
+    const p = r.passed?.[step] ?? r.outcomes.find((o) => o.step_id === step)?.passed_hold;
+    if (!p || this.mutation === "pass-unrecorded") return {};
+    return { passed_hold: p, ...(this.mutation === "pass-as-a-lease" ? { holder: p.holder } : {}) };
+  }
+
+  /**
+   * Whether a step's `passed_hold` is shown to a reader: left out whole, its presence included, for every reader
+   * a personal press's occurrence is withheld from, which until slice 8 is all but the owner's app (GA-AUTH-7,
+   * GA-LEASE-12). `pass-reveals-a-personal-press` shows it to every reader.
+   */
+  private passShown(p: PassedHold, owner: boolean): boolean {
+    return owner || !this.personalPress(p.holder) || this.mutation === "pass-reveals-a-personal-press";
+  }
+
+  /** How an `outcome` event carrying `passed_hold` is kept: the field withheld where its reader may not see it (`passShown`). */
+  private passedKeep(p: unknown): Keep {
+    return p !== undefined && !this.passShown(p as PassedHold, false) ? { withheld: ["passed_hold"] } : {};
+  }
+
+  /** A step's `passed_hold` as a reader is shown it (`passShown`), a personal press's value withheld from the owner too (R-67). */
+  private passView(p: PassedHold | undefined, owner: boolean): { passed_hold?: PassedHold } {
+    if (!p || !this.passShown(p, owner)) return {};
+    return { passed_hold: this.personalPress(p.holder) ? pressWithheld(p) : p };
   }
 
   /**
@@ -2122,7 +2189,7 @@ export class Steward {
     if (!r || r.credential !== caller.credential.id || this.o.clock.now() - r.atMs > KEY_RETENTION_MS) {
       throw new RequestError("unknown_apply", `no apply ${a.apply_id} of this credential's is kept`);
     }
-    const view = this.applyView(r) as { apply_id: string; outcomes: Partial<Outcome>[] };
+    const view = this.applyView(r, this.isOwnersApp(caller)) as { apply_id: string; outcomes: Partial<Outcome>[] };
     if (this.mutation === "outcome-without-a-time") for (const o of view.outcomes) if (o.outcome === "acked") delete o.time;
     return view;
   }
@@ -2322,13 +2389,19 @@ export class Steward {
       const step_id = `s${i + 1}`;
       const theirStep = theirs?.find((y) => y.target === x.target && y.action === x.action && canonical(y.args ?? {}) === canonical(x.args));
       // A press's step: at person precedence, passing only a person's hold; its author's confirmation still answers it (GA-LEASE-9, GA-SCN-4).
-      const press = pressing(x);
-      // The owner's rule, its step not brain_authored for the device, passes a guest's hold once its floor has passed (GA-LEASE-10).
-      const ownerWork = x.brain !== true || this.mutation === "brain-rule-passes-a-guest";
+      // The mutation: a press rule marked passes_holds takes the rule's lane, not the press's.
+      const press = pressing(x) && !(this.mutation === "marked-press-passes" && rule.passes_holds === true);
+      const brain = x.brain === true;
+      // The mutation: a marked rule's step brain_authored only by a brain's group or room join, the rule itself not, passes by the rule's mark.
+      const joined = this.mutation === "brain-groups-past-a-hold" && brain && !marked && rule.passes_holds === true;
+      // The owner's rule, its step not brain_authored for the device, passes a guest's hold once its floor has passed (GA-LEASE-10),
+      // and a person's hold past its floor where a switch covers the step on the device (GA-LEASE-12).
+      const ownerWork = !brain || joined || this.mutation === "brain-rule-passes-a-guest";
       // A narrowing action, not brain_authored for the device, passes a person's hold (GA-LEASE-11); a press's by the press's lane (GA-LEASE-9).
       const narrowing = this.narrows(x.target, x.action, x.brain);
       const lane = press ? { precedence: "person" as const, pass: { press: true as const, ...(narrowing ? { narrowing } : {}) } }
-        : { precedence: "rule" as const, ...this.passLane(ownerWork, narrowing) };
+        : { precedence: "rule" as const, ...this.passLane(ownerWork, narrowing, joined ? ["rule"] : this.switchesFor(x.target, { rule, brain, ruleStep: true }),
+          undoesNarrowing(x.action, this.mirror.devices.get(x.target))) };
       const authored = press && this.mutation === "press-asks-the-tier" ? {} : { authored: true as const };
       const judged = judge(step_id, x, theirStep, { principal: p, ...lane, ...authored, leaseOf: (t) => this.leases.holding(t), mutation: this.mutation,
         internal: (t) => this.mirror.devices.get(t)?.internal === true,
@@ -2359,6 +2432,12 @@ export class Steward {
       actions.push({ ...s, ...(token ? { token } : {}) });
       r.sent.push(step_id);
       r.outcomes.push({ step_id, target: x.target, outcome: "unknown", time });
+      // The hold it passes and the switch covering it, judged at dispatch (GA-LEASE-12, R-8); a press's or a narrowing step passes by its own rule.
+      const ph = passing(x.target, x.action, { leaseOf: (t) => this.leases.holding(t), ...lane, mutation: this.mutation });
+      if (ph) {
+        (r.passed ??= {})[step_id] = ph;
+        this.passedAt(x.target);
+      }
       if (narrowing) this.narrowed(x.target, lane.precedence, lane.pass ?? {});
       // A press's stateful step lays a person's provisional lease, held by { rule, press }, which its
       // answer settles into a hold, replacing a person's hold, or lifts (GA-LEASE-9); a narrowing one lays none (GA-LEASE-11).
@@ -2370,7 +2449,8 @@ export class Steward {
         const named = this.mutation === "names-the-presser" ? this.presserOf(hit.target) : undefined;
         const holder: Holder = named?.holder ?? { rule: rule.id, press: { target: hit.target, key: hit.key, value: hit.value } };
         const role = named ? { role: named.role } : {};
-        this.leases.lay(x.target, { apply: r.apply_id, step: step_id, holder, precedence: "person", ...role });
+        const expect = this.reportOf(x.target, x.action, x.args);
+        this.leases.lay(x.target, { apply: r.apply_id, step: step_id, holder, precedence: "person", ...role, ...(expect ? { expect } : {}) });
         r.laid.push({ step: step_id, target: x.target, action: x.action, args: x.args, ...role });
       }
     });
@@ -2430,7 +2510,7 @@ export class Steward {
       const time = new Date(f.answeredMs ?? f.atMs).toISOString();
       const r: ApplyRecord = { apply_id: f.apply.id, credential: `rule:${f.rule}`, key: `rule:${f.rule}:${f.n}`, applierKey: `rule:${f.rule}:${f.n}`, body: "",
         atMs: f.atMs, cause: { rule: f.rule }, sent: open, steps: { ...(f.apply.steps ?? {}) }, done: Promise.resolve(), memoryOnly: true, firing: f,
-        applierApplyId: f.apply.applier,
+        applierApplyId: f.apply.applier, ...(f.apply.passed ? { passed: f.apply.passed } : {}),
         outcomes: open.map((step_id) => ({ step_id, target: f.steps[step_id]!.target, outcome: "dispatched", time }) as Outcome) };
       f.apply.steps = r.steps;
       this.keepFiring(r);
@@ -2775,7 +2855,17 @@ export class Steward {
   private scenarioStatus(a: Args, caller: Extract<Caller, { kind: "credential" }>): Record<string, unknown> {
     const run = this.runs.get(a.run_id);
     if (!run || (run.credential !== caller.credential.id && !this.isOwnersApp(caller))) throw new RequestError("unknown_run", `no run ${a.run_id} of this credential's is held`);
-    return statusOf(run, this.mutation);
+    return this.statusView(run, caller);
+  }
+
+  /** A run's status as `caller` reads it: each step's `passed_hold` as that reader is shown it (`passView`; GA-LEASE-12, GA-AUTH-7). */
+  private statusView(run: Run, caller: Extract<Caller, { kind: "credential" }>): Record<string, unknown> {
+    const owner = this.isOwnersApp(caller);
+    // Defensive: through the operations only the run's own credential and the owner's app read a run that passes a hold,
+    // since no person-started run passes one; the filter keeps a personal press's `passed_hold` from any other reader.
+    const s = statusOf(run, this.mutation) as { failed_steps: FailedStep[]; sent_steps: SentStep[] };
+    const shown = <T extends { passed_hold?: PassedHold }>({ passed_hold, ...rest }: T) => ({ ...rest, ...this.passView(passed_hold, owner) });
+    return { ...s, failed_steps: s.failed_steps.map(shown), sent_steps: s.sent_steps.map(shown) };
   }
 
   /**
@@ -2800,7 +2890,7 @@ export class Steward {
       throw new RequestError("not_permitted", `a ${p.role} may not stop a run no person started`);
     }
     this.endRun(run, "stopped");
-    return statusOf(run, this.mutation);
+    return this.statusView(run, caller);
   }
 
   /** A run's record in the store, as it stands. */
@@ -2908,18 +2998,18 @@ export class Steward {
       if (this.mutation === "ignores-leases") break;
       // Only a device its starter's role could act on (ruled by the maintainer, 2026-10-05; proposed for the next steward revision).
       if (!this.mayAct(run.starterRole, target)) continue;
-      // The owner's run takes no lease on a device a guest's hold covers: it waits for that hold to end (GA-LEASE-10);
-      // `two-leases-at-once` replaces the hold, the nearest a table of one lease per device comes to two.
+      // The owner's run takes no lease on a device a lease held higher covers, a hold it passes among them (GA-LEASE-10,
+      // GA-LEASE-12), one inside its floor included (R-4): the device stays in question until a lease there ends leaving
+      // none, a switch set meanwhile applying at once. `two-leases-at-once` (a guest's hold) and `passing-takes-a-lease`
+      // (any other person's) replace a hold the run passes, the nearest a table of one lease per device comes to two.
       const l = this.leases.of(target);
-      if (l && this.ownerRun(run) && this.house.home.hold.owner_work_passes_guest_holds && guestsHold({ ...l, role: l.hold?.role })) {
-        if (this.mutation !== "two-leases-at-once") {
-          (run.waiting ??= []).push(target);
-          continue;
-        }
+      const passes = l && (this.mutation === "two-leases-at-once" || this.mutation === "passing-takes-a-lease") ? this.runPasses(run, target, l) : undefined;
+      if (passes && (passes === "guest" ? this.mutation === "two-leases-at-once" : this.mutation === "passing-takes-a-lease")) {
         if (this.leases.grant({ target, holder: { run: run.run_id }, precedence: run.precedence, sinceMs: now, expiresMs: null }, { force: true })) run.leased.push(target);
         continue;
       }
       if (this.leases.grant({ target, holder: { run: run.run_id }, precedence: run.precedence, sinceMs: now, expiresMs: null })) run.leased.push(target);
+      else if (this.ownerRun(run)) (run.waiting ??= []).push(target);
     }
     this.log.append("scenario", { run_id: run.run_id, scenario: run.scenario, change: "started", cause: run.cause });
     run.bound = this.o.clock.setTimeout(() => this.endRun(run, "timeout"), RUN_LIMIT_MS);
@@ -2946,6 +3036,19 @@ export class Steward {
     return (Array.isArray(actions) ? actions as Args[] : []).some((x) => this.mirror.tierOf(target, String(x.action)) === "reversible");
   }
 
+  /**
+   * The switch by which the owner's `run` would pass `l` on `target`, its floor taken as passed (R-4), or
+   * undefined: the run's own switches there (the rule's mark, the device's, the home's), else GA-LEASE-10's
+   * guest flag (GA-LEASE-12). Read at the run's start, where `two-leases-at-once` and `passing-takes-a-lease` bite.
+   * Judged with no mutation: a mutation of a step's pass bites at the step.
+   */
+  private runPasses(run: Run, target: string, l: Lease): Switch | undefined {
+    if (!this.ownerRun(run)) return undefined;
+    const switches = this.switchesFor(target, { rule: run.rule !== undefined ? this.house.rules.get(run.rule) : undefined, brain: false });
+    const met = { holder: l.holder, precedence: l.precedence, role: l.hold?.role, floorPassed: true, sinceMs: l.sinceMs };
+    return passedBy(met, { ownerWork: true, ...(switches.length ? { switches } : {}) }, { guestsPass: this.house.home.hold.owner_work_passes_guest_holds });
+  }
+
   /** Whether `run` is the owner's work (GA-LEASE-10): a scheduled or rule-started run, not `brain_authored`. */
   private ownerRun(run: Run): boolean {
     return (run.schedule !== undefined || run.rule !== undefined) && run.brainAuthored !== true;
@@ -2954,25 +3057,66 @@ export class Steward {
   /**
    * How a rule's or a run's step passes a lease beside its precedence: the owner's work a guest's hold
    * whose floor passed, where the house declares `owner_work_passes_guest_holds` (GA-LEASE-10), and a
-   * narrowing action a person's hold (GA-LEASE-11). The one build of that lane for both.
+   * narrowing action a person's hold (GA-LEASE-11); `undoes`, the step undoes a narrowing, which the home's
+   * switch does not pass (GA-LEASE-12, R-9). The one build of that lane for both.
    */
-  private passLane(ownerWork: boolean, narrowing: boolean): Pick<Judge, "pass" | "guestsPass"> {
-    const pass = { ...(ownerWork ? { ownerWork: true as const } : {}), ...(narrowing ? { narrowing: true as const } : {}) };
-    return { ...(ownerWork || narrowing ? { pass } : {}), ...(ownerWork ? { guestsPass: this.house.home.hold.owner_work_passes_guest_holds } : {}) };
+  private passLane(ownerWork: boolean, narrowing: boolean, switches: Exclude<Switch, "guest">[], undoes = false): Pick<Judge, "pass" | "guestsPass" | "homeSetMs"> {
+    // A switch covers only the owner's work (`switchesFor`); `brain-rule-passes-holds` gives a brain_authored step the rule's, and makes it the owner's.
+    const owner = ownerWork || (this.mutation === "brain-rule-passes-holds" && switches.length > 0);
+    // A step undoing a narrowing: the home's switch passes no hold for it (R-9, `passedBy`).
+    const pass = { ...(owner ? { ownerWork: true as const } : {}), ...(narrowing ? { narrowing: true as const } : {}), ...(switches.length ? { switches } : {}),
+      ...(undoes ? { undoesNarrowing: true as const } : {}) };
+    return { ...(owner || narrowing ? { pass } : {}), ...(owner ? { guestsPass: this.house.home.hold.owner_work_passes_guest_holds } : {}),
+      ...(this.homeSetMs !== undefined ? { homeSetMs: this.homeSetMs } : {}) };
   }
 
   /**
-   * A lease came off `target` leaving it none: each running run waiting on it, in the order they
-   * started, takes its lease there now (GA-LEASE-10; *Rulings made by this plan*). A run waiting on a
-   * device whose guest's hold was replaced instead keeps waiting.
+   * GA-LEASE-12's switches covering the owner's work on `target`, in the order rule, device, home: `rule`
+   * where the rule is marked `passes_holds` and not `brain_authored`, for its own steps and its runs' (a step
+   * a `run` step reached, `nested`, included); `device` where the target's overlay
+   * sets `owner_work_passes_holds`; `home` where the home's hold policy does. None for a step
+   * `brain_authored` for the device (`by.brain`), which is never the owner's work (GA-DEF-7).
+   */
+  private switchesFor(target: string, by: { rule?: Rule; brain: boolean; ruleStep?: boolean; nested?: boolean }): Exclude<Switch, "guest">[] {
+    // The mutation: a brain_authored rule's mark counts, and so does the step that mark made brain_authored.
+    // The rule's mark follows its runs through `run` steps (GA-LEASE-12); the mutation drops it there.
+    const rule = by.nested === true && this.mutation === "marked-run-refused" ? undefined : by.rule;
+    // The mutation: a brain_authored rule's mark counts, for the steps that mark made brain_authored, and nothing else does.
+    const brainMark = this.mutation === "brain-rule-passes-holds" && rule?.brain_authored === true && rule.passes_holds === true;
+    if (by.brain) return brainMark ? ["rule"] : [];
+    const out: Exclude<Switch, "guest">[] = [];
+    if ((rule?.passes_holds === true && rule.brain_authored !== true) || (by.ruleStep === true && this.mutation === "unmarked-rule-passes")) out.push("rule");
+    if (this.house.targets.get(target)?.owner_work_passes_holds === true && this.mutation !== "ignores-the-device-switch") out.push("device");
+    if (this.house.home.hold.owner_work_passes_holds && this.mutation !== "ignores-the-home-switch") out.push("home");
+    return out;
+  }
+
+  /**
+   * A step that passes a person's hold on `target` is dispatched: nothing happens to the hold, which keeps
+   * its holder and its end, and refuses what it refused (GA-LEASE-12). The mutations: the hold ends
+   * `replaced`; its change moves to now; the rules it refused are re-evaluated now.
+   */
+  private passedAt(target: string): void {
+    if (this.mutation === "passing-ends-the-hold") this.leases.end(target, personsHold, { end: "replaced" });
+    else if (this.mutation === "pass-moves-the-end") this.holds.touch(target);
+    else if (this.mutation === "pass-re-evaluates-early") this.rules.leaseEnded(target, this.leases.takeRefused(target, () => true));
+  }
+
+  /**
+   * A lease came off `target` leaving it none, otherwise than by a replacement: each running run with the
+   * device in question, in the order they started, takes its lease there now, before GA-LEASE-4's
+   * re-evaluation (GA-LEASE-10, GA-LEASE-12, GA-SCN-2).
    */
   private grantWaiting(target: string): void {
     if (this.leases.of(target)) return;
     const now = Math.floor(this.o.clock.now());
     for (const run of [...this.runningOf.values()].sort((a, b) => a.atMs - b.atMs)) {
       if (run.status !== "running" || !run.waiting?.includes(target)) continue;
+      // A grant refused (another waiting run, started earlier, outranks it) keeps the device in question:
+      // the run takes its lease once that lease ends; only R-1 drops it.
+      if (!this.leases.grant({ target, holder: { run: run.run_id }, precedence: run.precedence, sinceMs: now, expiresMs: null })) continue;
       run.waiting = run.waiting.filter((t) => t !== target);
-      if (this.leases.grant({ target, holder: { run: run.run_id }, precedence: run.precedence, sinceMs: now, expiresMs: null })) run.leased.push(target);
+      run.leased.push(target);
     }
   }
 
@@ -3015,23 +3159,15 @@ export class Steward {
   }
 
   /**
-   * A grant replaced `old` on `target` with `by`: when `old` was an owner's running run's lease and `by`
-   * a guest's hold, the device goes back among the run's waiting devices, so the run takes its lease
-   * again when that hold ends leaving the device none; any other hold takes the device from the run for
-   * good (GA-LEASE-10, R-62). A guest's hold a run waits on, replaced by any other hold, takes the device
-   * from the run for good too (R-64).
+   * A grant replaced `old` on `target` with `by`. A run's own lease so replaced leaves the run's devices for
+   * good: the run holds none there for the rest of the run (GA-LEASE-12, R-1; 0.12's R-62 retired). A device
+   * in question stays so, whatever lease replaced the one standing there: a switch applies at once to holds
+   * already held, so whether a run passes a hold is not fixed at its replacement (R-2, retired by ruling).
    */
-  private runDisplaced(target: string, old: Lease, by: Lease): void {
-    // A guest's hold a run waits on, replaced by any other hold, takes the device from the run for good (R-64).
-    if (guestsHold({ ...old, role: old.hold?.role }) && !guestsHold({ ...by, role: by.hold?.role })) {
-      for (const run of this.runningOf.values()) if (run.waiting?.includes(target)) run.waiting = run.waiting.filter((t) => t !== target);
-    }
+  private runDisplaced(target: string, old: Lease): void {
     const id = typeof old.holder === "object" ? old.holder.run : undefined;
-    const run = typeof id === "string" ? this.runs.get(id) : undefined;
-    if (!run || run.status !== "running" || !this.ownerRun(run) || !this.house.home.hold.owner_work_passes_guest_holds) return;
-    if (!guestsHold({ ...by, role: by.hold?.role })) return;
-    run.leased = run.leased.filter((t) => t !== target);
-    if (!run.waiting?.includes(target)) (run.waiting ??= []).push(target);
+    const own = typeof id === "string" ? this.runs.get(id) : undefined;
+    if (own) own.leased = own.leased.filter((t) => t !== target);
   }
 
   /** A run's steps in order; false once the run has ended. An action step's outcomes are waited for before the next step (*Rulings*). */
@@ -3269,9 +3405,11 @@ export class Steward {
     const by = run.schedule !== undefined ? { scenario: run.scenario } : { rule: run.rule! };
     const steps = resolveRequest([n.action], view).map((x) => {
       const brain = marked || x.brain === true;
+      // The mutation: a step brain_authored only through its scenario (`n.brain`) is the owner's work, its switches kept.
+      const work = this.mutation === "brain-edits-a-passing-scenario" ? run.brainAuthored === true || x.brain === true : brain;
       const { from: _f, ...rest } = x.args as Args;
       return { target: x.target, action: x.action, args: x.action === "notify.notify" ? this.fromOf(rest, { ...by, ...(brain ? { brain_authored: true } : {}) }) : x.args,
-        conflict: x.conflict, ...(brain ? { brain: true as const } : {}) };
+        conflict: x.conflict, ...(brain ? { brain: true as const } : {}), ...(work ? { work: true as const } : {}) };
     });
     const sent = (x: { target: string; action: string; args: Record<string, unknown>; brain?: true }) =>
       ({ target: x.target, action: x.action, args: x.args, via: run.via, brain: run.brain || x.brain === true, for: run.cause });
@@ -3294,21 +3432,31 @@ export class Steward {
     steps.forEach((x, i) => {
       const step_id = stepIdOf(n.index, i + 1, steps.length);
       const theirStep = theirs?.find((y) => y.target === x.target && y.action === x.action && canonical(y.args ?? {}) === canonical(x.args));
-      // The owner's work: a run no person started, its step not brain_authored for the device (GA-LEASE-10);
+      // The owner's work: a run no person started, its step not brain_authored for the device (GA-LEASE-10), passing a
+      // person's hold past its floor where a switch covers it, the rule's following the `run`-step chain (GA-LEASE-12);
       // a narrowing action, not brain_authored for the device, passes a person's hold (GA-LEASE-11).
       const narrowing = this.narrows(x.target, x.action, x.brain);
-      const lane = this.passLane(this.ownerRun(run) && x.brain !== true, narrowing);
-      const judgeNow = () => judge(step_id, x, theirStep, { principal: p, precedence: run.precedence, ...lane, authored: true, leaseOf: (t) => this.leases.holding(t),
-        mutation: this.mutation, internal: (t) => this.mirror.devices.get(t)?.internal === true,
+      // The lane as the switches stand now: judged when the step is planned and again at its dispatch (GA-LEASE-12).
+      const laneNow = () => this.passLane(this.ownerRun(run) && x.work !== true, narrowing, this.switchesFor(x.target,
+        { rule: run.rule !== undefined ? this.house.rules.get(run.rule) : undefined, brain: x.work === true, nested: n.nested === true }),
+        undoesNarrowing(x.action, this.mirror.devices.get(x.target)));
+      const judgeNow = (lane: ReturnType<typeof laneNow>) => judge(step_id, x, theirStep, { principal: p, precedence: run.precedence, ...lane, authored: true,
+        leaseOf: (t) => this.leases.holding(t), mutation: this.mutation, internal: (t) => this.mirror.devices.get(t)?.internal === true,
         ...(n.respect ? { occupancyOf: (t: string) => this.occupancyAt(t) } : {}),
         tierOf: (t, a) => this.mirror.tierOf(t, a), described: (t, a) => this.mirror.described(t, a) });
-      const judged = judgeNow();
+      const planned = laneNow();
+      const judged = judgeNow(planned);
       // The lease and the room as they are now, as a rule's own action's (the milestone review, B4); judged whole again after the commit (I2).
+      // The hold it passes and the switch covering it, judged at dispatch (GA-LEASE-12, R-8); a narrowing step passes by its own rule.
       const decide = (again = true) => {
-        const step = again ? judgeNow() : judged;
+        const lane = again ? laneNow() : planned;
+        const step = again ? judgeNow(lane) : judged;
         const room = n.respect ? this.occupancyAt(x.target) : undefined;
-        const holder = leased(x.target, x.action, { leaseOf: (t) => this.leases.holding(t), precedence: run.precedence, ...lane, mutation: this.mutation })?.holder;
-        return { d: ruleDecision(step, this.mutation, { leased: holder, ...(room === "occupied" || room === "unknown" ? { occupancy: room } : {}) }), holder: step.holder ?? holder };
+        const j = { leaseOf: (t: string) => this.leases.holding(t), precedence: run.precedence, ...lane, mutation: this.mutation };
+        const holder = leased(x.target, x.action, j)?.holder;
+        const passed = passing(x.target, x.action, j);
+        return { d: ruleDecision(step, this.mutation, { leased: holder, ...(room === "occupied" || room === "unknown" ? { occupancy: room } : {}) }), holder: step.holder ?? holder,
+          ...(passed ? { passed } : {}) };
       };
       const { d } = decide(false);
       if (!d.send) {
@@ -3321,7 +3469,7 @@ export class Steward {
       const token = d.token ? mintToken(s, { issuer: this.o.applierClient!, key: this.o.tokenKey!, now }) : undefined;
       actions.push({ ...s, ...(token ? { token } : {}) });
       checks.push({ step_id, target: x.target, action: x.action, decide,
-        ...(narrowing ? { sending: () => this.narrowed(x.target, run.precedence, lane.pass ?? {}, run.run_id) } : {}) });
+        ...(narrowing ? { sending: () => this.narrowed(x.target, run.precedence, planned.pass ?? {}, run.run_id) } : {}) });
       r.sent.push(step_id);
       r.outcomes.push({ step_id, target: x.target, outcome: "unknown", time });
     });
@@ -3414,10 +3562,15 @@ export class Steward {
       const kept: Record<string, unknown>[] = [];
       actions.forEach((x, i) => {
         const c = checks[i]!;
-        const { d, holder } = c.decide();
+        const { d, holder, passed } = c.decide();
         if (d.send) {
           kept.push(x);
           c.sending?.();
+          // A step that passes a person's hold records it, the hold left as it was (GA-LEASE-12, R-8).
+          if (passed) {
+            (r.passed ??= {})[c.step_id] = passed;
+            this.passedAt(c.target);
+          }
           return;
         }
         const why = "reason" in d ? { reason: d.reason } : { detail: d.detail };
@@ -3603,7 +3756,7 @@ export class Steward {
 }
 
 /** A run's step sent: judged again, its lease and room as they are then, once its record has committed (I2). */
-interface RunCheck { step_id: string; target: string; action: string; decide: () => { d: ReturnType<typeof atDispatch>; holder?: unknown };
+interface RunCheck { step_id: string; target: string; action: string; decide: () => { d: ReturnType<typeof atDispatch>; holder?: unknown; passed?: PassedHold };
   /** A narrowing step's end of the lease it would replace, as it is sent (GA-LEASE-11). */
   sending?: () => void }
 

@@ -30,6 +30,28 @@ describe("planDefine", () => {
     expect(planDefine(baseline(), [up("home", { hold: { schedule_ends: null } })], context()).draft.home.hold.schedule_ends).toBe(false);
   });
 
+  it("never refuses the home's owner_work_passes_holds, true, false or null; refuses true under refuses-the-owner-switch (GA-LEASE-12)", () => {
+    for (const v of [true, false]) {
+      expect(planDefine(baseline(), [up("home", { hold: { owner_work_passes_holds: v } })], context()).draft.home.hold.owner_work_passes_holds).toBe(v);
+    }
+    const set = planDefine(baseline(), [up("home", { hold: { owner_work_passes_holds: true } })], context()).draft;
+    expect(planDefine(set, [up("home", { hold: { owner_work_passes_holds: null } })], context()).draft.home.hold.owner_work_passes_holds).toBe(false);
+    expect(() => planDefine(baseline(), [up("home", { hold: { owner_work_passes_holds: true } })], context({ mutation: "refuses-the-owner-switch" })))
+      .toThrow(expect.objectContaining({ code: "invalid_request", data: { field: "owner_work_passes_holds" } }));
+  });
+
+  it("stores a rule's passes_holds only where true, and a target's owner_work_passes_holds until null drops it (GA-LEASE-12)", () => {
+    const rule = { id: "off", name: "Гасить", conditions: [{ target: "sim-bridge:lamp", key: "on", op: "eq", value: true }],
+      actions: [{ target: "sim-bridge:lamp", action: "onoff.turn_off", args: {} }] };
+    const marked = planDefine(furnished(), [up("rule", { ...rule, passes_holds: true }), up("target", { id: "sim-bridge:lamp", owner_work_passes_holds: true })], context()).draft;
+    expect(marked.rules.get("off")?.passes_holds).toBe(true);
+    expect(marked.targets.get("sim-bridge:lamp")?.owner_work_passes_holds).toBe(true);
+    const cleared = planDefine(marked, [up("rule", { id: "off", passes_holds: null }), up("target", { id: "sim-bridge:lamp", owner_work_passes_holds: null })], context()).draft;
+    expect("passes_holds" in cleared.rules.get("off")!).toBe(false);
+    expect("owner_work_passes_holds" in cleared.targets.get("sim-bridge:lamp")!).toBe(false);
+    expect("passes_holds" in planDefine(marked, [up("rule", { ...rule, passes_holds: false })], context()).draft.rules.get("off")!).toBe(false);
+  });
+
   it("refuses hold_time_s, gone in steward 0.12 (GA-DEF-13)", () => {
     refused([up("home", { hold_time_s: 7200 })], /hold_time_s|additional/);
   });

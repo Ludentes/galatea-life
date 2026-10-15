@@ -24,8 +24,11 @@ services:
       - pgdata:/var/lib/postgresql
       - { type: bind, source: "${GALATEA_SECRETS:-./secrets}/db", target: /run/db-secrets, read_only: true, bind: { create_host_path: false } }
     # No ports: the builds reach it on the stack's own network, the one plain link inside the stack.
+    # Over TCP: a fresh volume is initialised behind a server on the socket alone, which db-init cannot reach.
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "galatea"]
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "galatea"]
+      # A first start's init runs before TCP opens, so its failed checks do not use up the retries.
+      start_period: 120s
       interval: 5s
       timeout: 5s
       retries: 24
@@ -245,6 +248,7 @@ services:
       GALATEA_STATE_DIR: /data
       GALATEA_ZIGBEE_COORDINATOR: ${GALATEA_ZIGBEE_COORDINATOR:-}
       GALATEA_ZIGBEE_NO_ACTIONS: ${GALATEA_ZIGBEE_NO_ACTIONS:-0}
+      GALATEA_ZIGBEE_DEBUG: ${GALATEA_ZIGBEE_DEBUG:-0}
       # The interim until the bridge has a CA option of its own (the Zigbee session's gap): this
       # process's one TLS connection is the broker's.
       NODE_EXTRA_CA_CERTS: /run/tls/ca.pem

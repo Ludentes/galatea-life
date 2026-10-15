@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { lasting, memoryDb } from "./db.js";
 import { FakeClock } from "./fake-clock.js";
 import { OWNER_CHAT, SECRETS, up } from "./house.js";
-import { eventsSince, heardAt, LAMP, on, setup } from "./setup.js";
+import { DIMMER, eventsSince, heardAt, LAMP, on, setup } from "./setup.js";
 
 type Body = Record<string, any>;
 type Ok = (s: string, t: string, a?: Body) => Promise<Body>;
@@ -174,5 +174,93 @@ describe("define through a brain (GA-DEF-3, GA-DEF-6)", () => {
     const was = await revision(b.ok);
     expect(await b.ok(SECRETS.brain, "define", { endpoint: "owner-chat", plan_id: plan.plan_id })).toEqual({ revision: was + 1 });
     expect((await b.ok(SECRETS.owner, "describe")).rooms.map((x: Body) => x.id)).toContain("attic");
+  });
+});
+
+describe("the switches through a brain (GA-DEF-3)", () => {
+  const marked = { id: "off", name: "Гасить", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }],
+    actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }], passes_holds: true };
+  const rows: [string, unknown[]][] = [
+    ["sets a target's switch", [up("target", { id: DIMMER, owner_work_passes_holds: true })]],
+    ["deletes a switched target", [{ op: "delete", kind: "target", value: { id: LAMP } }]],
+    ["deletes a marked rule", [{ op: "delete", kind: "rule", value: { id: "off" } }]],
+    ["clears a rule's mark", [up("rule", { id: "off", passes_holds: false })]],
+    ["creates a marked rule", [up("rule", { ...marked, id: "new" })]],
+    ["sets the home's switch", [up("home", { hold: { owner_work_passes_holds: true } })]],
+    ["mixes a forbidden change with an allowed one", [up("room", { id: "den", name: "Den" }), up("rule", { id: "off", passes_holds: false })]],
+    // The home's switch with anything else, and another home setting: no mutation lets these through.
+    ["sets the home's switch with a window", [up("home", { hold: { owner_work_passes_holds: true, on_s: 600 } })]],
+    ["changes another home setting", [up("home", { other_wake_words: [] })]],
+  ];
+  /** The owner's marked rule and switched lamp, set from the owner's app. */
+  const switched = async (o: Parameters<typeof setup>[0] = {}) => {
+    const t = await withChat(o);
+    await t.define([up("rule", marked), up("target", { id: LAMP, owner_work_passes_holds: true })]);
+    return t;
+  };
+
+  it.each(rows)("refuses a change set that %s, not_permitted at the call", async (_w, changes) => {
+    const t = await switched();
+    const before = await revision(t.ok);
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    const r = await brainDefine(t.ok, t.call, changes);
+    expect(r.error).toBe("not_permitted");
+    expect((await t.ok(SECRETS.owner, "describe")).revision).toBe(before);
+    // Before any plan: nothing is asked.
+    expect(await eventsSince(t.ok, cursor, "ask")).toEqual([]);
+  });
+
+  it("takes a rename of the owner's marked rule, the mark kept, the rule then brain_authored", async () => {
+    const t = await withChat();
+    await t.define([up("rule", marked)]);
+    const plan = (await brainDefine(t.ok, t.call, [up("rule", { id: "off", name: "Ночь" })])).body;
+    await yes(t.ok, t.clock, plan.plan_id);
+    await t.ok(SECRETS.brain, "define", { endpoint: "owner-chat", plan_id: plan.plan_id });
+    const r = (await t.ok(SECRETS.owner, "describe")).rules.find((x: any) => x.id === "off");
+    expect([r.passes_holds, r.brain_authored]).toEqual([true, true]);
+  });
+
+  it("clears a brain's mark when the owner redefines the marked rule whole, leaving passes_holds out (ruled, m1)", async () => {
+    const t = await withChat();
+    await t.define([up("rule", marked)]);
+    const plan = (await brainDefine(t.ok, t.call, [up("rule", { id: "off", name: "Ночь" })])).body;
+    await yes(t.ok, t.clock, plan.plan_id);
+    await t.ok(SECRETS.brain, "define", { endpoint: "owner-chat", plan_id: plan.plan_id });
+    const { passes_holds: _, ...rest } = marked;
+    await t.define([up("rule", { ...rest, active: true })]);
+    const r = (await t.ok(SECRETS.owner, "describe")).rules.find((x: any) => x.id === "off");
+    expect([r.passes_holds, r.brain_authored ?? false]).toEqual([true, false]);
+  });
+
+  it("takes a switch named at its current value as no change (R-7)", async () => {
+    const t = await withChat();
+    await t.define([up("rule", marked)]);
+    expect((await brainDefine(t.ok, t.call, [up("rule", { id: "off", name: "Ночь", passes_holds: true })])).ok).toBe(true);
+    // Unswitched: a target's switch named false is no change at all, an empty diff and the revision kept.
+    const before = await revision(t.ok);
+    const off = up("target", { id: LAMP, owner_work_passes_holds: false });
+    expect((await brainDefine(t.ok, t.call, [off], { dry_run: true })).body).toEqual({ diff: "no change" });
+    await t.define([off]);
+    expect(await revision(t.ok)).toBe(before);
+    // A new rule's mark named false is taken.
+    expect((await brainDefine(t.ok, t.call, [up("rule", { ...marked, id: "new", passes_holds: false })])).ok).toBe(true);
+    // Deleting an unmarked rule is no switch's.
+    await t.define([up("rule", { ...marked, id: "plain", passes_holds: false })]);
+    expect((await brainDefine(t.ok, t.call, [{ op: "delete", kind: "rule", value: { id: "plain" } }])).ok).toBe(true);
+  });
+
+  // Each mutation lets its rows through, to a plan, and no other.
+  it.each([
+    ["brain-sets-the-device-switch", [0, 1, 2]],
+    ["brain-marks-a-rule", [3, 4, 6]],
+    ["brain-sets-the-home-switch", [5]],
+  ] as const)("under %s, returns a plan for its rows only", async (mutation, mine) => {
+    for (const [i, [, changes]] of rows.entries()) {
+      const t = await switched({ mutation });
+      const r = await brainDefine(t.ok, t.call, changes);
+      const passes = (mine as readonly number[]).includes(i);
+      expect([i, r.ok ? "plan" : r.error]).toEqual([i, passes ? "plan" : "not_permitted"]);
+      if (passes) expect(r.body.steps).toEqual([expect.objectContaining({ verdict: "ask", reason: "confirm_define" })]);
+    }
   });
 });

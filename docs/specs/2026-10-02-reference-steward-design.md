@@ -453,9 +453,9 @@ device is free until its next change.
 
 **The policy.** `HoldPolicy` (`house/model.ts`) is the home's `hold`: `on_s`, `off_s`, `other_s`,
 `fixed_s`, `load_cap_s`, `cap_s`, and the flags `presence_renews`, `vacant_ends`, `schedule_ends`
-and `owner_work_passes_guest_holds` (GA-LEASE-7, GA-LEASE-8). `HOLD_DEFAULTS` holds the reference
+and `owner_work_passes_guest_holds` and `owner_work_passes_holds` (GA-LEASE-7, GA-LEASE-8, GA-LEASE-12). `HOLD_DEFAULTS` holds the reference
 values: 3600 s for `on_s`, `other_s`, `fixed_s` and `load_cap_s`, 600 s for `off_s`, `cap_s` 43200 s
-(0: none), `presence_renews`, `vacant_ends` and `owner_work_passes_guest_holds` true. They are an
+(0: none), `presence_renews`, `vacant_ends` and `owner_work_passes_guest_holds` true, `owner_work_passes_holds` false. They are an
 example, declared in `describe`, never asserted by a check. `define` merges the fields it names
 (a client may set one at a time) and the schema bounds a window at 1 s; a `null` for a field puts
 its reference value back, and a `null` hold puts them all back. The reference
@@ -512,6 +512,58 @@ precedence and what it may pass (`Passing`: `press`, `ownerWork`, `narrowing`) a
 lease it meets, a provisional lease first and, under it, the device's own (`Met`, `beneath`).
 Refused is `leased` with the holder (`gate/reasons.ts`); the order of reasons is unchanged
 (GA-STW-4, GA-LEASE-3).
+
+**The owner passes a person's hold** (GA-LEASE-12, steward 0.13). Three switches, each stored with
+what it marks: a rule's `passes_holds` (`Rule`), a device's `owner_work_passes_holds` (the target
+overlay) and the home's `owner_work_passes_holds` in the `hold` policy (`HOLD_DEFAULTS`: `false`).
+`brainMayDefine` (`house/brain.ts`) keeps all three from a brain (GA-DEF-3): through a brain a switch is
+compared, not looked for (R-7), so naming one at its current value is no change, another value, or
+deleting a rule or target whose switch is `true`, is `not_permitted`, the whole change set. A rule's
+`passes_holds` is outside the `whole` check, since a brain can never write it (R-12); the harness
+accepts a refusal of a switch named at its value as well as a no-change (R-13).
+
+`passedBy` (`leases/table.ts`) is the one place a step meets a lease's pass: given the lease it meets
+(`Met`, with `sinceMs`) and what the step may pass (`Passing`: `switches`, in the order rule, device,
+home; `press`, `ownerWork`, `narrowing`), it names the first thing that passes it, a `PassedHold` of
+holder and switch, or nothing. `leaseRefuses` goes through it, so the guest flag (GA-LEASE-10), a press
+and a narrowing pass the same way the switches do. The floor stands over every switch: none passes a
+`safety_rule` or `load_cap` lease, a run's lease, or work a brain authored; and a person's hold keeps
+its floor (GA-LEASE-7) against a switch until the person's own report, the key and value the step's ack
+is matched on, ends it early: `reportOf` (`house/action-keys.ts`) gives it from the standard action
+table or an extension action's `confirmed_by`, and `HoldState.reported` and `Holds.reported` carry it (R-6).
+An action declared `toggles` has none, so its floor ends by success or time. A provisional lease records
+the report too. The report must match the value exactly (`canonical`), not within the tolerance the
+applier acks by (GA-EVT-3): a dimmer reporting 29 for a set of 30 is acked but ends no floor early, and
+its floor ends at the ack instead. This fails toward refusing, so nothing unsafe comes of it.
+
+A rule firing keeps the holds its steps passed across a restart: `passed` goes in the firing's stored
+record, so the `passed_hold` of a step judged before the stop is the one an outcome after it shows.
+
+A run waits on every hold a switch covers at its start, inside the floor too (R-4), and more: an owner's
+run keeps every owned device it cannot lease at its start in question (`Run.waiting`), whatever lease
+kept it off (a passed hold, or one held higher), and takes its lease once the lease that kept it off
+ends, of whatever kind, before GA-LEASE-4's re-evaluation. A replacement keeps the device in question
+whatever the new hold is; only R-1 drops a device from a run for good, when a person's change replaces
+the run's own lease, a guest's too. R-2's first form, which dropped a device replaced by a hold the run
+did not pass, is retired: a switch applies at once to holds already held, so whether a run passes a hold
+is not fixed at its replacement. The cost is a later lease, nothing unsafe, as a lease only refuses.
+A run's step is read as its `scenario_status` entry, which has no plan a client reads (R-5).
+
+`passed_hold` (`{ holder, switch }`) goes on a step's `apply` outcome, on `scenario_status`'s `sent_steps`
+and `failed_steps` and on `outcome` events, judged at dispatch (R-8); a refused step never carries one.
+It is withheld as the occurrence is (GA-AUTH-7): a personal press's hold passed by the owner's rule shows
+no `passed_hold` to a reader the occurrence is withheld from, in any of the three places (`passView`,
+`passedKeep`); the owner sees its holder's press value as `withheld` until the personal floor (slice 8).
+
+The home's switch is the only one withheld from a step that undoes a narrowing (`lock.unlock`,
+`valve.open`, an `onoff` valve's `opens_with`, declared `toggles` or not): `rule` and `device` still pass
+it, and so does the guest flag (R-9; built last in the build, with the narrowing undone). The text's
+"which only the rule's or the device's switch passes" is read as among the three switches; the backlog
+holds the question.
+
+**No migration.** The switches are in the house model and the policy, the run's waiting devices are in
+memory as a run is, and a hold's `reported` is part of the hold state the store already keeps as JSON; a
+steward from before 0.13 reads every switch as `false` and no report.
 
 ## Occupancy and sessions
 
@@ -602,6 +654,12 @@ policy, ruled (Q5): every value to `owner` and `member`, and to no one else.
   dispatched more than `ask_expiry_s` after its `yes` is asked again as a new `ask` event, the run
   waiting on it (GA-SCN-3; *Standards problems*). Each step's outcome is kept for
   `scenario_status`, with `failed_steps` and `sent_steps` as GA-SCN-11 counts them.
+- **A change from 0.12 an owner will see.** An owner's scheduled or rule-started run now takes its
+  lease on an owned device when a person's hold it could not lease at its start ends, whether it
+  passed that hold or not, and before GA-LEASE-4's re-evaluation (*Leases*). So a level rule that
+  person's hold refused is refused again, by the run's lease, instead of firing at the hold's end as
+  under 0.12. This is within GA-SCN-2 ("a running scenario leases its owned targets"), and the
+  backlog asks the text to say it.
 
 ## Rules
 

@@ -1,5 +1,6 @@
 import type { Occupancy, Sensor } from "../gate/occupancy.js";
 import type { HoldPolicy } from "../house/model.js";
+import type { Expect } from "../house/action-keys.js";
 import type { Mutation } from "../mutations.js";
 
 /** What `never-ends-a-quiet-hold` gives for "never": ten years on, finite so the table's clamp re-arms it (R-50). */
@@ -32,6 +33,10 @@ export interface HoldState {
   adopted: string[];
   /** A policy end that came inside the floor, kept to end the hold once the floor has passed (GA-LEASE-7). */
   pendingEnd?: { why: HoldEnd; quietSinceMs?: number };
+  /** The report the step's ack is matched on: its key and how a report matches it (`reportOf`, R-6); none: an outside change's, a toggle's. */
+  expect?: Expect;
+  /** That report has come: the floor for passing has ended, the hold's own floor kept (GA-LEASE-10, GA-LEASE-12). */
+  reported?: true;
 }
 /** The device's room as it stands at the moment judged. */
 export interface RoomNow {

@@ -35,4 +35,27 @@ describe("the postgres service", () => {
     expect((await s.sql("postgres", pw, "SELECT 1")).stdout.trim()).toBe("1");
     expect((await s.sql("postgres", "wrong", "SELECT 1")).code).not.toBe(0);
   });
+
+  it("reads healthy only once it answers over TCP, not while a first start's init server listens on its socket alone", async () => {
+    // The image's entrypoint initialises a fresh volume behind a server started with listen_addresses='',
+    // and db-init, connecting over TCP, was refused while a socket-only check already read healthy.
+    const cfg = JSON.parse((await s.must(s.compose("config", "--format", "json"))).stdout);
+    const check: string[] = cfg.services.postgres.healthcheck.test;
+    expect(check[0]).toBe("CMD");
+    const name = `${s.project}-socket-only`;
+    // Labelled as the stack's, so the stack's `down` removes it should this test die before its `finally`.
+    await s.must(run("docker", ["run", "-d", "--name", name, "--label", `com.docker.compose.project=${s.project}`, "--label", "com.docker.compose.service=socket-only",
+      "-e", "POSTGRES_PASSWORD=x", "-e", "POSTGRES_DB=galatea", cfg.services.postgres.image, "postgres", "-c", "listen_addresses="], process.env));
+    try {
+      // Past the init's own temporary server, which is socket-only too, to the one that stays.
+      const onSocket = ["pg_isready", "-U", "postgres", "-d", "galatea"];
+      const settled = async () => (await run("docker", ["exec", name, ...onSocket], process.env)).code === 0
+        && (await run("docker", ["logs", name], process.env)).stdout.includes("PostgreSQL init process complete");
+      for (const end = Date.now() + 60_000; Date.now() < end && !(await settled());) await new Promise((r) => setTimeout(r, 500));
+      expect((await run("docker", ["exec", name, ...onSocket], process.env)).code, "the socket answers").toBe(0);
+      expect((await run("docker", ["exec", name, ...check.slice(1)], process.env)).code, "the healthcheck").not.toBe(0);
+    } finally {
+      await run("docker", ["rm", "-f", "-v", name], process.env);
+    }
+  });
 });

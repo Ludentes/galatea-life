@@ -63,6 +63,13 @@ export const MUTATIONS = [
   // Steward 0.12: narrowing actions pass a person's hold.
   "press-lock-holds", "holds-the-auto-lock", "narrows-a-heater", "narrowing-takes-a-hold", "narrows-over-safety", "closes-by-opens-with",
   "narrows-over-a-run", "narrows-by-toggle",
+  // Steward 0.13: the owner passes a person's hold.
+  "refuses-the-owner-switch", "brain-sets-the-device-switch", "brain-marks-a-rule", "brain-sets-the-home-switch",
+  "owner-passes-the-cap", "owner-passes-a-run", "owner-passes-safety", "passes-a-hold-in-its-floor", "switch-spares-held-holds", "refuses-on-the-persons-own-report",
+  "unmarked-rule-passes", "ignores-the-device-switch", "ignores-the-home-switch", "brain-rule-passes-holds", "brain-groups-past-a-hold",
+  "marked-press-passes", "passing-ends-the-hold", "pass-moves-the-end", "pass-re-evaluates-early",
+  "marked-run-refused", "brain-edits-a-passing-scenario", "passing-takes-a-lease",
+  "pass-unrecorded", "pass-as-a-lease", "pass-reveals-a-personal-press", "home-switch-reopens",
 ] as const;
 export type Mutation = (typeof MUTATIONS)[number];
 

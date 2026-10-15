@@ -4,9 +4,10 @@ import type { House, Scenario, ScenarioCondition, ScenarioStep, ScenarioWait } f
 /**
  * An action step of a run: its place among the scenario's action steps (from 1), the action as a
  * request's, whether it respects occupancy, and whether it is `brain_authored` work: its scenario, or
- * one whose `run` step reached it, was defined through a brain (GA-DEF-7).
+ * one whose `run` step reached it, was defined through a brain (GA-DEF-7); `nested`, whether a `run` step
+ * reached it, which a rule's `passes_holds` follows (GA-LEASE-12).
  */
-export interface ActionNode { kind: "action"; index: number; action: Requested; respect: boolean; conditional: boolean; brain?: true }
+export interface ActionNode { kind: "action"; index: number; action: Requested; respect: boolean; conditional: boolean; brain?: true; nested?: true }
 /**
  * One step of a run, as the steward runs it (steward, *Scenarios*): `run` steps are expanded in place,
  * so a run is one sequence; an `if` and a `wait` carry an id of their own (`if<n>`, `w<n>`), by which an
@@ -35,27 +36,28 @@ export function compile(house: House, id: string): Program {
   const actions: ActionNode[] = [];
   const owned = new Set<string>();
   // `brain`: a scenario on the way to this one is brain_authored, so every step it reaches is (GA-DEF-7).
-  const of = (sc: Scenario, conditional: boolean, brain: boolean): Node[] => {
+  // `nested`: a `run` step reached this scenario (GA-LEASE-12).
+  const of = (sc: Scenario, conditional: boolean, brain: boolean, nested: boolean): Node[] => {
     for (const o of sc.owned) owned.add(o);
-    return sc.steps.flatMap((st) => step(st, sc, conditional, brain || sc.brain_authored === true));
+    return sc.steps.flatMap((st) => step(st, sc, conditional, brain || sc.brain_authored === true, nested));
   };
-  const step = (st: ScenarioStep, sc: Scenario, conditional: boolean, brain: boolean): Node[] => {
-    if ("run" in st) return of(house.scenarios.get(st.run)!, conditional, brain);
+  const step = (st: ScenarioStep, sc: Scenario, conditional: boolean, brain: boolean, nested: boolean): Node[] => {
+    if ("run" in st) return of(house.scenarios.get(st.run)!, conditional, brain, true);
     if ("delay" in st) return [{ kind: "delay", ms: st.delay * 1000 }];
     if ("wait" in st) return [{ kind: "wait", id: `w${++waits}`, wait: st.wait }];
     if ("if" in st) {
       const n: Node = { kind: "if", id: `if${++ifs}`, cond: st.if, then: [] };
-      n.then = st.then.flatMap((x) => step(x, sc, true, brain));
-      if (st.else) n.else = st.else.flatMap((x) => step(x, sc, true, brain));
+      n.then = st.then.flatMap((x) => step(x, sc, true, brain, nested));
+      if (st.else) n.else = st.else.flatMap((x) => step(x, sc, true, brain, nested));
       return [n];
     }
     const { respect_occupancy, ...a } = st;
     const n: ActionNode = { kind: "action", index: ++index, action: a as Requested, respect: respect_occupancy ?? sc.respect_occupancy, conditional,
-      ...(brain ? { brain: true as const } : {}) };
+      ...(brain ? { brain: true as const } : {}), ...(nested ? { nested: true as const } : {}) };
     actions.push(n);
     return [n];
   };
-  const nodes = of(house.scenarios.get(id)!, false, false);
+  const nodes = of(house.scenarios.get(id)!, false, false, false);
   return { scenario: id, nodes, actions, owned: [...owned].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) };
 }
 

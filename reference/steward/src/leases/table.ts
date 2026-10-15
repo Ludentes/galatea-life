@@ -1,6 +1,7 @@
 import type { Clock } from "@ludentes/galatea-life-test-clock";
 import type { Tx } from "../core/db.js";
 import type { Store } from "../core/store.js";
+import { matcher } from "@ludentes/galatea-life-schemas";
 import type { Mutation } from "../mutations.js";
 import { shiftHold, type HoldEnd, type HoldState } from "./hold.js";
 import { TimeBase } from "./time-base.js";
@@ -62,7 +63,9 @@ const MAX_DELAY = 2 ** 31 - 1;
  */
 interface Provisional { apply: string; step: string; holder: Holder; precedence: Precedence; refused?: true; rules?: string[];
   /** The apply's derived role, which its hold will keep (GA-LEASE-10). */
-  role?: HoldState["role"] }
+  role?: HoldState["role"];
+  /** The report the step's ack is matched on (R-6), and whether it has come, which its hold keeps (GA-LEASE-12). */
+  expect?: HoldState["expect"]; reported?: true }
 
 /** Whether a change at `p` meets `lease` as lower precedence, so it is refused (GA-LEASE-3); equal or higher replaces. */
 export function refusedBy(lease: Pick<Lease, "precedence"> | undefined, p: Precedence): boolean {
@@ -74,14 +77,31 @@ export function refusedBy(lease: Pick<Lease, "precedence"> | undefined, p: Prece
  * derived role and whether its floor has passed (a provisional lease's has not) (GA-LEASE-10); under a
  * provisional lease, the device's lease `beneath` it, which a narrowing action is judged against too (R-67).
  */
-export type Met = Pick<Lease, "holder" | "precedence"> & { role?: HoldState["role"]; floorPassed?: boolean; beneath?: Met };
+export type Met = Pick<Lease, "holder" | "precedence"> & { role?: HoldState["role"]; floorPassed?: boolean; sinceMs?: number; beneath?: Met };
+
+/** A switch by which the owner's work passes a person's hold: GA-LEASE-12's three, then GA-LEASE-10's guest flag. */
+export type Switch = "rule" | "device" | "home" | "guest";
+
+/** The hold a step passed and the first switch covering it, its `passed_hold` (GA-LEASE-12). */
+export interface PassedHold { holder: Holder; switch: Switch }
 
 /**
  * How a change passes a lease beside its precedence: `press`, a press rule's own action (GA-LEASE-9);
  * `ownerWork`, a step of a rule, a scheduled run or a rule-started run not `brain_authored` for the device (GA-LEASE-10);
  * `narrowing`, a narrowing action not `brain_authored` for the device (GA-LEASE-11).
  */
-export interface Passing { press?: true; ownerWork?: true; narrowing?: true }
+/**
+ * `switches`: GA-LEASE-12's switches covering this step on this device, in the order rule, device, home;
+ * `undoesNarrowing`: the step undoes a narrowing (`undoesNarrowing` in narrowing.ts), which the home's switch does not pass.
+ */
+export interface Passing { press?: true; ownerWork?: true; narrowing?: true; switches?: Exclude<Switch, "guest">[]; undoesNarrowing?: true }
+
+/**
+ * What else a lease judgement reads: the mutation; whether the steward declares
+ * `owner_work_passes_guest_holds` (`guestsPass`); when the home's `owner_work_passes_holds` was last
+ * set `true` (`homeSetMs`, on the wall clock), which only `switch-spares-held-holds` reads.
+ */
+export interface PassOptions { mutation?: Mutation; guestsPass?: boolean; homeSetMs?: number }
 
 /** Whether `l` is a guest's hold: one an apply took whose derived role was `guest` (GA-LEASE-10). */
 export const guestsHold = (l: Met) => l.role === "guest";
@@ -91,10 +111,9 @@ export const guestsHold = (l: Met) => l.role === "guest";
  * lease, a safety rule's and a run's refuse it, though `load_cap` and a person-started run's are at its
  * own precedence (GA-LEASE-9); its narrowing action goes by that too. Any other narrowing action passes
  * a person's hold, and any other lease by its principal's precedence (GA-LEASE-11). The owner's work
- * passes a guest's hold once its floor has passed, while the steward declares
- * `owner_work_passes_guest_holds` (`guestsPass`); no other hold (GA-LEASE-10).
+ * passes what `passedBy` names (GA-LEASE-10, GA-LEASE-12); any other change, by its precedence.
  */
-export function leaseRefuses(l: Met | undefined, p: Precedence, pass: Passing, o: { mutation?: Mutation; guestsPass?: boolean } = {}): boolean {
+export function leaseRefuses(l: Met | undefined, p: Precedence, pass: Passing, o: PassOptions = {}): boolean {
   if (!l) return false;
   if (pass.press) {
     if (personsHold(l)) return false;
@@ -109,10 +128,35 @@ export function leaseRefuses(l: Met | undefined, p: Precedence, pass: Passing, o
     if (o.mutation === "narrows-over-a-run" && typeof l.holder === "object" && "run" in l.holder) return false;
     return refusedBy(l, p);
   }
-  if (pass.ownerWork && (o.guestsPass || o.mutation === "passes-undeclared") && o.mutation !== "guest-hold-blocks-the-owner"
-    && (l.floorPassed === true || o.mutation === "passes-inside-the-floor")
-    && (guestsHold(l) || (o.mutation === "passes-a-member-hold" && personsHold(l) && typeof l.holder === "object" && "endpoint" in l.holder))) return false;
+  if (passedBy(l, pass, o)) return false;
   return refusedBy(l, p);
+}
+
+/**
+ * The first switch by which the owner's work passes `l`, or undefined (GA-LEASE-10, GA-LEASE-12). Only a
+ * person's hold is passed, never a `load_cap` lease, a safety rule's or a run's, and only once its floor
+ * has passed: by the first of the step's switches, rule, device, home, the home's not for a step undoing a narrowing; else, while the steward declares
+ * `owner_work_passes_guest_holds`, a guest's hold by `guest`.
+ */
+export function passedBy(l: Met, pass: Passing, o: PassOptions = {}): Switch | undefined {
+  if (!pass.ownerWork) return undefined;
+  const run = typeof l.holder === "object" && "run" in l.holder;
+  const counts = personsHold(l) || (o.mutation === "owner-passes-the-cap" && l.holder === "load_cap") || (o.mutation === "owner-passes-a-run" && run)
+    || (o.mutation === "owner-passes-safety" && l.precedence === "safety_rule");
+  // The floor is a person's hold's (GA-LEASE-7); a lease counted only under its mutation has none to wait out.
+  const pastFloor = !personsHold(l) || l.floorPassed === true || o.mutation === "passes-a-hold-in-its-floor";
+  if (counts && pastFloor) {
+    for (const s of pass.switches ?? []) {
+      // The home's switch passes no hold for a step undoing a narrowing (*What no switch passes*, R-9); the mutation lets it.
+      if (s === "home" && pass.undoesNarrowing === true && o.mutation !== "home-switch-reopens") continue;
+      if (s === "home" && o.mutation === "switch-spares-held-holds" && l.sinceMs !== undefined && o.homeSetMs !== undefined && l.sinceMs < o.homeSetMs) continue;
+      return s;
+    }
+  }
+  if ((o.guestsPass || o.mutation === "passes-undeclared") && o.mutation !== "guest-hold-blocks-the-owner"
+    && (l.floorPassed === true || o.mutation === "passes-inside-the-floor")
+    && (guestsHold(l) || (o.mutation === "passes-a-member-hold" && personsHold(l) && typeof l.holder === "object" && "endpoint" in l.holder))) return "guest";
+  return undefined;
 }
 
 /** `session.lock` is never refused by a lease and replaces none; nor does it take one (GA-LEASE-1, GA-LEASE-3). */
@@ -210,9 +254,11 @@ export class LeaseTable {
     const top = p?.length ? p[p.length - 1] : undefined;
     const l = this.leases.get(target);
     const floor = l?.hold?.floorMs ?? null;
+    // The floor for passing ends at the floor, a success, or the person's own report (GA-LEASE-10, GA-LEASE-12; R-6).
     const own: Met | undefined = l && { holder: l.holder, precedence: l.precedence, ...(l.hold?.role ? { role: l.hold.role } : {}),
-      floorPassed: floor === null || this.time.now() >= floor };
-    if (top) return { holder: top.holder, precedence: top.precedence, ...(top.role ? { role: top.role } : {}), floorPassed: false, ...(own ? { beneath: own } : {}) };
+      floorPassed: floor === null || this.time.now() >= floor || l.hold?.reported === true, sinceMs: l.sinceMs };
+    if (top) return { holder: top.holder, precedence: top.precedence, ...(top.role ? { role: top.role } : {}), floorPassed: top.reported === true,
+      ...(own ? { beneath: own } : {}) };
     return own;
   }
 
@@ -420,6 +466,24 @@ export class LeaseTable {
     return rules;
   }
 
+  /**
+   * The device `target` reported `key` at `value`: each of its provisional leases, and its lease's hold, whose
+   * step's ack is matched on that report (`expect`, matched as the applier matches its ack) has its floor for passing ended,
+   * judged before any rule the report triggers; the hold's own floor and its ends are untouched
+   * (GA-LEASE-10, GA-LEASE-12; R-6). `refuses-on-the-persons-own-report` marks nothing.
+   */
+  reported(target: string, key: string, value: unknown): void {
+    if (this.o.mutation === "refuses-on-the-persons-own-report") return;
+    // Matched as the applier matches the step's ack: within a numeric key's tolerance, a colour whatever its case (GA-EVT-3).
+    const is = (e: HoldState["expect"]) => e !== undefined && e.key === key && e.match !== undefined && matcher(e.match)(value);
+    for (const p of this.provisional.get(target) ?? []) if (is(p.expect)) p.reported = true;
+    const l = this.leases.get(target);
+    if (!l?.hold || l.hold.reported || !is(l.hold.expect)) return;
+    // In place: the lease's timer ends this very lease.
+    l.hold = { ...l.hold, reported: true };
+    this.save(target);
+  }
+
   /** Lays a provisional lease for `apply`'s `step` on `target`: no event, nothing written. */
   lay(target: string, p: Provisional): void {
     this.provisional.set(target, [...(this.provisional.get(target) ?? []), p]);
@@ -441,7 +505,8 @@ export class LeaseTable {
     if (rest.length) this.provisional.set(target, rest);
     else this.provisional.delete(target);
     if (grant && this.grant({ target, holder: p.holder, precedence: p.precedence, sinceMs: grant.sinceMs, expiresMs: grant.expiresMs,
-      ...(grant.timerAtMs !== undefined ? { timerAtMs: grant.timerAtMs } : {}), ...(grant.hold ? { hold: grant.hold } : {}),
+      ...(grant.timerAtMs !== undefined ? { timerAtMs: grant.timerAtMs } : {}),
+      ...(grant.hold ? { hold: p.reported ? { ...grant.hold, reported: true as const } : grant.hold } : {}),
       apply, ...(p.rules?.length ? { refused: p.rules } : {}) })) return;
     if (!p.refused) return;
     const rules = p.rules ?? [];

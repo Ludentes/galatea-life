@@ -2,7 +2,7 @@ import type { ApplierOutcome } from "@ludentes/galatea-life-schemas";
 import type { Answer } from "../confirm/answer.js";
 import { unplanned, type StewardStep } from "../gate/reasons.js";
 import type { HoldState } from "../leases/hold.js";
-import type { Holder } from "../leases/table.js";
+import type { Holder, PassedHold } from "../leases/table.js";
 import type { Mutation } from "../mutations.js";
 import type { Firing } from "../rules/outcomes.js";
 
@@ -12,8 +12,12 @@ export const KEY_RETENTION_MS = 3_600_000;
 export const REPEAT_WINDOW_MS = 10_000;
 
 export type OutcomeName = ApplierOutcome["outcome"];
-/** One step's outcome as the steward returns it: always with its `time` (GA-STW-12). */
-export type Outcome = { step_id: string; target: string; outcome: OutcomeName; reason?: string; detail?: string; time: string };
+/**
+ * One step's outcome as the steward returns it: always with its `time` (GA-STW-12); for a step that passed a
+ * person's hold, the hold and the switch covering it (GA-LEASE-12), and, only under `pass-as-a-lease`, its `holder`.
+ */
+export type Outcome = { step_id: string; target: string; outcome: OutcomeName; reason?: string; detail?: string; time: string;
+  passed_hold?: PassedHold; holder?: Holder };
 
 /** The steward's own reasons that stand at dispatch: a step refused for one of them is never sent to the applier. */
 const OWN = new Set(["conflict", "role", "tier"]);
@@ -169,6 +173,8 @@ export interface ApplyRecord {
   firing?: Firing;
   /** A scenario run's action step: the run, and the step's place among its action steps (GA-STW-10). */
   run?: { id: string; index: number };
+  /** The person's hold each passing step passed, and the switch covering it, by step id, set at dispatch (GA-LEASE-12, R-8). */
+  passed?: Record<string, PassedHold>;
 }
 
 /** A record's document in the store: what a restart reads back. */

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isNarrowing } from "../src/leases/narrowing.js";
+import { isNarrowing, undoesNarrowing } from "../src/leases/narrowing.js";
 import { OWNER_CHAT, SECRETS, up } from "./house.js";
 import { AUTO_LOCK, BUTTON_DEVICE, CLOSE_VALVE, DOOR, DOOR_DEVICE, key, NARROWING, owning, rig, SHORT, VALVE, VALVE_DEVICE } from "./narrowing-rig.js";
 import { describeOf, DEVICES, eventsSince, heardAt } from "./setup.js";
@@ -24,6 +24,22 @@ describe("narrowing actions (GA-LEASE-11)", () => {
     expect(isNarrowing("onoff.turn_on", { class: "socket" })).toBe(false);
     expect(isNarrowing("onoff.turn_off", { class: "light" })).toBe(false);
     expect(isNarrowing("onoff.turn_off", undefined)).toBe(false);
+  });
+
+  it("are undone by lock.unlock, valve.open and a valve's opens_with, toggling or not (R-9)", () => {
+    expect(undoesNarrowing("lock.unlock", DOOR_DEVICE)).toBe(true);
+    expect(undoesNarrowing("valve.open", { class: "valve" })).toBe(true);
+    expect(undoesNarrowing("onoff.turn_on", { class: "water_valve" })).toBe(true);
+    expect(undoesNarrowing("onoff.turn_on", { class: "gas_valve" })).toBe(true);
+    expect(undoesNarrowing("onoff.turn_off", { class: "water_valve", opens_with: "onoff.turn_off" })).toBe(true);
+    expect(undoesNarrowing("onoff.turn_off", VALVE_DEVICE)).toBe(true);
+    // Declared toggles or not, the opening action undoes a narrowing: the function reads no declaration.
+    expect([isNarrowing("onoff.turn_off", VALVE_DEVICE, { toggles: true }), undoesNarrowing("onoff.turn_off", VALVE_DEVICE)]).toEqual([false, true]);
+    expect(undoesNarrowing("lock.lock", DOOR_DEVICE)).toBe(false);
+    expect(undoesNarrowing("valve.close", { class: "valve" })).toBe(false);
+    expect(undoesNarrowing("onoff.turn_on", VALVE_DEVICE)).toBe(false);
+    expect(undoesNarrowing("onoff.turn_on", { class: "socket" })).toBe(false);
+    expect(undoesNarrowing("onoff.turn_on", undefined)).toBe(false);
   });
 
   it("are never an action declared toggles", () => {

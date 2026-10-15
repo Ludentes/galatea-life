@@ -27,7 +27,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "@ludentes/galatea-life-sim": "^0.1.3",
+    "@ludentes/galatea-life-sim": "^0.1.4",
     "@ludentes/galatea-life-test-clock": "^0.1.0"
   }
 }

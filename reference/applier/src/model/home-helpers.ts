@@ -44,27 +44,6 @@ export const MAX_ID = 128;
 /** How many device topics of one bridge, listed nowhere, the home keeps facts for (a bridge publishing on bogus ids). */
 export const MAX_UNLISTED = 1024;
 
-/**
- * How a value reached the applier, as it observes it, never by a message's retain flag (applier,
- * *Causes*, GA-EVT-1): `load`, while it loads statuses after it connects or restarts (its bridge not
- * heard live since); `snapshot`, in a bridge's answer to `snapshot`, or among a new instance's first
- * statuses before that answer (its bridge found dead since it was live, or a snapshot asked); `route`,
- * over a new route as a `configure` route moves the device; `live`, any other.
- */
-export type Arrival = "load" | "snapshot" | "route" | "live";
-
-/**
- * Whether a key's value is its first (applier, *Causes*; the plug rehearsal's F3, and the maintainer's
- * ruling of 2026-10-11), the one rule every call site asks: the applier held no value for that key of
- * the device on any route (`held`), and no hand can be told, since it arrived as the applier observed
- * a load, a snapshot or a route move, or the device is not adopted (its interview reads). A first value
- * is the device's word, cause `device`, unless an apply claims it; a key first reported live on an
- * adopted device is a change like any other.
- */
-export function firstValue(o: { held: boolean; arrival: Arrival; adopted: boolean }): boolean {
-  return !o.held && (o.arrival !== "live" || !o.adopted);
-}
-
 /** A device fault's `code` is kept to this many characters in its notice and key. */
 export const MAX_FAULT_CODE = 128;
 

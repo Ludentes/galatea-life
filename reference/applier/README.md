@@ -9,14 +9,14 @@ author: Galatea maintainers
 
 # The reference applier
 
-A TypeScript build of the Galatea applier standard ([`standard/applier.md`](https://github.com/Ludentes/galatea-life-standard/blob/main/standard/applier.md), 0.16), graded by the
+A TypeScript build of the Galatea applier standard ([`standard/applier.md`](https://github.com/Ludentes/galatea-life-standard/blob/main/standard/applier.md), 0.17), graded by the
 conformance harness on the ids in `graded-ids.json`. The design is
 `docs/specs/2026-09-28-reference-applier-design.md`. This page says what the build does now; how it
 got here, slice by slice, is under *History* below.
 
 ## Not built: the PC ids
 
-`describe` claims `Act` and `Safe` at 0.16, but eleven Act MUSTs are neither built nor graded. They
+`describe` claims `Act` and `Safe` at 0.17, but eleven Act MUSTs are neither built nor graded. They
 are the PC work's, done separately and at a lower priority:
 
 | Id | What is missing |
@@ -915,29 +915,28 @@ computer hosts has the floor `no_voice`. A computer's `infrastructure` is the ow
 way, else its bridge's `proposedInfrastructure`. Tiers are derived each time, so a change of the
 host's flag re-derives the devices it hosts in the same change set (GA-DESC-13).
 
-**A key's first value** (GA-EVT-1, the maintainer's ruling of 2026-10-11). A key's first value, the
-applier holding none for it before, is announced with cause `device`, and so takes no lease, where no
-hand can be told. The retain flag no longer decides: each value's arrival is observed (`Arrival`):
-- `load`: the bridge not heard live since the applier connected or lost its broker, and the reading
-  stamped no later than when listening began, allowing `SKEW_MS`: the statuses delivered on
-  subscribing after a start or a reconnection, and no later press;
-- `snapshot`: while a snapshot is awaited (the one a new instance's first live status asks for, a seq
-  gap's, or the bus's on a reconnection), or the bridge found dead after it was live by its will or
-  its `offline` status, so a new instance's statuses that come before its own `status`; silence ends
-  no instance, so a running bridge that went quiet still reports `live`;
-- `route`: the values a `configure` route move announces, and a moved device's values in the new
-  bridge's answer to the `snapshot` the move asks of it (the maintainer's ruling on R16-4);
-- `live`: anything else.
+**A key's first value** (GA-EVT-1, the maintainer's ruling of 2026-10-11). 0.16 told a first value's
+cause by how it arrived (the load, a snapshot, a new route, live), and kept a live one on an adopted
+device `external`. 0.17 replaced it; see below.
 
-A first value in any but `live`, or on a device not adopted, is `device`; one live on an adopted device
-is `external`, a person's first press included. An apply's correlation still wins. One rule,
-`firstValue`, decides it wherever a value is announced. "Held" means on any route: a route move keeps
-the id's last values, even when the old bridge is no longer registered; and a value whose announce
-failed was never said. A route's rows are placed under the configuration the change set leaves, so a
-device routed and adopted in one set is adopted as its values over the new route are said.
+### What applier 0.17 adds
 
-The phases end on the bridge's liveness as GA-BUS-8 judges it, which reads a status's retain flag as
-the binding says; no value is judged by its own flag. `describe` gives `standard_version` `0.16`.
+**Every first value is the device's word** (GA-EVT-1, the maintainer's ruling of 2026-10-13). A key's
+first value, the applier holding none for it on any route, is announced with cause `device` wherever it
+arrives, a live report from a running bridge instance on an adopted device included, unless an apply's
+correlation claims it; a held key's changed value is `external`, a device's return from `dead`
+included. `isFirst` asks only whether the key is held. 0.16's arrival bookkeeping is gone with it:
+the `Arrival` kinds, the bridge's load and new-instance phases (`loading`, `listeningAt`, `awaiting`,
+`reconnecting`), the moved devices awaited in a snapshot (`rerouted`), and the snapshot a route move
+asked for. Mutations: `externalises-a-first-value` (every first value `external`),
+`externalises-a-live-first-value` (a live one on an adopted device `external`, a retained one `device`,
+as 0.16 roughly had it), `devices-a-changed-value` (a held key's change `device`) and
+`devices-a-correlated-first-value` (a first value an apply claims taken as `device`). A change of an
+exposed id is judged against what it holds first, its bridge's last report only where it holds none, so a held value
+re-reported unchanged over a new route, or by a bridge re-registered under a new identity, says
+nothing; `"unknown"` is reported `device` and neither sets nor clears a held value; a folded copy shown again takes its bridge's
+values as first values; and a reconnection's snapshot answer counts as a re-sent `devices` (GA-BUS-6).
+`describe` gives `standard_version` `0.17`.
 
 **How much of GA-DESC-11 is graded.** The harness grades, over one plugin device with a standard and an
 extension action:
@@ -957,6 +956,6 @@ Fifteen mutations, all in `subject.json`: `keeps-an-owner-raise`, `keeps-an-owne
 `keeps-a-manifest-kept-tier`, `forgets-a-tool-hash`, `lowers-by-a-new-manifest` and
 `keeps-a-lowered-tier` (GA-DESC-11), `extension-under-the-box`, `sleeps-the-box-through-its-player`
 and `sleeps-the-proposed-broker-host` (GA-DESC-3), and `externalises-a-first-value`,
-`externalises-a-snapshot-value`, `externalises-a-rerouted-value` and `devices-a-live-press` (GA-EVT-1);
-`externalises-a-first-value` left `proposed-rows.json`, and its clause `first-value-is-device` is now
+`externalises-a-snapshot-value`, `externalises-a-rerouted-value` and `devices-a-live-press` (GA-EVT-1;
+the last three withdrawn in 0.17); `externalises-a-first-value` left `proposed-rows.json`, and its clause `first-value-is-device` is now
 part of GA-EVT-1's check.

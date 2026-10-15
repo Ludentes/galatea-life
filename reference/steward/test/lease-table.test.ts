@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Store } from "../src/core/store.js";
+import { reportOf } from "../src/house/action-keys.js";
 import type { HoldState } from "../src/leases/hold.js";
 import { guestsHold, LeaseTable, leaseRefuses, personsHold, type Lease, type Met } from "../src/leases/table.js";
 import { MUTATIONS, type Mutation } from "../src/mutations.js";
@@ -298,17 +299,65 @@ describe("the lease table's holds", () => {
 });
 
 describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
-  it("shows what a change meets: a provisional lease's role inside its floor, a hold's role and whether its floor has passed", async () => {
+  it("shows what a change meets: a provisional lease's role inside its floor, a hold's role, since when, and whether its floor has passed", async () => {
     const { t, clock } = await table();
     const now = clock.now();
     t.lay(LAMP, { apply: "a1", step: "s1", holder: { endpoint: "hall-panel" }, precedence: "person", role: "guest" });
     expect(t.holding(LAMP)).toEqual({ holder: { endpoint: "hall-panel" }, precedence: "person", role: "guest", floorPassed: false });
     t.settle(LAMP, "a1", "s1", { sinceMs: now, expiresMs: now + 600_000, hold: hold(now, { role: "guest", floorMs: now + 70_000 }) });
-    expect(t.holding(LAMP)).toEqual({ holder: { endpoint: "hall-panel" }, precedence: "person", role: "guest", floorPassed: false });
+    expect(t.holding(LAMP)).toEqual({ holder: { endpoint: "hall-panel" }, precedence: "person", role: "guest", floorPassed: false, sinceMs: now });
     clock.advance(70_000);
     expect(t.holding(LAMP)).toMatchObject({ role: "guest", floorPassed: true });
     t.grant({ target: LAMP, holder: { run: "r1" }, precedence: "person", sinceMs: now, expiresMs: null });
-    expect(t.holding(LAMP)).toEqual({ holder: { run: "r1" }, precedence: "person", floorPassed: true });
+    expect(t.holding(LAMP)).toEqual({ holder: { run: "r1" }, precedence: "person", floorPassed: true, sinceMs: now });
+  });
+
+  it("ends a hold's floor for passing at the person's own report, the hold's own floor kept; a provisional lease's too, carried into its hold (GA-LEASE-12)", async () => {
+    const { t, clock } = await table();
+    const now = clock.now();
+    const ON = reportOf("onoff.turn_on", {})!;
+    t.lay(LAMP, { apply: "a1", step: "s1", holder: { person: "olga", endpoint: "olga-app" }, precedence: "person", role: "member", expect: ON });
+    t.reported(LAMP, "on", false);
+    t.reported("sim-bridge:other", "on", true);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: false });
+    t.reported(LAMP, "on", true);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: true });
+    t.settle(LAMP, "a1", "s1", { sinceMs: now, expiresMs: now + 600_000, hold: hold(now, { role: "member", floorMs: now + 70_000, expect: ON }) });
+    expect(t.of(LAMP)!.hold).toMatchObject({ reported: true, floorMs: now + 70_000, expect: { key: "on", value: true } });
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: true });
+    // A hold's own report, matched as the applier matches its ack (GA-EVT-3): a level within its tolerance, a colour
+    // whatever its case; another key, or a value outside it, ends nothing.
+    const level = (expect: ReturnType<typeof reportOf>) => t.grant({ target: LAMP, holder: { person: "olga", endpoint: "olga-app" }, precedence: "person",
+      sinceMs: now, expiresMs: now + 600_000, hold: hold(now, { role: "member", floorMs: now + 70_000, expect: expect! }) });
+    level(reportOf("level.set_level", { level: 40 }));
+    t.reported(LAMP, "volume", 40);
+    t.reported(LAMP, "level", 42);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: false });
+    t.reported(LAMP, "level", 41);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: true });
+    level(reportOf("color.set_color", { rgb: "#FFAA00" }));
+    t.reported(LAMP, "color", "#ffaa01");
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: false });
+    t.reported(LAMP, "color", "#ffaa00");
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: true });
+    expect(t.of(LAMP)!.hold).toMatchObject({ reported: true, floorMs: now + 70_000 });
+    // A hold with no report known (a toggle's) waits out its floor.
+    t.grant({ target: LAMP, holder: { person: "olga", endpoint: "olga-app" }, precedence: "person", sinceMs: now, expiresMs: now + 600_000,
+      hold: hold(now, { role: "member", floorMs: now + 70_000 }) });
+    t.reported(LAMP, "on", true);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: false });
+  });
+
+  it("ends no floor at the report under refuses-on-the-persons-own-report", async () => {
+    const { t, clock } = await table({ mutation: "refuses-on-the-persons-own-report" });
+    const now = clock.now();
+    t.lay(LAMP, { apply: "a1", step: "s1", holder: { endpoint: "hall-panel" }, precedence: "person", role: "guest", expect: reportOf("onoff.turn_on", {}) });
+    t.reported(LAMP, "on", true);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: false });
+    t.settle(LAMP, "a1", "s1", { sinceMs: now, expiresMs: now + 600_000, hold: hold(now, { role: "guest", floorMs: now + 70_000, expect: reportOf("onoff.turn_on", {}) }) });
+    t.reported(LAMP, "on", true);
+    expect(t.holding(LAMP)).toMatchObject({ floorPassed: false });
+    expect(t.of(LAMP)!.hold!.reported).toBeUndefined();
   });
 
   it("names a guest's hold by its role alone", () => {

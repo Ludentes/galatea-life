@@ -47,7 +47,7 @@
     "conformance:matrix": "galatea-with-postgres node scripts/full-matrix.mjs"
   },
   "dependencies": {
-    "@ludentes/galatea-life-schemas": "^0.1.5",
+    "@ludentes/galatea-life-schemas": "^0.1.6",
     "@ludentes/galatea-life-test-clock": "^0.1.0",
     "@modelcontextprotocol/node": "2.1.0",
     "@modelcontextprotocol/server": "2.2.0",
@@ -56,7 +56,7 @@
   },
   "devDependencies": {
     "@ludentes/galatea-life-binding": "^0.1.0",
-    "@ludentes/galatea-life-harness": "^0.1.8",
+    "@ludentes/galatea-life-harness": "^0.1.10",
     "@electric-sql/pglite": "0.5.8",
     "@modelcontextprotocol/client": "2.2.0",
     "@types/pg": "8.23.1"

@@ -127,6 +127,13 @@ export class HerdsmanDoer implements DoerPort {
    * herdsman's own permit timer (the window rule, the maintainer's ruling of 2026-10-05).
    */
   private windowOpen = false;
+  /**
+   * Hardware admitted in the window open now: another join of it before the window closes is the
+   * same admission, not a pairing again (the maintainer's ruling, 2026-10-13). One pairing can reach
+   * the handler twice, the second indication after herdsman took the hardware in (the bench's radar,
+   * 32 ms apart). Emptied as each window opens.
+   */
+  private readonly admittedInWindow = new Set<string>();
   /** When the coordinator's last permit the doer asked for ends, on the doer's clock. */
   private permitEnds = 0;
   /**
@@ -306,6 +313,7 @@ export class HerdsmanDoer implements DoerPort {
    */
   async join(windowMs: number, near?: HardwareId): Promise<void> {
     if (this.o.noActions) throw new Error(NO_ACTIONS);
+    if (!this.windowOpen) this.admittedInWindow.clear();
     this.windowOpen = true;
     const stack = this.stack;
     if (!stack || this.stopped) throw new Error("the coordinator is not connected");
@@ -610,6 +618,7 @@ export class HerdsmanDoer implements DoerPort {
       joined: (ieee) => {
         if (!live()) return;
         this.known.add(ieee);
+        if (this.windowOpen) this.admittedInWindow.add(ieee);
         // herdsman cannot tell an association from a rejoin (spike S6, plan 3), and lets in as new only
         // hardware it did not have or had deleted: an association.
         this.events?.admitted(ieee, "association");
@@ -663,6 +672,8 @@ export class HerdsmanDoer implements DoerPort {
    * - hardware herdsman has, inside the window, is a new admission, which the core may refuse; let in,
    *   the doer reports it itself, since herdsman raises nothing for it (S7): an `association`, and its
    *   description again, for the new id; a removal still waiting for its earlier device ends;
+   * - hardware already admitted in this window, either way, is that admission still: let in, nothing
+   *   reported, the core not asked (the maintainer's ruling, 2026-10-13);
    * - other hardware is a new admission in a window or out, which the core may refuse (blocked, or
    *   known to the core while the store is away: `mayAdmit`); herdsman reports it (`joined`).
    * Under the owner's switch nothing is refused, since a refusal sends a frame, and the core is not
@@ -674,6 +685,8 @@ export class HerdsmanDoer implements DoerPort {
       this.events?.admitted(ieee, "securedRejoin");
       return true;
     }
+    // Admitted in this window already: the same pairing, let in as it is.
+    if (known && this.admittedInWindow.has(ieee)) return true;
     if (this.o.noActions) return true;
     const may = this.events?.mayAdmit(ieee) ?? true;
     if (!may) {
@@ -683,6 +696,7 @@ export class HerdsmanDoer implements DoerPort {
     if (known) {
       // Admitted anew in the window: a new id, and its description again under it.
       this.known.add(ieee);
+      this.admittedInWindow.add(ieee);
       this.readmitted(ieee);
       this.events?.admitted(ieee, "association");
       void this.devices.resend(ieee);

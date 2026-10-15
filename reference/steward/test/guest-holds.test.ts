@@ -1,81 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Mutation } from "../src/mutations.js";
-import { FakeClock } from "./fake-clock.js";
-import { OWNER_CHAT, SECRETS, up } from "./house.js";
-import { DEVICES, eventsSince, heardAt, LAMP, on, quiet, setup } from "./setup.js";
+import { BED, BUTTON, BUTTON_DEVICE, KEEP, KEY, key, MINUTE, offRule, rig, SHORT } from "./hold-rig.js";
+import { SECRETS, up } from "./house.js";
+import { DEVICES, eventsSince, LAMP, on, quiet } from "./setup.js";
 
 type Body = Record<string, any>;
-
-let n = 0;
-const key = () => `guest-${++n}`;
-const MINUTE = 60_000;
-/** The owner's rule turning the lamp off while it is on: level-triggered, judged as soon as it is defined. */
-const offRule = (id = "off", o: Body = {}) => ({ id, name: "Гасить", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }],
-  actions: [{ target: LAMP, action: "onoff.turn_off", args: {} }], ...o });
-/** The hold policy with a lamp's hold ending 400 s after the change: the lamp's room has no presence source, so `fixed_s` (GA-LEASE-7). */
-const SHORT = up("home", { hold: { fixed_s: 400 } });
-/** A scenario owning the lamp for 900 s, and a schedule running it at 11:05, five minutes after the clock's start. */
-const KEEP = up("scenario", { id: "keep", name: "Keep", mode: "single", owned: [LAMP], steps: [{ delay: 900 }] });
-const BED = up("schedule", { id: "bed", scenario: "keep", time: "11:05" });
-const BUTTON = "sim-bridge:button";
-const KEY = "org.galatea.test.button.action";
-/** A button whose occurrence a press rule is marked on (GA-LEASE-9). */
-const BUTTON_DEVICE = { id: BUTTON, label: "button", class: "sensor", capabilities: ["sensor"], adopted: true, actions: [], extension_keys: { event: [KEY] } };
-
-/** A steward over the furnished house, the guest panel's credential added; `ack` answers an apply's step `acked`, ending its floor. */
-async function rig(o: { mutation?: Mutation; changes?: unknown[]; devices?: Body[] } = {}) {
-  // The lamp live and off: a rule reads only a live, observed value (GA-RULE-2).
-  const clock = new FakeClock();
-  const state = { targets: { [LAMP]: { liveness: "live", values: [{ key: "on", value: false, basis_time: new Date(clock.now()).toISOString() }] } },
-    transports: [], latches: [] };
-  const t = await setup({ clock, state, mutation: o.mutation, options: { pruneEveryMs: 24 * 3_600_000 }, ...(o.devices ? { devices: o.devices } : {}) });
-  await t.define([OWNER_CHAT, up("credential", { id: "hall-panel", kind: "panel", secret: SECRETS.panel, endpoint: "hall-panel" }), ...(o.changes ?? [])]);
-  /** The applier reports the lamp on, as after a `turn_on`: no cause, so it takes no hold. */
-  const lampOn = async () => {
-    t.applier.emit({ type: "state", target: LAMP, key: "on", value: true, time: new Date(t.clock.now()).toISOString() });
-    await t.pump();
-  };
-  /** An apply turning the lamp on, through `request`'s endpoint, and the lamp reported on; its step not yet acked. */
-  const applyAs = async (secret: string, request: Body) => {
-    await t.ok(secret, "apply", { request: { ...request, actions: [on(LAMP)] }, idempotency_key: key() });
-    await t.pump();
-    await lampOn();
-  };
-  const ack = async (apply_id: string) => {
-    t.applier.emit({ type: "outcome", apply_id, step_id: "s1", target: LAMP, outcome: "acked" });
-    await t.pump();
-  };
-  const panel = async (acked = true) => {
-    await applyAs(SECRETS.panel, { endpoint: "hall-panel" });
-    if (acked) await ack(`applier-apply-${t.applier.applies.length}`);
-  };
-  const leases = async () => (await t.ok(SECRETS.owner, "state")).leases as Body;
-  /** Defines `changes` and lets the firings they start settle. */
-  const defineAndSettle = async (changes: unknown[]) => {
-    await t.define(changes);
-    await quiet(t.store);
-  };
-  const turnedOff = () => t.applier.applies.filter((a: Body) => a.request.actions.some((x: Body) => x.action === "onoff.turn_off"));
-  /** The run the schedule started since `cursor`, once its `started` event is in. */
-  const runStarted = async (cursor: string): Promise<string> => {
-    await vi.waitFor(async () => expect((await eventsSince(t.ok, cursor, "scenario")).map((e) => e.change)).toContain("started"));
-    return (await eventsSince(t.ok, cursor, "scenario")).find((e) => e.change === "started")!.run_id as string;
-  };
-  /** The brain defines `changes` through the owner's chat window and the owner says yes there: they are brain_authored (GA-DEF-7). */
-  const brainDefine = async (changes: unknown[]) => {
-    const plan = await t.ok(SECRETS.brain, "define", { endpoint: "owner-chat", changes, expected_revision: (await t.ok(SECRETS.owner, "describe")).revision, dry_run: false });
-    await t.ok(SECRETS.brain, "answer", { plan_id: plan.plan_id, endpoint: "owner-chat", answers: { s1: "yes" },
-      utterance: heardAt(t.clock, "owner-chat", { addressed_by: "typed" }) });
-    await t.ok(SECRETS.brain, "define", { endpoint: "owner-chat", plan_id: plan.plan_id });
-    await quiet(t.store);
-  };
-  return { ...t, lampOn, applyAs, ack, panel, leases, defineAndSettle, turnedOff, runStarted, brainDefine };
-}
 
 describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
   it("refuses the owner's rule leased inside the guest's floor, and sends it once the guest's step is acked (R-63)", async () => {
     const t = await rig();
-    await t.panel(false);
+    await t.lampOn();                                     // on, no cause: no hold; the guest's report never comes
+    await t.panel(false, { report: false });
     const { cursor } = await t.ok(SECRETS.owner, "events");
     await t.defineAndSettle([up("rule", offRule())]);
     expect((await eventsSince(t.ok, cursor, "refused")).map((e) => [e.rule, e.reason, e.holder])).toEqual([["off", "leased", { endpoint: "hall-panel" }]]);
@@ -88,7 +22,8 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
 
   it("refuses the owner's rule leased inside the guest's floor, and sends it once the floor has passed with no ack (R-63)", async () => {
     const t = await rig();
-    await t.panel(false);
+    await t.lampOn();                                     // on, no cause: no hold; the guest's report never comes
+    await t.panel(false, { report: false });
     await t.defineAndSettle([up("rule", offRule())]);
     expect(t.turnedOff()).toEqual([]);
     // The floor: the lamp's ack_within_s, 10 s, and the 60 s late-ack window, from dispatch.
@@ -103,7 +38,8 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
 
   it("sends the owner's rule leased inside the guest's floor once the guest's ack, missed in a following gap, is read back (R-63)", async () => {
     const t = await rig();
-    await t.panel(false);
+    await t.lampOn();                                     // on, no cause: no hold; the guest's report never comes
+    await t.panel(false, { report: false });
     await t.defineAndSettle([up("rule", offRule())]);
     expect(t.turnedOff()).toEqual([]);
     t.clock.advance(2_000);
@@ -117,9 +53,27 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
     expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
   });
 
+  it("sends the owner's rule leased inside the guest's floor once the guest's own report, missed in a following gap, is read back (R-63)", async () => {
+    const t = await rig();
+    await t.lampOn();                                     // on, no cause: no hold
+    await t.panel(false, { report: false });
+    await t.defineAndSettle([up("rule", offRule())]);
+    expect(t.turnedOff()).toEqual([]);
+    t.clock.advance(2_000);
+    t.applier.emitUnseen({ type: "state", target: LAMP, key: "on", value: true, time: new Date(t.clock.now()).toISOString() });
+    t.clock.advance(1_000);
+    const missed = (await t.port.history({ from: new Date(0).toISOString(), to: new Date(t.clock.now()).toISOString() })).events;
+    t.steward.recover(missed, { targets: { [LAMP]: { liveness: "live", values: [{ key: "on", value: true, basis_time: new Date(t.clock.now()).toISOString() }] } },
+      transports: [], latches: [] }, String(missed.at(-1)?.seq ?? 0));
+    await quiet(t.store);
+    expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
   it("refuses a brain_authored rule once, and leaves it on the guest's hold when the floor passes, re-evaluated at the hold's end (R-63)", async () => {
     const t = await rig({ changes: [SHORT] });
-    await t.panel(false);
+    await t.lampOn();                                     // on, no cause: no hold; the guest's report never comes
+    await t.panel(false, { report: false });
     const { cursor } = await t.ok(SECRETS.owner, "events");
     await t.brainDefine([up("rule", offRule())]);
     await t.ack("applier-apply-1");
@@ -131,6 +85,86 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
     await quiet(t.store);
     expect((await t.leases())[LAMP]).toBeUndefined();
     expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+  });
+
+  it("lets the owner's rule the guest's own report of on triggers through the guest's hold, before the ack (GA-LEASE-10)", async () => {
+    const t = await rig({ changes: [up("rule", offRule())] });
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    await t.panel(false);                                                   // the report of on comes, no ack yet
+    await quiet(t.store);
+    expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect(await eventsSince(t.ok, cursor, "refused")).toEqual([]);
+    expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
+  it("sends the owner's rule refused inside the guest's floor once the guest's own report ends it, before the ack (R-63)", async () => {
+    const t = await rig();
+    await t.lampOn();                                                       // on, no cause: no hold
+    await t.panel(false, { report: false });
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    await t.defineAndSettle([up("rule", offRule())]);
+    expect((await eventsSince(t.ok, cursor, "refused")).map((e) => [e.rule, e.reason])).toEqual([["off", "leased"]]);
+    expect(t.turnedOff()).toEqual([]);
+    await t.report("on", true);                                             // the report the guest's step's ack is matched on
+    await quiet(t.store);
+    expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
+  it("ends the guest's floor for passing at a report its step's ack is matched on, a level within its tolerance (GA-LEASE-10, applier GA-EVT-3)", async () => {
+    const t = await rig();
+    await t.lampOn();                                                       // on, no cause: no hold
+    await t.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [{ target: LAMP, action: "level.set_level", args: { level: 40 } }] },
+      idempotency_key: key() });
+    await t.pump();
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    await t.defineAndSettle([up("rule", offRule())]);
+    expect((await eventsSince(t.ok, cursor, "refused")).map((e) => [e.rule, e.reason])).toEqual([["off", "leased"]]);
+    await t.report("level", 42);                                            // outside the level's tolerance of 1: not the step's report
+    await quiet(t.store);
+    expect(t.turnedOff()).toEqual([]);
+    await t.report("level", 41);                                            // within it: the applier acks the step on this report
+    await quiet(t.store);
+    expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
+  it("lets the owner's rule the guest's own report triggers through the provisional lease of the guest's step in flight (GA-LEASE-10)", async () => {
+    // Events are parked while an apply is in flight; a cap of none relays them at once, so the report meets the step's provisional lease.
+    const t = await rig({ changes: [up("rule", offRule())], options: { parkedCap: 0 } });
+    let open!: () => void;
+    t.applier.answerGate = new Promise((r) => { open = r; });
+    const applied = t.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [on(LAMP)] }, idempotency_key: key() });
+    await vi.waitFor(() => expect(t.applier.applies.length).toBe(1));
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    await t.report("on", true);                                             // before the applier answers
+    await quiet(t.store);
+    await vi.waitFor(() => expect(t.applier.applies.length).toBe(2));
+    open();
+    await applied;
+    await quiet(t.store);
+    expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect(await eventsSince(t.ok, cursor, "refused")).toEqual([]);
+    expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
+  it("sends the owner's rule refused by the guest's step in flight once that step, its report come, is answered (R-63)", async () => {
+    const t = await rig({ options: { parkedCap: 0 } });
+    await t.lampOn();
+    let open!: () => void;
+    t.applier.answerGate = new Promise((r) => { open = r; });
+    const applied = t.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [on(LAMP)] }, idempotency_key: key() });
+    await vi.waitFor(() => expect(t.applier.applies.length).toBe(1));
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    await t.defineAndSettle([up("rule", offRule())]);
+    expect((await eventsSince(t.ok, cursor, "refused")).map((e) => [e.rule, e.reason])).toEqual([["off", "leased"]]);
+    await t.report("on", true);                                             // the guest's report, while its step is in flight
+    open();
+    await applied;
+    await t.pump();
+    await quiet(t.store);
+    expect(t.turnedOff().map((a) => a.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
   });
 
   it("lets the owner's rule through a guest's acked hold, which stays the lamp's lease", async () => {
@@ -218,7 +252,7 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
       ["granted", undefined, { run: run_id }]]);
   });
 
-  it("grants the run its lease again once a guest's hold that replaced it mid-run has ended (R-62)", async () => {
+  it("leaves the run without the lamp once a guest's hold that replaced its lease mid-run has ended (R-1, 0.12's R-62 retired)", async () => {
     const t = await rig({ changes: [SHORT, KEEP, BED] });
     const { cursor } = await t.ok(SECRETS.owner, "events");
     t.clock.advance(5 * MINUTE);
@@ -229,13 +263,13 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
     expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
     t.clock.advance(400_000);
     await quiet(t.store);
-    expect((await t.leases())[LAMP]).toMatchObject({ holder: { run: run_id }, precedence: "scheduled_run" });
+    expect((await t.ok(SECRETS.owner, "scenario_status", { run_id })).status).toBe("running");
+    expect((await t.leases())[LAMP]).toBeUndefined();
     expect((await eventsSince(t.ok, cursor, "lease")).map((e) => [e.change, e.end, e.holder])).toEqual([["granted", undefined, { run: run_id }],
-      ["ended", "replaced", { run: run_id }], ["granted", undefined, { endpoint: "hall-panel" }], ["ended", "window", { endpoint: "hall-panel" }],
-      ["granted", undefined, { run: run_id }]]);
+      ["ended", "replaced", { run: run_id }], ["granted", undefined, { endpoint: "hall-panel" }], ["ended", "window", { endpoint: "hall-panel" }]]);
   });
 
-  it("grants the run its lease again once a guest's hold from an apply in flight at the run's start has ended (R-62)", async () => {
+  it("leaves the run without the lamp once a guest's hold from an apply in flight at the run's start has ended (R-1, 0.12's R-62 retired)", async () => {
     const t = await rig({ changes: [SHORT, KEEP, BED] });
     t.clock.advance(5 * MINUTE - 1_000);
     let open!: () => void;
@@ -253,11 +287,12 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
     expect((await t.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
     t.clock.advance(400_000);
     await quiet(t.store);
-    expect((await t.leases())[LAMP]).toMatchObject({ holder: { run: run_id }, precedence: "scheduled_run" });
-    expect((await eventsSince(t.ok, cursor, "lease")).map((e) => [e.change, e.holder]).at(-1)).toEqual(["granted", { run: run_id }]);
+    expect((await t.ok(SECRETS.owner, "scenario_status", { run_id })).status).toBe("running");
+    expect((await t.leases())[LAMP]).toBeUndefined();
+    expect((await eventsSince(t.ok, cursor, "lease")).map((e) => [e.change, e.holder]).at(-1)).toEqual(["ended", { endpoint: "hall-panel" }]);
   });
 
-  it("leaves the run without the lamp once a member's hold that replaced its lease mid-run has ended (R-62)", async () => {
+  it("leaves the run without the lamp once a member's hold that replaced its lease mid-run has ended (R-1)", async () => {
     const t = await rig({ changes: [SHORT, KEEP, BED] });
     const { cursor } = await t.ok(SECRETS.owner, "events");
     t.clock.advance(5 * MINUTE);
@@ -272,7 +307,7 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
     expect((await eventsSince(t.ok, cursor, "lease")).map((e) => [e.change, e.end]).at(-1)).toEqual(["ended", "window"]);
   });
 
-  it("leaves a run waiting on a guest's hold without the lamp once a member's hold replaced that hold (R-64)", async () => {
+  it("keeps the lamp in question once a member's hold it does not pass replaced the guest's it waited on, and leases it at that hold's end (R-2 retired)", async () => {
     const t = await rig({ changes: [SHORT, KEEP, BED] });
     await t.panel();
     const { cursor } = await t.ok(SECRETS.owner, "events");
@@ -283,16 +318,39 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
     expect((await t.leases())[LAMP].holder).toEqual({ person: "olga", endpoint: "olga-app" });
     t.clock.advance(400_000);
     await quiet(t.store);
-    expect((await t.ok(SECRETS.owner, "scenario_status", { run_id })).status).toBe("running");
-    expect((await t.leases())[LAMP]).toBeUndefined();
-    expect((await eventsSince(t.ok, cursor, "lease")).map((e) => [e.change, e.end]).at(-1)).toEqual(["ended", "window"]);
+    expect((await t.leases())[LAMP]).toMatchObject({ holder: { run: run_id }, precedence: "scheduled_run" });
+    expect((await eventsSince(t.ok, cursor, "lease")).map((e) => [e.change, e.end, e.holder]).slice(-2))
+      .toEqual([["ended", "window", { person: "olga", endpoint: "olga-app" }], ["granted", undefined, { run: run_id }]]);
+  });
+
+  it("keeps the lamp in question for a rule-started run a scheduled run outranked at a hold's end, and leases it at that run's end (the ruling replacing R-2)", async () => {
+    const LATER = up("scenario", { id: "later", name: "Later", mode: "single", owned: [LAMP], steps: [{ delay: 3_600 }] });
+    const t = await rig({ changes: [SHORT, KEEP, BED, LATER] });
+    await t.applyAs(SECRETS.olga, { endpoint: "olga-app" });
+    await t.ack("applier-apply-1");
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    t.clock.advance(5 * MINUTE);
+    const keep = await t.runStarted(cursor);
+    await t.defineAndSettle([up("rule", { id: "go", name: "Go", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }], actions: [{ scenario: "later" }] })]);
+    const later = (await eventsSince(t.ok, cursor, "scenario")).find((e) => e.scenario === "later" && e.change === "started")!.run_id;
+    expect((await t.leases())[LAMP].holder).toEqual({ person: "olga", endpoint: "olga-app" });
+    // Olga's hold ends: the scheduled run, started first and outranking the rule's, takes the lamp; the rule's run waits on.
+    t.clock.advance(400_000);
+    await quiet(t.store);
+    expect((await t.leases())[LAMP]).toMatchObject({ holder: { run: keep }, precedence: "scheduled_run" });
+    // The scheduled run ends: its lease's end leaves the lamp none, and the rule's run takes it.
+    t.clock.advance(900_000);
+    await quiet(t.store);
+    expect((await t.ok(SECRETS.owner, "scenario_status", { run_id: later })).status).toBe("running");
+    expect((await t.leases())[LAMP]).toMatchObject({ holder: { run: later }, precedence: "rule" });
   });
 
   it("refuses a scheduled run's step leased inside the guest's floor, and sends it no more once the floor has passed", async () => {
     const t = await rig({ changes: [up("scenario", { id: "night", name: "Ночь", mode: "single", steps: [on(LAMP, "onoff.turn_off"), { delay: 300 }] }),
       up("schedule", { id: "bed", scenario: "night", time: "11:05" })] });
     t.clock.advance(5 * MINUTE - 30_000);
-    await t.panel(false);
+    await t.lampOn();                                     // on, no cause: no hold; the guest's report never comes
+    await t.panel(false, { report: false });
     const { cursor } = await t.ok(SECRETS.owner, "events");
     t.clock.advance(30_000);
     const run_id = await t.runStarted(cursor);
@@ -364,6 +422,15 @@ describe("a guest's hold and the owner's work (GA-LEASE-10)", () => {
 });
 
 describe("a guest's hold and the owner's work under their mutations", () => {
+  it("refuses the owner's rule at the guest's own report under refuses-on-the-persons-own-report", async () => {
+    const t = await rig({ mutation: "refuses-on-the-persons-own-report", changes: [up("rule", offRule())] });
+    const { cursor } = await t.ok(SECRETS.owner, "events");
+    await t.panel(false);
+    await quiet(t.store);
+    expect((await eventsSince(t.ok, cursor, "refused")).map((e) => [e.rule, e.reason])).toEqual([["off", "leased"]]);
+    expect(t.turnedOff()).toEqual([]);
+  });
+
   it("passes the brain_authored rule under brain-rule-passes-a-guest", async () => {
     const t = await rig({ mutation: "brain-rule-passes-a-guest" });
     await t.panel();

@@ -1,12 +1,14 @@
 // The passing subjects (steward, *Negative subjects*: GA-LEASE-9, GA-LEASE-10, GA-LEASE-11): each
 // mutation's case, through `underMutation` (R-35): a unit's beside its conforming answer, a wire
 // scenario's against what its conforming test asserts.
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { RequestError } from "../src/core/errors.js";
 import { planDefine } from "../src/house/define.js";
 import type { Rule } from "../src/house/model.js";
 import { isNarrowing } from "../src/leases/narrowing.js";
-import { leaseRefuses, type Met } from "../src/leases/table.js";
+import { passing } from "../src/gate/reasons.js";
+import { leaseRefuses, passedBy, type Met, type PassOptions, type Passing } from "../src/leases/table.js";
 import { MUTATIONS, type Mutation } from "../src/mutations.js";
 import { isPressRule } from "../src/rules/engine.js";
 import { baseline, context, up } from "./house.js";
@@ -35,6 +37,13 @@ const onLiveness = (m?: Mutation) => {
   }
 };
 const PRESS_LOCK = { rule: "bench-lock", press: { target: BUTTON, key: KEY, value: "1_single" } };
+
+const member: Met = { holder: { person: "olga", endpoint: "olga-app" }, precedence: "person", role: "member", floorPassed: true };
+const guest: Met = { holder: { endpoint: "hall-panel" }, precedence: "person", role: "guest", floorPassed: true };
+const ext: Met = { holder: "external", precedence: "person", floorPassed: true, sinceMs: 1000 };
+const run: Met = { holder: { run: "r1" }, precedence: "scheduled_run" };
+const sw = (switches: ("rule" | "device" | "home")[]) => ({ ownerWork: true as const, switches });
+const p = (l: Met, pass: object, m?: Mutation, o: PassOptions = {}) => passedBy(l, pass as Passing, { mutation: m, ...o });
 
 const PASS_SUBJECTS: Mutation[] = ["refuses-the-press", "press-loses-the-hold", "brain-groups-a-press", "press-over-safety", "press-without-a-hold",
   "any-occurrence-is-a-press", "brain-press-overrides", "press-skips-conditions", "press-asks-the-tier", "names-the-presser", "press-on-liveness",
@@ -92,4 +101,77 @@ describe("the passing subjects", () => {
     expect((await underMutation(NARROWING.pressLocks, "press-lock-holds")).holder).toEqual(PRESS_LOCK);
     expect((await underMutation(NARROWING.memberCloses, "narrowing-takes-a-hold")).lease?.holder).toEqual(OLGA);
   });
+});
+
+describe("passedBy (GA-LEASE-12)", () => {
+  it("passes a person's hold past its floor by the first switch covering the step", () => {
+    expect(p(member, sw(["rule", "device", "home"]))).toBe("rule");
+    expect(p(member, sw(["device", "home"]))).toBe("device");
+    expect(p(ext, sw(["home"]))).toBe("home");
+    expect(p(guest, sw(["home"]), undefined, { guestsPass: true })).toBe("home");
+    expect(p(guest, sw([]), undefined, { guestsPass: true })).toBe("guest");
+    expect(p(member, sw([]), undefined, { guestsPass: true })).toBeUndefined();
+  });
+  it("passes nothing inside the floor, nor for work that is not the owner's", () => {
+    expect(p({ ...member, floorPassed: false }, sw(["rule"]))).toBeUndefined();
+    expect(p(member, { switches: ["rule"] })).toBeUndefined();
+  });
+  it("passes no load_cap, safety_rule or run's lease", () => {
+    for (const l of [cap, safety, run]) expect(p(l, sw(["rule", "device", "home"]))).toBeUndefined();
+  });
+  it("moves where each mutation's row says", () => {
+    expect(p(cap, sw(["rule"]), "owner-passes-the-cap")).toBe("rule");
+    expect(p(run, sw(["rule"]), "owner-passes-a-run")).toBe("rule");
+    expect(p(safety, sw(["rule"]), "owner-passes-safety")).toBe("rule");
+    expect(p({ ...member, floorPassed: false }, sw(["rule"]), "passes-a-hold-in-its-floor")).toBe("rule");
+    expect(p(ext, sw(["home"]), "switch-spares-held-holds", { homeSetMs: 2000 })).toBeUndefined();
+    expect(p(ext, sw(["home"]), undefined, { homeSetMs: 2000 })).toBe("home");
+  });
+  it("withholds only the home's switch from a step undoing a narrowing (R-9)", () => {
+    expect(p(ext, { ...sw(["home"]), undoesNarrowing: true })).toBeUndefined();
+    expect(p(ext, { ...sw(["home"]), undoesNarrowing: true }, "home-switch-reopens")).toBe("home");
+    expect(p(ext, { ...sw(["device", "home"]), undoesNarrowing: true })).toBe("device");
+    expect(p(member, { ...sw(["rule", "home"]), undoesNarrowing: true })).toBe("rule");
+    // GA-LEASE-10's guest flag still passes it.
+    expect(p(guest, { ...sw(["home"]), undoesNarrowing: true }, undefined, { guestsPass: true })).toBe("guest");
+  });
+  it("leaseRefuses follows it", () => {
+    expect(leaseRefuses(member, "rule", sw(["device"]))).toBe(false);
+    expect(leaseRefuses(member, "rule", sw([]))).toBe(true);
+    expect(leaseRefuses(safety, "rule", sw(["device"]))).toBe(true);
+  });
+});
+
+describe("passing (GA-LEASE-12)", () => {
+  const j = (l: Met | undefined, pass: Passing, o: PassOptions = {}) => ({ leaseOf: () => l, precedence: "rule" as const, pass, ...o });
+  it("names the hold the owner's work passes and the switch, on a step leased lets through", () => {
+    expect(passing(LAMP, "onoff.turn_on", j(member, sw(["device", "home"])))).toEqual({ holder: member.holder, switch: "device" });
+    expect(passing(LAMP, "onoff.turn_on", j(guest, sw([]), { guestsPass: true }))).toEqual({ holder: guest.holder, switch: "guest" });
+  });
+  it("names none for a refused step, a lease below the step, no lease, session.lock, a press or a narrowing action", () => {
+    expect(passing(LAMP, "onoff.turn_on", j(member, sw([])))).toBeUndefined();
+    expect(passing(LAMP, "onoff.turn_on", j({ holder: { rule: "r" }, precedence: "rule" }, sw(["rule"])))).toBeUndefined();
+    expect(passing(LAMP, "onoff.turn_on", j(undefined, sw(["rule"])))).toBeUndefined();
+    expect(passing(LAMP, "session.lock", j(member, sw(["rule"])))).toBeUndefined();
+    expect(passing(LAMP, "onoff.turn_on", j(member, { press: true, ...sw(["rule"]) }))).toBeUndefined();
+    expect(passing(LAMP, "onoff.turn_on", j(member, { narrowing: true, ...sw(["rule"]) }))).toBeUndefined();
+  });
+  it("reads the home switch's time from the judge", () => {
+    // At the hold's own precedence the step is not refused, so only the switch's time decides whether it passes.
+    const atPerson = (o: PassOptions) => ({ ...j(ext, sw(["home"]), o), precedence: "person" as const });
+    expect(passing(LAMP, "onoff.turn_on", atPerson({ homeSetMs: 2000 }))).toEqual({ holder: "external", switch: "home" });
+    expect(passing(LAMP, "onoff.turn_on", atPerson({ homeSetMs: 2000, mutation: "switch-spares-held-holds" }))).toBeUndefined();
+  });
+});
+
+const OWNER_SUBJECTS: Mutation[] = ["refuses-the-owner-switch", "brain-sets-the-device-switch", "brain-marks-a-rule", "brain-sets-the-home-switch",
+  "owner-passes-the-cap", "owner-passes-a-run", "owner-passes-safety", "passes-a-hold-in-its-floor", "switch-spares-held-holds",
+  "refuses-on-the-persons-own-report", "unmarked-rule-passes", "ignores-the-device-switch", "ignores-the-home-switch", "brain-rule-passes-holds",
+  "brain-groups-past-a-hold", "marked-press-passes", "passing-ends-the-hold", "pass-moves-the-end", "pass-re-evaluates-early",
+  "marked-run-refused", "brain-edits-a-passing-scenario", "passing-takes-a-lease", "pass-unrecorded", "pass-as-a-lease", "pass-reveals-a-personal-press",
+  "home-switch-reopens"];
+it("declares and lists the 0.13 subjects, twenty-six", async () => {
+  expect(OWNER_SUBJECTS).toHaveLength(26);
+  const subject = JSON.parse(await readFile(new URL("../subject.json", import.meta.url), "utf8"));
+  for (const m of OWNER_SUBJECTS) { expect(MUTATIONS).toContain(m); expect(subject.mutations).toContain(m); }
 });

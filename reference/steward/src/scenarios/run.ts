@@ -1,6 +1,6 @@
 import type { ApplyRecord, Outcome } from "../dispatch/apply.js";
 import { outcomeRank } from "../dispatch/apply.js";
-import type { Precedence } from "../leases/table.js";
+import type { PassedHold, Precedence } from "../leases/table.js";
 import type { Role } from "../house/model.js";
 import type { Mutation } from "../mutations.js";
 
@@ -13,7 +13,9 @@ export const RUN_LIMIT_MS = 6 * 3_600_000;
 export type RunEnd = "done" | "timeout" | "stopped" | "interrupted";
 
 /** One step of a run as `scenario_status` lists it (GA-SCN-11, GA-STW-12). */
-export interface FailedStep { step_id: string; outcome: string; reason?: string; time: string }
+export interface FailedStep { step_id: string; outcome: string; reason?: string; time: string; passed_hold?: PassedHold }
+/** A step that ended `sent`, with the hold it passed, if it passed one (GA-LEASE-12, R-5). */
+export interface SentStep { step_id: string; passed_hold?: PassedHold }
 
 /**
  * A scenario run (the design, *Scenarios*): who started it and how it acts (its precedence, cause,
@@ -58,8 +60,11 @@ export interface Run {
   /** The devices it leased, `owned` expanded (GA-SCN-2). */
   leased: string[];
   /**
-   * The owned devices a guest's hold covered at its start, the owner's run taking its lease on each
-   * when that hold ends leaving the device none (GA-LEASE-10). In memory only, as a run is.
+   * The owned devices in question: an owner's run's devices it does not lease, a lease standing there at its
+   * start (a hold it passes, or one held higher). Each is judged at every end of a lease there that leaves the
+   * device none: the run takes its lease then. A replacement keeps the device in question whatever the new
+   * lease is; only the run's own lease replaced by a person's change takes a device from the run for good
+   * (GA-LEASE-10, GA-LEASE-12; R-1, R-2 as ruled). In memory only, as a run is.
    */
   waiting?: string[];
   /** Whether every step of its program was reached: it ends once its dispatched steps are final. */
@@ -72,7 +77,7 @@ export interface Run {
   settle?: () => void;
   bound?: number;
   /** `failed_steps` and `sent_steps` as of its end (steward, *Operations*). */
-  ended?: { failed_steps: FailedStep[]; sent_steps: { step_id: string }[] };
+  ended?: { failed_steps: FailedStep[]; sent_steps: SentStep[] };
 }
 
 const SUCCESS = new Set(["acked", "delivered", "sent", "confirmed"]);
@@ -97,19 +102,21 @@ export function settled(run: Run): boolean {
 /**
  * `failed_steps` and `sent_steps` as they stand (GA-SCN-11, steward, *Operations*): every step that
  * ended in neither a success nor a skip that is no failure, a `failed` one that had a `late_ack`
- * while the run ran left out; every step that ended `sent`. A step still `dispatched` has not ended.
+ * while the run ran left out; every step that ended `sent`; each with the hold it passed (`passed_hold`, GA-LEASE-12).
+ * A step still `dispatched` has not ended.
  * `passes-a-skipped-toggle` leaves a scheduled run's `skipped(toggle_only)` out.
  */
-export function tally(run: Run, mutation?: Mutation): { failed_steps: FailedStep[]; sent_steps: { step_id: string }[] } {
+export function tally(run: Run, mutation?: Mutation): { failed_steps: FailedStep[]; sent_steps: SentStep[] } {
   const failed_steps: FailedStep[] = [];
-  const sent_steps: { step_id: string }[] = [];
+  const sent_steps: SentStep[] = [];
   for (const o of outcomesOf(run)) {
     if (!finalFor(run, o)) continue;
-    if (o.outcome === "sent") sent_steps.push({ step_id: o.step_id });
+    const passed = o.passed_hold ? { passed_hold: o.passed_hold } : {};
+    if (o.outcome === "sent") sent_steps.push({ step_id: o.step_id, ...passed });
     if (SUCCESS.has(o.outcome) || (o.outcome === "skipped" && NOT_FAILED.has(o.reason ?? ""))) continue;
     if (o.outcome === "failed" && run.lateAcked.has(o.step_id)) continue;
     if (mutation === "passes-a-skipped-toggle" && run.schedule !== undefined && o.outcome === "skipped" && o.reason === "toggle_only") continue;
-    failed_steps.push({ step_id: o.step_id, outcome: o.outcome, ...(o.reason !== undefined ? { reason: o.reason } : {}), time: o.time });
+    failed_steps.push({ step_id: o.step_id, outcome: o.outcome, ...(o.reason !== undefined ? { reason: o.reason } : {}), time: o.time, ...passed });
   }
   return { failed_steps, sent_steps };
 }

@@ -38,5 +38,11 @@
     "press-over-the-cap", "guest-hold-blocks-the-owner", "passes-undeclared", "brain-rule-passes-a-guest", "passes-a-member-hold",
     "named-speaker-is-a-guest", "holds-the-auto-lock", "narrows-a-heater", "narrowing-takes-a-hold", "narrows-over-safety", "closes-by-opens-with",
     "press-lock-holds", "press-hold-dies-with-rule", "press-cancels-on-unreachable", "passes-inside-the-floor", "two-leases-at-once",
-    "narrows-over-a-run", "narrows-by-toggle"]
+    "narrows-over-a-run", "narrows-by-toggle",
+    "refuses-the-owner-switch", "brain-sets-the-device-switch", "brain-marks-a-rule", "brain-sets-the-home-switch",
+    "owner-passes-the-cap", "owner-passes-a-run", "owner-passes-safety", "passes-a-hold-in-its-floor", "switch-spares-held-holds",
+    "refuses-on-the-persons-own-report", "unmarked-rule-passes", "ignores-the-device-switch", "ignores-the-home-switch", "brain-rule-passes-holds",
+    "brain-groups-past-a-hold", "marked-press-passes", "passing-ends-the-hold", "pass-moves-the-end", "pass-re-evaluates-early",
+    "marked-run-refused", "brain-edits-a-passing-scenario", "passing-takes-a-lease", "pass-unrecorded", "pass-as-a-lease", "pass-reveals-a-personal-press",
+    "home-switch-reopens"]
 }

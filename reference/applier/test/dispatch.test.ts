@@ -729,8 +729,42 @@ describe("late acks", () => {
     expect(await m.events(c, "late_ack")).toMatchObject([{ apply_id: r.apply_id, key: "on", value: true }]);
   });
 
+  it("takes a first value short of an apply's value, inside its window, as the device's word, a held one moving away as external: only a match is the apply's (applier 0.17, *Causes*)", async () => {
+    const m = await home();
+    const r = await m.apply([ask("hall:lamp", "level.set_level", { level: 80 })]);
+    const c = await m.cursor();
+    m.report("lamp", { level: 20 });
+    m.report("lamp", { level: 10 });
+    expect((await m.events(c, "state")).filter((e: any) => e.key === "level").map((e: any) => [e.value, cause(e, r.apply_id)]))
+      .toEqual([[20, "device"], [10, "external"]]);
+  });
+
+  it("gives a first value inside the late-ack window the apply's cause, not device (applier 0.17, GA-APPLY-11)", async () => {
+    const m = await home();
+    const r = await m.apply([ask("hall:lamp", "level.set_level", { level: 80 })]);
+    m.clock.advance(10_000 + ACK_GRACE_MS);
+    expect((await m.outcomes(r.apply_id))[0]).toMatchObject({ outcome: "failed", reason: "no_ack" });
+    const c = await m.cursor();
+    m.report("lamp", { level: 80 });
+    expect((await m.events(c, "state")).filter((e: any) => e.key === "level").map((e: any) => cause(e, r.apply_id))).toEqual(["apply"]);
+    expect(await m.events(c, "late_ack")).toMatchObject([{ apply_id: r.apply_id, key: "level", value: 80 }]);
+  });
+
+  it("gives a first value moving to a dispatched action's value that apply's cause; device under devices-a-correlated-first-value (GA-EVT-1)", async () => {
+    for (const mutation of [undefined, "devices-a-correlated-first-value"] as const) {
+      const m = await home({ mutation });
+      const r = await m.apply([ask("hall:lamp", "level.set_level", { level: 80 })]);
+      const c = await m.cursor();
+      m.report("lamp", { level: 80 });
+      expect([mutation, (await m.events(c, "state")).filter((e: any) => e.key === "level").map((e: any) => cause(e, r.apply_id))])
+        .toEqual([mutation, [mutation ? "device" : "apply"]]);
+    }
+  });
+
   it("takes a match after a bridge's failed ack, or 60 s after the failed(no_ack), as external (GA-APPLY-11)", async () => {
     const m = await home();
+    // The lamp's on held: a first value would be the device's word (applier 0.17), not the change looked at here.
+    m.report("lamp", { on: false });
     const f = await m.apply([ask("hall:lamp")]);
     m.ack(m.sent[0]!, "failed", { reason: "rejected" });
     expect((await m.outcomes(f.apply_id))[0]).toMatchObject({ outcome: "failed", reason: "rejected" });
@@ -750,6 +784,8 @@ describe("late acks", () => {
 
   it("closes a late window on a bridge's failed ack that comes after the failed(no_ack): a later match is external (GA-APPLY-11)", async () => {
     const m = await home();
+    // The lamp's on held: a first value would be the device's word (applier 0.17), not the change looked at here.
+    m.report("lamp", { on: false });
     const r = await m.apply([ask("hall:lamp")]);
     m.clock.advance(10_000 + ACK_GRACE_MS);
     expect((await m.outcomes(r.apply_id))[0]).toMatchObject({ outcome: "failed", reason: "no_ack" });
@@ -981,6 +1017,19 @@ describe("an open device's assumed state and whole-state commands", () => {
     }));
   /** The `state` the last command to the air conditioner carried. */
   const frame = (m: Awaited<ReturnType<typeof home>>) => m.sent.filter((x) => x.device === "ac").at(-1)!.body.value.state;
+
+  it("never takes an assumed value for a held one: the first report of a key once the device reports is the device's word (applier 0.17)", async () => {
+    const m = await home();
+    await m.apply([mode("cool")]);
+    m.ack(m.sent.at(-1)!, "sent");
+    expect(await assumed(m)).toEqual({ mode: "cool" });
+    // Its bridge comes to read it: the device is closed from here on.
+    m.send("hall-bridge", "devices", { devices: devices.map((d) => d.id === "ac" ? { ...d, feedback: "closed" } : d) }, true);
+    const c = await m.cursor();
+    m.report("ac", { mode: "cool" });
+    expect((await m.events(c, "state")).filter((e: any) => e.target === "hall:ac").map((e: any) => [e.key, e.value, e.cause]))
+      .toEqual([["mode", "cool", "device"]]);
+  });
 
   it("assumes the value an action asks for once it ends sent or unanswered, never unreachable or failed, marked assumed (GA-STATE-4)", async () => {
     for (const mutation of [undefined, "assumes-a-failed-write", "forgets-the-unanswered"] as const) {

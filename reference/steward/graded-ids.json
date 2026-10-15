@@ -1,5 +1,5 @@
 {
- "slice": "steward 0.12",
+ "slice": "steward 0.13",
  "ids": [
   "GA-BIND-2",
   "GA-SEC-2",
@@ -82,7 +82,8 @@
   "GA-LEASE-8",
   "GA-LEASE-9",
   "GA-LEASE-10",
-  "GA-LEASE-11"
+  "GA-LEASE-11",
+  "GA-LEASE-12"
  ],
  "partial": {
   "GA-HOUSE-1": [

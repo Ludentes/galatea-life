@@ -24,7 +24,7 @@ import { freshDatabase } from "@ludentes/galatea-life-harness/database";
 import { SubjectProcess } from "@ludentes/galatea-life-harness";
 import { brokerUrl, fixtureDevices, freePort, SimBridge, startBroker, TimeServer } from "@ludentes/galatea-life-sim";
 import { TestClock } from "@ludentes/galatea-life-test-clock";
-import { RUN_HOLD, holdOps, judgeSet, setOps } from "./first-light-hold.mjs";
+import { RUN_HOLD, holdOps, judgeSet, ownSwitches, setOps } from "./first-light-hold.mjs";
 
 const here = dirname(dirname(fileURLToPath(import.meta.url)));
 const repo = join(here, "..", "..");
@@ -152,8 +152,13 @@ try {
   const del = (kind, value) => ({ op: "delete", kind, value });
   // The hold policy: read first and recorded, then set one field per define to the run's 20 s windows (a
   // refusal naming a field stops the run), and put back field by field in the finally below, never with null.
-  const recordedSettings = { hold: structuredClone((await ownerTool.callOk("describe")).home?.hold) };
+  const houseAtStart = await ownerTool.callOk("describe");
+  const recordedSettings = { hold: structuredClone(houseAtStart.home?.hold) };
   if (!recordedSettings.hold) throw new Error("describe shows no home.hold to record before the run");
+  // A target's or a rule's own switch passes holds whatever the home's switch says (GA-LEASE-12), so the run
+  // records them and stops before its first check while any is set.
+  const switched = ownSwitches(houseAtStart);
+  if (switched.length > 0) throw new Error(`own switches set, the hold checks would not hold: ${switched.join(", ")}`);
   const setFields = [];
   restoreHold = async () => {
     if (setFields.length === 0) return;

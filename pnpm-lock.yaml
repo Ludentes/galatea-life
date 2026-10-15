@@ -27,8 +27,8 @@ importers:
   reference/applier:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -52,8 +52,8 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@ludentes/galatea-life-harness':
-        specifier: ^0.1.8
-        version: 0.1.8(hono@4.13.9)
+        specifier: ^0.1.10
+        version: 0.1.10(hono@4.13.9)
       '@modelcontextprotocol/client':
         specifier: 2.2.0
         version: 2.2.0
@@ -64,8 +64,8 @@ importers:
   reference/install:
     devDependencies:
       '@ludentes/galatea-life-sim':
-        specifier: ^0.1.3
-        version: 0.1.3(hono@4.13.9)
+        specifier: ^0.1.4
+        version: 0.1.4(hono@4.13.9)
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -73,8 +73,8 @@ importers:
   reference/owner-tool:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@modelcontextprotocol/client':
         specifier: 2.2.0
         version: 2.2.0
@@ -86,11 +86,11 @@ importers:
         specifier: workspace:*
         version: link:../applier
       '@ludentes/galatea-life-harness':
-        specifier: ^0.1.8
-        version: 0.1.8(hono@4.13.9)
+        specifier: ^0.1.10
+        version: 0.1.10(hono@4.13.9)
       '@ludentes/galatea-life-sim':
-        specifier: ^0.1.3
-        version: 0.1.3(hono@4.13.9)
+        specifier: ^0.1.4
+        version: 0.1.4(hono@4.13.9)
       '@ludentes/galatea-life-steward':
         specifier: workspace:*
         version: link:../steward
@@ -113,8 +113,8 @@ importers:
   reference/pc-bridge:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -160,8 +160,8 @@ importers:
         specifier: ^0.1.0
         version: 0.1.0
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -185,11 +185,11 @@ importers:
         specifier: 0.5.8
         version: 0.5.8
       '@ludentes/galatea-life-harness':
-        specifier: ^0.1.8
-        version: 0.1.8(hono@4.13.9)
+        specifier: ^0.1.10
+        version: 0.1.10(hono@4.13.9)
       '@ludentes/galatea-life-sim':
-        specifier: ^0.1.3
-        version: 0.1.3(hono@4.13.9)
+        specifier: ^0.1.4
+        version: 0.1.4(hono@4.13.9)
       '@types/pg':
         specifier: 8.23.1
         version: 8.23.1
@@ -200,8 +200,8 @@ importers:
   reference/wake-relay:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -212,8 +212,8 @@ importers:
   reference/zigbee-bridge:
     dependencies:
       '@ludentes/galatea-life-schemas':
-        specifier: ^0.1.5
-        version: 0.1.5
+        specifier: ^0.1.6
+        version: 0.1.6
       '@ludentes/galatea-life-test-clock':
         specifier: ^0.1.0
         version: 0.1.0
@@ -427,15 +427,15 @@ packages:
   '@ludentes/galatea-life-binding@0.1.0':
     resolution: {integrity: sha512-73TFhbnyZt8pLNk59L7y5mWEgUSC++b2HPqSZLcB4JS8uMZDmuR1r3WUZ9R9OSJv/L8FLXCvG5RYOYdAZAoVsA==}
 
-  '@ludentes/galatea-life-harness@0.1.8':
-    resolution: {integrity: sha512-2+LfrljZDbXSLOLMCU8c8DW4lVNXOBStgKC2D9IVG+UqOOlzD+MJuNPNWMn+GHK2hxNArBT36rUjQN9R0BdP/Q==}
+  '@ludentes/galatea-life-harness@0.1.10':
+    resolution: {integrity: sha512-fbWIMEjqIrWju/p9tADCbDay3nzsQtfZdJ02ZzCae21IxuU6zDRp+ees49fUWtJSABxzTJajYnB0dAmXYSIrqw==}
     hasBin: true
 
-  '@ludentes/galatea-life-schemas@0.1.5':
-    resolution: {integrity: sha512-32OQ5Nes/fAAK6X9PXM27mCBu+dJRkOOKdZjrMJglG9toD6w6iEoj+6gw24z0xwZctDxX9B27IIZr8o0+WWdjQ==}
+  '@ludentes/galatea-life-schemas@0.1.6':
+    resolution: {integrity: sha512-hxAYVJ8keTyrDyWDzGFarbOw0M/CVAuIKcO6TI28L8ETDGXEywrC+2XS6+cQ69wiWFbn5I+1itzWzI0KH7YPeQ==}
 
-  '@ludentes/galatea-life-sim@0.1.3':
-    resolution: {integrity: sha512-bSxq0A6qfWQ4RtYRviSyxuTqs2LDqTTCzPeN6/FfoGYpLDVvXRGdUATGx5ECXHzCO+zwQTgq7pflyAWsL9az7w==}
+  '@ludentes/galatea-life-sim@0.1.4':
+    resolution: {integrity: sha512-mFM1PRVH7kKy0DcvO7PtCNrAX4hZ9gsQpGe2sei2S4zj+wzMAGSvuhKCbD0EUVLhwsHtcPcDhz6JHILRzpESbw==}
 
   '@ludentes/galatea-life-test-clock@0.1.0':
     resolution: {integrity: sha512-1+svmsegGVd7o3Oi5VjWRLCsvHGCBE2/sJukwtPdNeriPlvOKnJ123t2eIKgyC9+DLxwDKQXBKu2SXX/v9b1tw==}
@@ -1515,10 +1515,10 @@ snapshots:
 
   '@ludentes/galatea-life-binding@0.1.0': {}
 
-  '@ludentes/galatea-life-harness@0.1.8(hono@4.13.9)':
+  '@ludentes/galatea-life-harness@0.1.10(hono@4.13.9)':
     dependencies:
-      '@ludentes/galatea-life-schemas': 0.1.5
-      '@ludentes/galatea-life-sim': 0.1.3(hono@4.13.9)
+      '@ludentes/galatea-life-schemas': 0.1.6
+      '@ludentes/galatea-life-sim': 0.1.4(hono@4.13.9)
       '@ludentes/galatea-life-test-clock': 0.1.0
       '@modelcontextprotocol/client': 2.2.0
       mqtt: 5.16.0
@@ -1530,15 +1530,15 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@ludentes/galatea-life-schemas@0.1.5':
+  '@ludentes/galatea-life-schemas@0.1.6':
     dependencies:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
 
-  '@ludentes/galatea-life-sim@0.1.3(hono@4.13.9)':
+  '@ludentes/galatea-life-sim@0.1.4(hono@4.13.9)':
     dependencies:
       '@ludentes/galatea-life-binding': 0.1.0
-      '@ludentes/galatea-life-schemas': 0.1.5
+      '@ludentes/galatea-life-schemas': 0.1.6
       '@ludentes/galatea-life-test-clock': 0.1.0
       '@modelcontextprotocol/node': 2.1.0(@modelcontextprotocol/server@2.2.0)(hono@4.13.9)
       '@modelcontextprotocol/server': 2.2.0

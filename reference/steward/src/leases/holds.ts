@@ -165,13 +165,14 @@ export class Holds {
   }
 
   start(target: string, kind: "person" | "load_cap", direction: Direction | undefined,
-    floor?: { dispatchWallMs: number; ackWithinS: number }, role?: HoldState["role"]): HoldState {
+    floor?: { dispatchWallMs: number; ackWithinS: number }, role?: HoldState["role"], expect?: HoldState["expect"]): HoldState {
     const now = this.now();
     const r = this.room(target);
     const at = floor ? this.el(floor.dispatchWallMs) : now;
     return { kind, ...(kind === "person" && direction ? { direction } : {}), changeMs: at, quietFromMs: r.busy ? null : at,
       floorMs: floor ? at + floor.ackWithinS * 1000 + LATE_ACK_WINDOW_MS : null, fixedFromMs: at,
-      vacantAtChange: r.occupancy === "vacant", seenNotVacant: false, room: r.room, sources: r.sources, adopted: r.adopted, ...(role ? { role } : {}) };
+      vacantAtChange: r.occupancy === "vacant", seenNotVacant: false, room: r.room, sources: r.sources, adopted: r.adopted, ...(role ? { role } : {}),
+      ...(expect ? { expect } : {}) };
   }
 
   /** A hold just started's `expires` and its timer (a predicted vacancy may be sooner), on the wall clock, for the grant. */
@@ -246,6 +247,20 @@ export class Holds {
     if (this.atEl !== undefined) for (const [target, p] of this.pending) if (inRoom(target, p.hold)) this.judgePending(target);
   }
 
+  /**
+   * The hold on `target` takes now as its change, its quiet and its `fixed_s` anchor (a quiet that has not
+   * begun stays so), and is judged again. Called only under the mutation `pass-moves-the-end`: a pass
+   * moves no hold's end (GA-LEASE-12).
+   */
+  touch(target: string): void {
+    const l = this.o.table.of(target);
+    if (!l?.hold) return;
+    const now = this.now();
+    const hold = { ...l.hold, changeMs: now, fixedFromMs: now, quietFromMs: l.hold.quietFromMs === null ? null : now };
+    this.o.table.update(target, { hold, ...this.ends(this.judged(target, hold)) });
+    this.judge(target);
+  }
+
   acked(target: string, apply: string): void {
     const l = this.o.table.of(target);
     if (!l?.hold || l.apply !== apply || l.hold.floorMs === null) return;
@@ -253,6 +268,31 @@ export class Holds {
     this.judge(target);
     // A guest's hold's floor ends at the success: what it refused is told (R-63).
     if (l.hold.role === "guest" && this.o.table.of(target) === l) this.floorPassedOn(target, l);
+  }
+
+  /**
+   * The device reported `key` at `value`: a hold, or a provisional lease, whose step's ack is matched on it
+   * has its floor for passing ended (`LeaseTable.reported`; GA-LEASE-10, GA-LEASE-12). A guest's hold so
+   * marked inside its floor tells what it refused, as a success does (R-63, R-3); its own floor stays.
+   */
+  reported(target: string, key: string, value: unknown): void {
+    const l = this.o.table.of(target);
+    const was = l?.hold?.reported === true;
+    this.o.table.reported(target, key, value);
+    const h = l?.hold;
+    if (!l || was || h?.reported !== true || h.role !== "guest" || h.floorMs === null || this.now() >= h.floorMs) return;
+    this.floorPassedOn(target, l);
+  }
+
+  /**
+   * `apply`'s step on `target` was granted its hold carrying a report that came while it was provisional:
+   * a guest's tells what it refused, as `reported` does (R-63).
+   */
+  settledReported(target: string, apply: string): void {
+    const l = this.o.table.of(target);
+    const h = l?.hold;
+    if (!l || l.apply !== apply || h?.reported !== true || h.role !== "guest" || h.floorMs === null || this.now() >= h.floorMs) return;
+    this.floorPassedOn(target, l);
   }
 
   /**

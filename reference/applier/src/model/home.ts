@@ -13,8 +13,8 @@ import { FRESH_SLACK_S, liveness, type Liveness } from "../state/liveness.js";
 import {
   DEFAULT_MAX_ON_S, mayBeIdempotent, standardKeys, statelessOf, union, type Tier,
 } from "./declarations.js";
-import { PROVISION_EVENTS, type Arrival, firstValue, fingerprintOf, deviceId, MAX_ID, MAX_UNLISTED, MAX_FAULT_CODE, MAX_DEVICE_FAULTS, SNAPSHOT_ANSWER_MS, ackWithinS, UNKNOWN_BOUND, openLoopKey, openLoop, adminKey, faultPrefix } from "./home-helpers.js";
-export { PROVISION_EVENTS, type Arrival, firstValue, fingerprintOf, deviceId, MAX_ID, MAX_UNLISTED, MAX_FAULT_CODE, MAX_DEVICE_FAULTS } from "./home-helpers.js";
+import { PROVISION_EVENTS, fingerprintOf, deviceId, MAX_ID, MAX_UNLISTED, MAX_FAULT_CODE, MAX_DEVICE_FAULTS, SNAPSHOT_ANSWER_MS, ackWithinS, UNKNOWN_BOUND, openLoopKey, openLoop, adminKey, faultPrefix } from "./home-helpers.js";
+export { PROVISION_EVENTS, fingerprintOf, deviceId, MAX_ID, MAX_UNLISTED, MAX_FAULT_CODE, MAX_DEVICE_FAULTS } from "./home-helpers.js";
 
 export { canonical };
 
@@ -34,8 +34,10 @@ export type ConnectionRow = { kind: "device" | "transport"; entity: string; keys
 
 /** A value of a key the applier held for a device, and whether its event went out. */
 type Held = { value: string | number | boolean; said: boolean };
-/** A value a bridge reported, its basis, and how it arrived where that was not live (`Arrival`), judged when it came. */
-type Value = { value: string | number | boolean; basis: number; arrival?: Exclude<Arrival, "live"> };
+/** A value a bridge reported, and its basis. */
+type Value = { value: string | number | boolean; basis: number };
+/** The value a bridge gives a reading it read and could not derive (bridge, *A device's status*): never held. */
+const UNKNOWN = "unknown";
 /** What a bridge said of one of its devices, kept by the bridge's own id, whether or not it is in the model yet. */
 type DeviceFacts = {
   values: Map<string, Value>;
@@ -67,29 +69,8 @@ type BridgeView = {
   heardDevices: boolean;
   /** Until when a `devices` document is the answer to the applier's `snapshot` (GA-BUS-6). */
   snapshotUntil?: number;
-  /**
-   * Its devices a route moved here, by its own ids, while the snapshot asked at the move is awaited:
-   * their first values in its answer are over the new route (applier, *Causes*, R16-4).
-   */
-  rerouted?: Set<string>;
-  /**
-   * Not heard live since the applier connected or lost its broker: what comes now is the load of its
-   * statuses after a connection or a restart (applier, *Causes*). Ends at its first live status.
-   */
-  loading: boolean;
-  /**
-   * When listening last began (`listening`): a reading the bridge stamped later than this, allowing
-   * `SKEW_MS`, is no delivery on subscribing, so it is out of the load (applier, *Causes*).
-   */
-  listeningAt?: number;
-  /**
-   * Found dead after it was live, by its will or its `offline` status, never by silence: what comes
-   * before its next live status may be a new instance's first statuses, which a new instance's
-   * `status` then asks a snapshot for (applier, *Causes*).
-   */
-  awaiting: boolean;
   /** The applier lost its broker since this bridge's last listening: the bus asks it for a snapshot on listening (GA-BUS-6). */
-  reconnecting: boolean;
+  reconnecting?: boolean;
   /**
    * The ways its doer changes a device unseen, from its latest status taken (GA-BRIDGE-32): the
    * applier's own for GA-DESC-6. Kept while the bridge is dead, since its doer may run on.
@@ -372,8 +353,7 @@ export class Home {
           .map((t): [string, TransportFacts] => [t.bridge_transport, { id: t.bridge_transport, kind: t.kind, state: "down" }]);
         this.bridges.set(id, { config: b, rules: this.rules(b), transports: new Map(kept), roster: new Map(),
           facts: new Map(), fastCheckIn: new Set(), standing: new Map(),
-          deviceFaults: new Set(this.hooks.standingNotices(faultPrefix(id))), heardDevices: false, ungoverned: [], levels: [],
-          loading: true, awaiting: false, reconnecting: false });
+          deviceFaults: new Set(this.hooks.standingNotices(faultPrefix(id))), heardDevices: false, ungoverned: [], levels: [] });
       }
     }
     this.pruneTransports();
@@ -567,7 +547,6 @@ export class Home {
       if (was) this.ids.get(was.bridge)?.delete(was.bridge_device);
     }
     const newer: HeldDevice[] = [];
-    const moved = new Map<string, string[]>();
     for (const r of rows) {
       const doc = docs.get(r.id)!;
       const row = { ...r, doc };
@@ -579,24 +558,15 @@ export class Home {
         continue;
       }
       const was = olds.get(r.id);
-      if (was && was.bridge !== row.bridge) moved.set(row.bridge, [...moved.get(row.bridge) ?? [], row.bridge_device]);
       if (!was || this.feedbackOf(row) === "open") continue;
       // The id's last values, on whatever route it had: the old bridge's view may be gone.
       const last = this.held.get(r.id);
       for (const [key, x] of this.bridges.get(row.bridge)?.facts.get(row.bridge_device)?.values ?? []) {
         if (last?.get(key)?.said && last.get(key)!.value === x.value) continue;
-        // Over a new route as it moves (applier, *Causes*). `externalises-a-rerouted-value` takes it as live.
-        this.take(row, key, x, undefined, this.isFirst(row.id, key, x.value, false, this.mutant.externalisesAReroutedValue ? x.arrival ?? "live" : "route"));
+        this.take(row, key, x, undefined, this.isFirst(row.id, key, x.value));
       }
     }
     if (newer.length) this.hook("modelChanged", () => this.hooks.modelChanged(newer, []));
-    // The new bridge is asked for a snapshot: its answer's first values are over the new route too.
-    for (const [bridge, devices] of moved) {
-      const v = this.bridges.get(bridge);
-      if (!v || !this.hook("snapshot", () => this.hooks.snapshot(v.config))) continue;
-      v.snapshotUntil = this.now() + SNAPSHOT_ANSWER_MS;
-      v.rerouted = new Set([...v.rerouted ?? [], ...devices]);
-    }
   }
 
   /**
@@ -628,7 +598,11 @@ export class Home {
       const host = this.devices.get(x.into);
       if (host && host.into === undefined && host.doc.stable_identifier === x.doc.stable_identifier && host.bridge !== x.bridge) continue;
       const shown: HeldDevice = { id: x.id, bridge: x.bridge, bridge_device: x.bridge_device, doc: x.doc };
-      if (this.hook("modelChanged", () => this.hooks.modelChanged([shown], []))) this.hold(shown);
+      if (!this.hook("modelChanged", () => this.hooks.modelChanged([shown], []))) continue;
+      this.hold(shown);
+      // A copy held nothing while folded: what its bridge reported meanwhile comes in as first values (code review r2 M4).
+      if (this.feedbackOf(shown) === "open") continue;
+      for (const [key, v] of this.bridges.get(shown.bridge)?.facts.get(shown.bridge_device)?.values ?? []) this.take(shown, key, v, undefined, true);
     }
   }
 
@@ -795,8 +769,7 @@ export class Home {
     this.brokerUp = true;
     this.raise(v, "subscription", []);
     this.apply(v, v.rules.listening(this.now()));
-    v.listeningAt = this.now();
-    // A reconnection asks the bridge for a snapshot (the bus sends it, GA-BUS-6): its answer is a snapshot's.
+    // A reconnection asks the bridge for a snapshot (the bus sends it, GA-BUS-6): its `devices` is re-sent.
     if (v.reconnecting) {
       v.reconnecting = false;
       v.snapshotUntil = this.now() + SNAPSHOT_ANSWER_MS;
@@ -809,9 +782,6 @@ export class Home {
     this.brokerUp = false;
     for (const v of this.bridges.values()) {
       this.apply(v, v.rules.lost(this.now()));
-      // What comes after the reconnection is a load again, then the reconnection's snapshot (applier, *Causes*).
-      v.loading = true;
-      v.awaiting = false;
       v.reconnecting = true;
     }
     this.reverdict();
@@ -859,9 +829,9 @@ export class Home {
       if (errors.length) return this.fault(v, `${path} rejected whole: ${errors[0]}`);
     }
     if (path === "status") return this.onStatus(v, b, retained);
-    if (path === "lwt") return this.apply(v, v.rules.will(typeof b.instanceId === "string" ? b.instanceId : undefined, this.now()), true);
+    if (path === "lwt") return this.apply(v, v.rules.will(typeof b.instanceId === "string" ? b.instanceId : undefined, this.now()));
     if (path === "devices") return this.onDevices(v, b, retained);
-    if (device) return this.onDeviceStatus(v, device, b);
+    if (device) return this.onDeviceStatus(v, device, b, retained);
     const acked = /^devices\/([^/]+)\/ack$/.exec(path)?.[1];
     if (acked) return this.onAck(v, acked, b);
     if (path === "event") {
@@ -891,7 +861,6 @@ export class Home {
       // A snapshot's reply ends its answer: the bridge re-publishes, then replies (GA-BRIDGE-30).
       if (b.op === "snapshot") {
         v.snapshotUntil = undefined;
-        v.rerouted = undefined;
         return;
       }
       // Any other reply names no request this applier holds: a late one, or another life's.
@@ -922,12 +891,6 @@ export class Home {
   private onStatus(v: BridgeView, body: Record<string, unknown>, retained: boolean): void {
     const { value: s, faults } = parseStatus(body);
     const o = v.rules.status(s, retained, this.now());
-    // Heard live (GA-BUS-8: a retained status never revives): its statuses' load after a connection ends,
-    // and so does the wait for a new instance, whose own status, if it is one, has asked a snapshot.
-    if (!retained && v.rules.alive) {
-      v.loading = false;
-      v.awaiting = false;
-    }
     if (o.take) {
       this.raise(v, "status", faults);
       this.takeStatus(v, s.transports, s.roster, s.listed);
@@ -942,8 +905,7 @@ export class Home {
         if (this.hooks.ungovernedChanged) this.hook("ungovernedChanged", () => this.hooks.ungovernedChanged!(v.config.id));
       }
     }
-    // A status that finds it dead is its `offline`: the instance said it ended.
-    this.apply(v, o, true);
+    this.apply(v, o);
   }
 
   /**
@@ -1103,7 +1065,7 @@ export class Home {
         if (values && this.feedbackOf(d) === "open") values.clear();
         // A value whose announce failed is dropped, so the next reading is announced; its key stays held.
         for (const [key, x] of [...(values ?? [])]) {
-          if (!this.take(d, key, x, undefined, this.isFirst(d.id, key, x.value, false, x.arrival ?? "live"))) values!.delete(key);
+          if (!this.take(d, key, x, undefined, this.isFirst(d.id, key, x.value))) values!.delete(key);
         }
       }
     }
@@ -1296,21 +1258,22 @@ export class Home {
   }
 
   /**
-   * Whether `value` of `id`'s `key` is its first (`firstValue`): `before` says its bridge's view held
-   * one already, and a value the id held on any route counts too, except the same value again after
-   * its announce failed, which was never said.
+   * Whether `value` of `id`'s `key` is its first (applier, *Causes*): the applier holds no value for
+   * it, wherever and however it arrives. A held value is the last a bridge reported in this run, never
+   * an assumed one and never `"unknown"`, which neither sets nor clears it. A status leaving the key
+   * out, `dead`, a broker loss, a new instance, a route move or a re-interview keep it; a restart,
+   * `forget`, a fold and a replacement drop it. The same value again after a failed announce, never
+   * said, is still first.
    */
-  private isFirst(id: string, key: string, value: Held["value"], before: boolean, arrival: Arrival): boolean {
+  private isFirst(id: string, key: string, value: Held["value"]): boolean {
     const h = this.held.get(id)?.get(key);
-    // `devices-a-live-press`: a first value taken for the device's word wherever it arrived, a live press included.
-    const adopted = this.owner.adoptions.has(id) && !this.mutant.devicesALivePress;
-    return firstValue({ held: before || (h !== undefined && (h.said || h.value !== value)), arrival, adopted });
+    return !(h !== undefined && (h.said || h.value !== value));
   }
 
   /** Announces a value and holds its key with it, said or not. */
   private take(d: HeldDevice, key: string, x: Value, by: { cause: Record<string, unknown> | string; own: boolean } | undefined, first: boolean): boolean {
     const ok = this.announce(d, key, x, by, first);
-    this.heldOf(d.id).set(key, { value: x.value, said: ok });
+    if (x.value !== UNKNOWN) this.heldOf(d.id).set(key, { value: x.value, said: ok });
     return ok;
   }
 
@@ -1318,17 +1281,18 @@ export class Home {
    * A `state` event (applier, *Causes*): the apply it moves towards, given by `by`; else `device` for
    * a `self_changing` key, `external` for any other. A `self_changing` key keeps an apply's cause only
    * when it is the key that apply's action sets (GA-EVT-6). A `first` value, the key holding none
-   * before, where no hand can be told (`firstValue`: it arrived in the load after a connection or a
-   * restart, in a snapshot's answer or a new instance's first statuses, over a new route, or on a device
-   * not adopted), changes nothing the applier knew: it is the device's word, `device`, so it takes no
-   * lease (the steward's GA-LEASE-2; the plug rehearsal's F3, the maintainer's ruling of 2026-10-11). A
-   * key first reported live by a running bridge instance on an adopted device stays `external`: a
-   * person's first press keeps its lease.
+   * before, wherever it arrives, a live report on an adopted device included, changes nothing the
+   * applier knew and no hand can be told from it: `device`, so it takes no lease (the steward's
+   * GA-LEASE-2; the maintainer's ruling of 2026-10-13). A held key's changed value is `external`.
    */
   private announce(d: HeldDevice, key: string, x: Value, by?: { cause: Record<string, unknown> | string; own: boolean }, first = false): boolean {
     const self = this.keysOf(d).self_changing.includes(key);
-    // `externalises-a-first-value`: every first value taken for a hand, as any change.
-    const cause = by && (!self || by.own) ? by.cause : self || (first && !this.mutant.externalisesAFirstValue) ? "device" : "external";
+    // `externalises-a-first-value`: every first value taken for a hand, as any change. `devices-a-changed-value`:
+    // a held key's change taken for the device's word.
+    // `devices-a-correlated-first-value`: a first value taken for the device's word though an apply claims it.
+    const claimed = by && (!self || by.own) && !(first && this.mutant.devicesACorrelatedFirstValue);
+    const cause = claimed ? by!.cause
+      : self || (first && !this.mutant.externalisesAFirstValue) || (!first && this.mutant.devicesAChangedValue) ? "device" : "external";
     return this.emitEvent("state", { target: d.id, key, value: x.value, basis_time: new Date(x.basis).toISOString(), cause });
   }
 
@@ -1389,7 +1353,7 @@ export class Home {
     return d !== undefined && this.keysOf(d).personal.includes(key);
   }
 
-  private onDeviceStatus(v: BridgeView, topicDevice: string, body: Record<string, unknown>): void {
+  private onDeviceStatus(v: BridgeView, topicDevice: string, body: Record<string, unknown>, retained: boolean): void {
     const { value: s, faults: parsed } = parseDeviceStatus(body);
     const faults = parsed.map((f) => `devices/${topicDevice}/status: ${f}`);
     // The topic wins; a body naming another device is the bridge's fault (lesson 11).
@@ -1420,19 +1384,29 @@ export class Home {
       // A value from a fast clock never becomes the last seen (GA-BUS-2); the device's flag holds it stale.
       if (fast) continue;
       const before = facts.values.get(r.key);
-      const arrival = this.rerouted(v, topicDevice, this.arrival(v, r.basis));
-      const x: Value = { value: r.value, basis: r.basis, ...(arrival !== "live" ? { arrival } : {}) };
-      const changed = !before || before.value !== r.value;
+      const x: Value = { value: r.value, basis: r.basis };
+      // What the applier holds decides, not only this bridge view's facts (applier, *Causes*): a view that
+      // never saw the key (a new route, a bridge re-registered under a new identity) re-reporting the
+      // held value changes nothing.
+      const exposed = held !== undefined && held.into === undefined;
+      const h = exposed ? this.held.get(held.id)?.get(r.key) : undefined;
+      const heldValue = h?.said ? h.value : undefined;
+      // `"unknown"` neither sets nor clears a held value: it is news only when the last report was not.
+      // An exposed id is judged by what it holds; a copy, by its bridge view's facts.
+      const changed = r.value === UNKNOWN ? before?.value !== UNKNOWN
+        : exposed ? heldValue === undefined || heldValue !== r.value : !before || before.value !== r.value;
       // Only the exposed device's own bridge acks a step or causes a change: a folded copy's reports are no one's (GA-BUS-11).
       let by: ReturnType<NonNullable<HomeHooks["reading"]>>;
       if (held && held.into === undefined && this.hooks.reading) {
         const hook = this.hooks.reading;
-        this.hook("reading", () => { by = hook(held.id, r.key, r.value, before?.value, r.basis, changed); });
+        this.hook("reading", () => { by = hook(held.id, r.key, r.value, before?.value ?? heldValue, r.basis, changed); });
       }
       // Re-published unchanged data is silent (lesson 16): only a changed value is a change.
-      const exposed = held !== undefined && held.into === undefined;
-      if (exposed && changed && !this.take(held, r.key, x, by, this.isFirst(held.id, r.key, r.value, before !== undefined, arrival))) continue;
-      if (exposed) this.heldOf(held.id).set(r.key, { value: r.value, said: true });
+      // `externalises-a-live-first-value`: a first value reported live on an adopted device taken for a
+      // hand, as 0.16 had it, a retained one the device's word.
+      const live = !retained && this.owner.adoptions.has(held?.id ?? "") && this.mutant.externalisesALiveFirstValue;
+      if (exposed && changed && !this.take(held, r.key, x, by, !live && (r.value === UNKNOWN || this.isFirst(held.id, r.key, r.value)))) continue;
+      if (exposed && r.value !== UNKNOWN) this.heldOf(held.id).set(r.key, { value: r.value, said: true });
       facts.values.set(r.key, x);
     }
     // Only a correctly stamped report of the device, of any key, ends its fast clock (GA-BUS-2).
@@ -1524,39 +1498,9 @@ export class Home {
     return this.hook(`emit ${type}`, () => this.hooks.emit(type, body));
   }
 
-  /**
-   * Takes an outcome of the bridge's rules. `ended` is an outcome of its will or its `offline` status:
-   * its instance said it ended, so, found dead after it was live, its next statuses may be a new
-   * instance's (applier, *Causes*). Silence (`tick`) ends no instance: a running one that went quiet
-   * still reports live.
-   */
-  private apply(v: BridgeView, o: Outcome, ended = false): void {
+  private apply(v: BridgeView, o: Outcome): void {
     for (const f of o.faults) this.fault(v, f);
     if (o.snapshot && this.hook("snapshot", () => this.hooks.snapshot(v.config))) v.snapshotUntil = this.now() + SNAPSHOT_ANSWER_MS;
-    if (ended && o.changed && !v.rules.alive && !v.loading) v.awaiting = true;
-  }
-
-  /**
-   * How a value of `v` arriving now, stamped `basis`, reached the applier (`Arrival`, applier, *Causes*):
-   * by the bridge's liveness (GA-BUS-8), when listening began and the snapshots asked of it, never by
-   * the value's own retain flag. The load holds only what was stamped before listening began.
-   * `externalises-a-snapshot-value` takes a snapshot's answer, and a new instance's first statuses, as live.
-   */
-  private arrival(v: BridgeView, basis: number): Exclude<Arrival, "route"> {
-    // The load is the deliveries on subscribing: a reading stamped after listening began is no part of it.
-    const delivered = v.listeningAt === undefined || basis <= v.listeningAt + SKEW_MS;
-    if (v.loading && delivered) return "load";
-    const snapshot = v.awaiting || (v.snapshotUntil !== undefined && this.now() <= v.snapshotUntil);
-    return snapshot && !this.mutant.externalisesASnapshotValue ? "snapshot" : "live";
-  }
-
-  /**
-   * A device a route moved to `v`, reporting in the snapshot asked at the move: over the new route.
-   * `externalises-a-rerouted-value` takes it as live.
-   */
-  private rerouted(v: BridgeView, device: string, arrival: Exclude<Arrival, "route">): Arrival {
-    if (arrival !== "snapshot" || !v.rerouted?.has(device)) return arrival;
-    return this.mutant.externalisesAReroutedValue ? "live" : "route";
   }
 
   /** Emits a `liveness` event for every device whose verdict changed, and a `freshness` event for every changed bound. */

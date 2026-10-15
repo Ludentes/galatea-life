@@ -6,7 +6,7 @@ import type { Replacement, Routed } from "./config/configure.js";
 import type { GateDevice } from "./gate/plan.js";
 import type { Args } from "./applier.js";
 
-export const STANDARD_VERSION = "0.16";
+export const STANDARD_VERSION = "0.17";
 
 /**
  * A plan expires this long after it is made, on the applier's clock (applier, *Planning changes

@@ -80,13 +80,13 @@ describe("Steward", () => {
     expect((await again.ok(SECRETS.owner, "describe")).persons).toHaveLength(1);
   });
 
-  it("says standard 0.12, and shows the hold policy in force after a define (GA-LEASE-8)", async () => {
+  it("says standard 0.13, and shows the hold policy in force after a define (GA-LEASE-8)", async () => {
     const { ok, define } = await withBaseline();
-    expect(STANDARD_VERSION).toBe("0.12");
+    expect(STANDARD_VERSION).toBe("0.13");
     expect((await define([up("home", { hold: { off_s: 20 } })])).ok).toBe(true);
     const owner = await ok(SECRETS.owner, "describe");
     expect(owner.home.hold).toEqual({ ...HOLD_DEFAULTS, off_s: 20 });
-    expect(owner.standard_version).toBe("0.12");
+    expect(owner.standard_version).toBe("0.13");
     expect(validate("steward/describe.response.json", owner)).toEqual([]);
     expect(validate("steward/describe.response.json", await ok(SECRETS.front, "describe"))).toEqual([]);
   });
@@ -217,11 +217,11 @@ describe("Steward", () => {
     const rule = { id: "night", name: "Ночник", conditions: [{ between: { from: "23:00", until: "06:00" } }],
       actions: [{ target: "sim-bridge:lamp", action: "onoff.turn_on", args: {} }] };
     expect((await define([up("rule", rule)])).ok).toBe(true);
-    expect((await ok(SECRETS.owner, "describe")).rules).toEqual([{ ...rule, active: true, exceptions: [] }]);
+    expect((await ok(SECRETS.owner, "describe")).rules).toEqual([{ ...rule, active: true, exceptions: [], passes_holds: false }]);
     await store.settled();
     steward.stop();
     const again = await open({ db });
-    expect((await again.ok(SECRETS.owner, "describe")).rules).toEqual([{ ...rule, active: true, exceptions: [] }]);
+    expect((await again.ok(SECRETS.owner, "describe")).rules).toEqual([{ ...rule, active: true, exceptions: [], passes_holds: false }]);
   });
 
   it("returns a dry run's diff and changes nothing (GA-DEF-1)", async () => {

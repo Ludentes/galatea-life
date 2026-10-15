@@ -96,8 +96,10 @@ describe("a hold across a restart (GA-PERSIST-2)", () => {
 
   it("tells a guest's floor passing in a restart's gap at begin, the owner's rule it refused then sent (R-63)", async () => {
     const a = await hall({ db: lasting(await memoryDb()) });
-    await a.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [on(LAMP)] }, idempotency_key: "restart-guest" });
+    // The lamp reads on before the guest's step, so the step's own report, which would end its floor for passing, never comes (GA-LEASE-10).
     a.applier.emit({ type: "state", target: LAMP, key: "on", value: true, time: a.at() });
+    await a.pump();
+    await a.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [on(LAMP)] }, idempotency_key: "restart-guest" });
     await a.pump();
     await a.define([up("rule", { id: "off", name: "Гасить", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }], actions: [on(LAMP, "onoff.turn_off")] })]);
     await quiet(a.store);
@@ -112,6 +114,50 @@ describe("a hold across a restart (GA-PERSIST-2)", () => {
     const readBack = hallState(false, b.clock.now());
     await b.recover({ ...readBack, targets: { ...readBack.targets, [LAMP]: { liveness: "live", values: [{ key: "on", value: true, basis_time: b.at() }] } } });
     expect(offs().map((x) => x.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect((await b.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
+  it("tells a guest's floor ended by its own report in a restart's gap at begin, the owner's rule it refused then sent (R-63)", async () => {
+    const a = await hall({ db: lasting(await memoryDb()) });
+    a.applier.emit({ type: "state", target: LAMP, key: "on", value: true, time: a.at() });
+    await a.pump();
+    await a.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [on(LAMP)] }, idempotency_key: "restart-guest-report" });
+    await a.pump();
+    await a.define([up("rule", { id: "off", name: "Гасить", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }], actions: [on(LAMP, "onoff.turn_off")] })]);
+    await quiet(a.store);
+    const offs = () => a.applier.applies.filter((x: Body) => x.request.actions.some((y: Body) => y.action === "onoff.turn_off"));
+    expect(offs()).toEqual([]);
+    await stop(a);
+    // Down: the lamp reports the value the guest's step set, ending its floor for passing; read back from the gap at the restart.
+    a.clock.advance(2 * S);
+    a.applier.emit({ type: "state", target: LAMP, key: "on", value: true, time: a.at() });
+    a.clock.advance(10 * S);
+    const b = await again(a);
+    const readBack = hallState(false, b.clock.now());
+    await b.recover({ ...readBack, targets: { ...readBack.targets, [LAMP]: { liveness: "live", values: [{ key: "on", value: true, basis_time: b.at() }] } } });
+    expect(offs().map((x) => x.request.actions[0].for)).toEqual([{ rule: "off" }]);
+    expect((await b.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
+  });
+
+  it("keeps a hold's expected report and its having come across a restart: the owner's rule then passes the guest's hold inside its floor (GA-LEASE-10, GA-LEASE-12)", async () => {
+    const a = await hall({ db: lasting(await memoryDb()) });
+    await a.ok(SECRETS.panel, "apply", { request: { endpoint: "hall-panel", actions: [on(LAMP)] }, idempotency_key: "restart-reported" });
+    await a.pump();
+    a.applier.emit({ type: "state", target: LAMP, key: "on", value: true, time: a.at() });
+    await a.pump();
+    await quiet(a.store);
+    const kept = async (t: typeof a) => (await t.store.query<{ hold: Body }>("SELECT hold FROM leases WHERE target = $1", [LAMP])).rows[0]?.hold;
+    expect(await kept(a)).toMatchObject({ role: "guest", expect: { key: "on", match: { kind: "exactly", value: true } }, reported: true });
+    await stop(a);
+    a.clock.advance(5 * S);                                                 // inside the floor: 10 s and 60 s from dispatch
+    const b = await again(a);
+    const readBack = hallState(false, b.clock.now());
+    await b.recover({ ...readBack, targets: { ...readBack.targets, [LAMP]: { liveness: "live", values: [{ key: "on", value: true, basis_time: b.at() }] } } });
+    expect((b.steward as any).leases.of(LAMP).hold).toMatchObject({ expect: { key: "on", match: { kind: "exactly", value: true } }, reported: true });
+    await b.define([up("rule", { id: "off", name: "Гасить", conditions: [{ target: LAMP, key: "on", op: "eq", value: true }], actions: [on(LAMP, "onoff.turn_off")] })]);
+    await quiet(b.store);
+    const offs = b.applier.applies.filter((x: Body) => x.request.actions.some((y: Body) => y.action === "onoff.turn_off"));
+    expect(offs.map((x: Body) => x.request.actions[0].for)).toEqual([{ rule: "off" }]);
     expect((await b.leases())[LAMP].holder).toEqual({ endpoint: "hall-panel" });
   });
 
